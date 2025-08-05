@@ -35,17 +35,17 @@ void ParticleResampler::resample(ParticleSet& particles, WeightVector& weights)
     // Get resampling indices
     std::vector<int> indices;
     switch (params_.method) {
-        case ResamplingMethod::SYSTEMATIC:
+        case ResamplingParams::Method::SYSTEMATIC:
             indices = systematic_resampling(weights, particles.size());
             break;
-        case ResamplingMethod::LOW_VARIANCE:
+        case ResamplingParams::Method::LOW_VARIANCE:
             indices = low_variance_resampling(weights, particles.size());
             break;
-        case ResamplingMethod::MULTINOMIAL:
+        case ResamplingParams::Method::MULTINOMIAL:
             indices = multinomial_resampling(weights, particles.size());
             break;
-        case ResamplingMethod::STRATIFIED:
-            indices = stratified_resampling(weights, particles.size());
+        default:
+            indices = systematic_resampling(weights, particles.size());
             break;
     }
     

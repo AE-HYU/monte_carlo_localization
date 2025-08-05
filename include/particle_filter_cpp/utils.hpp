@@ -9,11 +9,15 @@
 #include <nav_msgs/msg/map_meta_data.hpp>
 #include <vector>
 #include <random>
+#include <chrono>
 
 namespace particle_filter_cpp
 {
 
-struct Particle;
+// Forward declaration - use the modules version
+namespace modules {
+    struct Particle;
+}
 
 namespace utils
 {
@@ -33,9 +37,9 @@ double get_map_value(const Eigen::Vector2d& point, const nav_msgs::msg::Occupanc
 std::vector<Eigen::Vector2d> get_free_space_points(const nav_msgs::msg::OccupancyGrid& map);
 
 // Particle utilities
-geometry_msgs::msg::PoseArray particles_to_pose_array(const std::vector<Particle>& particles);
-geometry_msgs::msg::Pose particle_to_pose(const Particle& particle);
-std::vector<Particle> pose_array_to_particles(const geometry_msgs::msg::PoseArray& pose_array);
+geometry_msgs::msg::PoseArray particles_to_pose_array(const std::vector<modules::Particle>& particles);
+geometry_msgs::msg::Pose particle_to_pose(const modules::Particle& particle);
+std::vector<modules::Particle> pose_array_to_particles(const geometry_msgs::msg::PoseArray& pose_array);
 
 // Statistical utilities
 std::vector<double> normalize_weights(const std::vector<double>& weights);

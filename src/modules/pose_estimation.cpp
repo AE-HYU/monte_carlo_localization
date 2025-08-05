@@ -12,7 +12,7 @@ PoseEstimator::PoseEstimator(const PoseEstimationParams& params)
     : params_(params)
 {
     // Set default parameters if not provided
-    if (params_.method == PoseEstimationMethod::WEIGHTED_AVERAGE) {
+    if (params_.method == PoseEstimationParams::Method::WEIGHTED_AVERAGE) {
         // Already set
     }
 }
@@ -21,11 +21,11 @@ Eigen::Vector3d PoseEstimator::compute_expected_pose(const ParticleSet& particle
                                                    const WeightVector& weights)
 {
     switch (params_.method) {
-        case PoseEstimationMethod::WEIGHTED_AVERAGE:
+        case PoseEstimationParams::Method::WEIGHTED_AVERAGE:
             return weighted_average(particles, weights);
-        case PoseEstimationMethod::MAX_WEIGHT:
+        case PoseEstimationParams::Method::MAX_LIKELIHOOD:
             return max_weight_pose(particles, weights);
-        case PoseEstimationMethod::GAUSSIAN_MIXTURE:
+        case PoseEstimationParams::Method::CLUSTERED_AVERAGE:
             return gaussian_mixture_estimate(particles, weights);
         default:
             return weighted_average(particles, weights);

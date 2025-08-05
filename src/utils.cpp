@@ -1,4 +1,5 @@
 #include "particle_filter_cpp/utils.hpp"
+#include "particle_filter_cpp/modules/particle.hpp"
 #include "particle_filter_cpp/particle_filter.hpp"
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -124,7 +125,7 @@ std::vector<Eigen::Vector2d> get_free_space_points(const nav_msgs::msg::Occupanc
     return free_points;
 }
 
-geometry_msgs::msg::PoseArray particles_to_pose_array(const std::vector<Particle>& particles)
+geometry_msgs::msg::PoseArray particles_to_pose_array(const std::vector<modules::Particle>& particles)
 {
     geometry_msgs::msg::PoseArray pose_array;
     pose_array.poses.reserve(particles.size());
@@ -136,7 +137,7 @@ geometry_msgs::msg::PoseArray particles_to_pose_array(const std::vector<Particle
     return pose_array;
 }
 
-geometry_msgs::msg::Pose particle_to_pose(const Particle& particle)
+geometry_msgs::msg::Pose particle_to_pose(const modules::Particle& particle)
 {
     geometry_msgs::msg::Pose pose;
     pose.position.x = particle.x;
@@ -146,9 +147,9 @@ geometry_msgs::msg::Pose particle_to_pose(const Particle& particle)
     return pose;
 }
 
-std::vector<Particle> pose_array_to_particles(const geometry_msgs::msg::PoseArray& pose_array)
+std::vector<modules::Particle> pose_array_to_particles(const geometry_msgs::msg::PoseArray& pose_array)
 {
-    std::vector<Particle> particles;
+    std::vector<modules::Particle> particles;
     particles.reserve(pose_array.poses.size());
     
     for (const auto& pose : pose_array.poses) {

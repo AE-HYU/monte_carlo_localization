@@ -1,6 +1,8 @@
 #include "particle_filter_cpp/modules/sensor_model.hpp"
 #include <cmath>
 #include <algorithm>
+#include <limits>
+#include <cstdio>
 
 // Conditional RangeLibc includes
 #ifdef USE_RANGELIBC
@@ -13,7 +15,7 @@ namespace modules
 {
 
 SensorModel::SensorModel(const SensorModelParams& params)
-    : params_(params), map_initialized_(false), angle_step_(18),
+    : params_(params), map_initialized_(false), angle_step_(params.angle_step),
       sensor_model_precomputed_(false)
 {
 #ifdef USE_RANGELIBC
@@ -97,8 +99,38 @@ void SensorModel::update_weights(const ParticleSet& particles, WeightVector& wei
 {
     if (particles.size() != weights.size()) return;
     
+    // Debug: Show RangeLibc status at the beginning
+    static bool first_call = true;
+    if (first_call) {
+        printf("   SENSOR MODEL DEBUG:\n");
+        printf("   - Map initialized: %s\n", map_initialized_ ? "YES" : "NO");
+        printf("   - Sensor model precomputed: %s\n", sensor_model_precomputed_ ? "YES" : "NO");
+#ifdef USE_RANGELIBC
+        printf("   - RangeLibc compiled: YES\n");
+        printf("   - RangeLibc initialized: %s\n", rangelib_initialized_ ? "YES" : "NO");
+        printf("   - Range method available: %s\n", range_method_ ? "YES" : "NO");
+#else
+        printf("   - RangeLibc compiled: NO (using fallback)\n");
+#endif
+        printf("   - Angle step: %d\n", angle_step_);
+        first_call = false;
+    }
+    
+    double max_weight = 0.0;
+    double min_weight = std::numeric_limits<double>::max();
+    
     for (size_t i = 0; i < particles.size(); ++i) {
         weights[i] = compute_likelihood(particles[i], scan_data);
+        max_weight = std::max(max_weight, weights[i]);
+        min_weight = std::min(min_weight, weights[i]);
+    }
+    
+    // Debug: Log weight statistics occasionally
+    static int update_count = 0;
+    update_count++;
+    if (update_count % 100 == 0) {
+        printf("Sensor model: min_weight=%.6f, max_weight=%.6f, ratio=%.6f\n", 
+               min_weight, max_weight, max_weight > 0 ? min_weight / max_weight : 0.0);
     }
 }
 
@@ -136,7 +168,26 @@ double SensorModel::compute_likelihood(const Particle& particle,
 #endif
     
     // Evaluate sensor model
-    return evaluate_sensor_model(downsampled_ranges, computed_ranges);
+    double likelihood = evaluate_sensor_model(downsampled_ranges, computed_ranges);
+    
+    // Apply squash factor (like Python reference)
+    likelihood = std::pow(likelihood, 1.0 / params_.squash_factor);
+    
+    // Debug: Log occasionally for first few particles
+    static int debug_count = 0;
+    debug_count++;
+    if (debug_count % 1000 == 0) {
+        printf("Particle (%.2f, %.2f, %.2f): likelihood=%.6f, rangelib=%s\n", 
+               particle.x, particle.y, particle.theta, likelihood,
+#ifdef USE_RANGELIBC
+               rangelib_initialized_ ? "yes" : "no"
+#else
+               "no"
+#endif
+               );
+    }
+    
+    return likelihood;
 }
 
 #ifdef USE_RANGELIBC
@@ -202,10 +253,25 @@ std::vector<double> SensorModel::cast_rays_fallback(const Particle& particle,
     
     Eigen::Vector2d start(particle.x, particle.y);
     
-    for (float angle_offset : angles) {
+    static int cast_count = 0;
+    cast_count++;
+    bool debug_this = (cast_count % 1000 == 0);
+    
+    if (debug_this) {
+        printf("Fallback ray casting #%d for particle (%.2f, %.2f, %.2f), %zu angles\n",
+               cast_count, particle.x, particle.y, particle.theta, angles.size());
+    }
+    
+    for (size_t i = 0; i < angles.size(); ++i) {
+        float angle_offset = angles[i];
         double absolute_angle = particle.theta + angle_offset;
         double range = cast_single_ray(start, absolute_angle);
         ranges.push_back(range);
+        
+        if (debug_this && i < 3) {
+            printf("  Ray[%zu]: angle_offset=%.3f, abs_angle=%.3f, range=%.2f\n",
+                   i, angle_offset, absolute_angle, range);
+        }
     }
     
     return ranges;
@@ -234,6 +300,8 @@ double SensorModel::evaluate_sensor_model(const std::vector<float>& observed_ran
                                          const std::vector<double>& computed_ranges)
 {
     if (!sensor_model_precomputed_ || observed_ranges.empty() || computed_ranges.empty()) {
+        printf("Sensor model evaluation failed: precomputed=%s, obs_size=%zu, comp_size=%zu\n",
+               sensor_model_precomputed_ ? "yes" : "no", observed_ranges.size(), computed_ranges.size());
         return 1.0;
     }
     
@@ -241,6 +309,11 @@ double SensorModel::evaluate_sensor_model(const std::vector<float>& observed_ran
     double likelihood = 1.0;
     
     int max_range_px = static_cast<int>(params_.max_range / map_info_.resolution);
+    
+    // Debug: Check a few range comparisons
+    static int eval_count = 0;
+    eval_count++;
+    bool debug_this = (eval_count % 500 == 0);
     
     for (size_t i = 0; i < min_size; ++i) {
         // Convert ranges to pixel units
@@ -253,6 +326,15 @@ double SensorModel::evaluate_sensor_model(const std::vector<float>& observed_ran
         
         double prob = sensor_model_table_[obs_px][comp_px];
         likelihood *= std::max(prob, 1e-6); // Avoid zero likelihood
+        
+        if (debug_this && i < 3) {
+            printf("  Range[%zu]: obs=%.2f->%dpx, comp=%.2f->%dpx, prob=%.6f\n",
+                   i, observed_ranges[i], obs_px, computed_ranges[i], comp_px, prob);
+        }
+    }
+    
+    if (debug_this) {
+        printf("Sensor eval #%d: %zu ranges, final likelihood=%.6f\n", eval_count, min_size, likelihood);
     }
     
     return likelihood;

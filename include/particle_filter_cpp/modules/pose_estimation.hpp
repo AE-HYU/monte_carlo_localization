@@ -2,6 +2,7 @@
 #define PARTICLE_FILTER_CPP__MODULES__POSE_ESTIMATION_HPP_
 
 #include "particle.hpp"
+#include "common_types.hpp"
 #include <eigen3/Eigen/Dense>
 
 namespace particle_filter_cpp
@@ -12,16 +13,8 @@ namespace modules
 enum class PoseEstimationMethod
 {
     WEIGHTED_AVERAGE,
-    MAX_WEIGHT,
-    GAUSSIAN_MIXTURE,
-    KERNEL_DENSITY
-};
-
-struct PoseEstimationParams
-{
-    PoseEstimationMethod method;
-    double convergence_threshold;  // For clustering methods
-    int max_iterations;           // For iterative methods
+    MAX_LIKELIHOOD,
+    CLUSTERED_AVERAGE
 };
 
 struct PoseStatistics

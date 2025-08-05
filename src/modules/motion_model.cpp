@@ -52,18 +52,35 @@ Eigen::Vector3d MotionModel::compute_odometry_delta(const OdometryData& current,
 
 void MotionModel::apply_motion_with_noise(Particle& particle, const Eigen::Vector3d& delta)
 {
-    // Add noise to the motion delta
+    // Add noise to the motion delta (like the Python reference)
     double noisy_dx = delta[0] + normal_dist_(rng_) * params_.dispersion_x;
     double noisy_dy = delta[1] + normal_dist_(rng_) * params_.dispersion_y;
     double noisy_dtheta = delta[2] + normal_dist_(rng_) * params_.dispersion_theta;
     
-    // Apply motion in particle's local coordinate frame
+    // Debug: Log motion occasionally
+    static int motion_count = 0;
+    motion_count++;
+    if (motion_count % 1000 == 0) {
+        double motion_magnitude = std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+        printf("Motion: delta=(%.4f, %.4f, %.4f), noise=(%.4f, %.4f, %.4f), magnitude=%.4f\n",
+               delta[0], delta[1], delta[2], 
+               noisy_dx - delta[0], noisy_dy - delta[1], noisy_dtheta - delta[2],
+               motion_magnitude);
+    }
+    
+    // CRITICAL FIX: Apply motion like Python version
+    // The delta is already in robot's local coordinate frame from compute_odometry_delta
+    // Now we need to transform it to each particle's coordinate frame (like Python)
     double cos_theta = std::cos(particle.theta);
     double sin_theta = std::sin(particle.theta);
     
-    // Transform local motion to global coordinates
-    particle.x += cos_theta * noisy_dx - sin_theta * noisy_dy;
-    particle.y += sin_theta * noisy_dx + cos_theta * noisy_dy;
+    // Transform the local motion delta to particle's coordinate frame
+    double global_dx = cos_theta * noisy_dx - sin_theta * noisy_dy;
+    double global_dy = sin_theta * noisy_dx + cos_theta * noisy_dy;
+    
+    // Apply motion to particle
+    particle.x += global_dx;
+    particle.y += global_dy;
     particle.theta += noisy_dtheta;
     
     // Normalize angle

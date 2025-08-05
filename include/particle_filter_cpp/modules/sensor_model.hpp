@@ -2,6 +2,7 @@
 #define PARTICLE_FILTER_CPP__MODULES__SENSOR_MODEL_HPP_
 
 #include "particle.hpp"
+#include "common_types.hpp"
 #include <eigen3/Eigen/Dense>
 #include <vector>
 #include <memory>
@@ -26,6 +27,10 @@ struct SensorModelParams
     double z_rand;    // Weight for random measurements
     double sigma_hit; // Standard deviation for hit measurements
     double max_range; // Maximum sensor range
+    std::string range_method; // RangeLibc method (cddt, rm, bl, etc.)
+    int theta_discretization; // Theta discretization for CDDT
+    double squash_factor; // Sensor model squash factor
+    int angle_step; // Downsampling step for laser ranges
 };
 
 struct LaserScanData

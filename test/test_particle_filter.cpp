@@ -122,7 +122,7 @@ TEST_F(UtilsTest, SystematicResampling)
 TEST_F(UtilsTest, ParticleConversion)
 {
     // Create test particles
-    std::vector<particle_filter_cpp::Particle> particles;
+    std::vector<particle_filter_cpp::modules::Particle> particles;
     particles.emplace_back(1.0, 2.0, M_PI / 4, 0.5);
     particles.emplace_back(-1.0, -2.0, -M_PI / 4, 0.3);
     

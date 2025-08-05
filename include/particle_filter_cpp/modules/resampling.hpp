@@ -2,6 +2,7 @@
 #define PARTICLE_FILTER_CPP__MODULES__RESAMPLING_HPP_
 
 #include "particle.hpp"
+#include "common_types.hpp"
 #include <random>
 #include <vector>
 
@@ -16,13 +17,6 @@ enum class ResamplingMethod
     LOW_VARIANCE,
     MULTINOMIAL,
     STRATIFIED
-};
-
-struct ResamplingParams
-{
-    ResamplingMethod method;
-    double ess_threshold_ratio;  // Resample when ESS < N * threshold
-    bool adaptive;              // Use adaptive resampling
 };
 
 class ParticleResampler

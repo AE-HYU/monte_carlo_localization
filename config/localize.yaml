@@ -1,14 +1,14 @@
 particle_filter:
   ros__parameters:
-    # Particle filter parameters
+    # Particle filter parameters - match Python reference
     num_particles: 4000
     max_viz_particles: 60
     max_range: 10.0
     
-    # Motion model noise parameters
-    motion_dispersion_x: 0.05
-    motion_dispersion_y: 0.025
-    motion_dispersion_theta: 0.25
+    # Motion model noise parameters - match Python reference
+    motion_dispersion_x: 0.05      # Python value
+    motion_dispersion_y: 0.025     # Python value
+    motion_dispersion_theta: 0.25  # Python value
     
     # Sensor model parameters
     z_hit: 0.75      # Weight for correct range measurements
@@ -20,14 +20,20 @@ particle_filter:
     # RangeLibc parameters
     range_method: "cddt"        # Options: bl, rm, rmgpu, cddt, pcddt, glt
     theta_discretization: 112   # Number of discrete angles for lookup table methods
+    angle_step: 18              # Downsampling parameter
+    squash_factor: 2.2         # Sensor model parameter
     
     # Topic names
     scan_topic: "/scan"
-    odom_topic: "/odom"
+    odom_topic: "/ego_racecar/odom"
     
     # Publishing options
     publish_odom: true
     viz: true
+    
+    # Update thresholds - disable like Python version
+    update_min_distance: 0.0
+    update_min_angle: 0.0
     
     # Frame IDs
     map_frame: "map"

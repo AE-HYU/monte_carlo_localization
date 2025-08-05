@@ -27,7 +27,7 @@ find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(rclcpp_parameters REQUIRED)
+# find_package(rclcpp_parameters REQUIRED)
 
 # Optional: Find nav2_map_server for map loading
 find_package(nav2_map_server QUIET)
@@ -84,7 +84,7 @@ set(dependencies
   Eigen3
   pcl_ros
   pcl_conversions
-  rclcpp_parameters
+  # rclcpp_parameters
 )
 
 # Create particle filter library with modular structure
@@ -157,9 +157,10 @@ install(DIRECTORY rviz/
   FILES_MATCHING PATTERN "*.rviz"
 )
 
-# Export dependencies
-ament_export_targets(${PROJECT_NAME}_lib HAS_LIBRARY_TARGET)
+# Export dependencies - Fixed the export call
 ament_export_dependencies(${dependencies})
+ament_export_include_directories(include)
+ament_export_libraries(${PROJECT_NAME}_lib)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

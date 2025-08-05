@@ -2,6 +2,7 @@
 #define PARTICLE_FILTER_CPP__MODULES__INITIALIZATION_HPP_
 
 #include "particle.hpp"
+#include "common_types.hpp"
 #include <eigen3/Eigen/Dense>
 #include <random>
 
@@ -9,15 +10,6 @@ namespace particle_filter_cpp
 {
 namespace modules
 {
-
-struct MapInfo
-{
-    int width;
-    int height;
-    double resolution;
-    Eigen::Vector3d origin;  // x, y, theta
-    std::vector<int8_t> data;  // occupancy data
-};
 
 class ParticleInitializer
 {

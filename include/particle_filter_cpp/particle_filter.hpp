@@ -59,6 +59,7 @@ private:
     // ROS parameters
     bool publish_odom_;
     bool viz_;
+    int max_viz_particles_;  // Maximum particles to show in visualization
     
     // State tracking
     bool map_received_;

@@ -2,6 +2,7 @@
 #define PARTICLE_FILTER_CPP__MODULES__MCL_ALGORITHM_HPP_
 
 #include "particle.hpp"
+#include "common_types.hpp"
 #include "initialization.hpp"
 #include "motion_model.hpp"
 #include "sensor_model.hpp"
@@ -9,6 +10,7 @@
 #include "pose_estimation.hpp"
 #include <memory>
 #include <random>
+#include <chrono>
 
 namespace particle_filter_cpp
 {
@@ -28,16 +30,6 @@ struct MCLParams
     double update_min_angle;     // Minimum angular change to trigger update
     int max_iterations;          // Maximum MCL iterations per update
     bool enable_timing;          // Enable performance timing
-};
-
-struct MCLStatistics
-{
-    double effective_sample_size;
-    int resample_count;
-    double pose_uncertainty;
-    double computation_time_ms;
-    bool converged;
-    int iteration_count;
 };
 
 class MCLAlgorithm
@@ -104,14 +96,14 @@ private:
     void sensor_update(const LaserScanData& scan_data);
     void resampling_update();
     void pose_estimation_update();
-    
-    // Adaptive parameter adjustment
+    bool should_update(const OdometryData& odom_data);
+    double compute_motion_delta(const OdometryData& current, const OdometryData& previous);
+    void update_statistics();
     void adapt_parameters();
     
-    // Utility functions
-    bool should_update(const OdometryData& odom_data);
-    void update_statistics();
-    double compute_motion_delta(const OdometryData& current, const OdometryData& previous);
+#ifdef USE_RANGELIBC
+    void initialize_rangelibc();
+#endif
 };
 
 } // namespace modules

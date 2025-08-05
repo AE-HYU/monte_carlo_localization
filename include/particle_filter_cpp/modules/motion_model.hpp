@@ -2,6 +2,7 @@
 #define PARTICLE_FILTER_CPP__MODULES__MOTION_MODEL_HPP_
 
 #include "particle.hpp"
+#include "common_types.hpp"
 #include <eigen3/Eigen/Dense>
 #include <random>
 
@@ -9,24 +10,6 @@ namespace particle_filter_cpp
 {
 namespace modules
 {
-
-struct MotionModelParams
-{
-    double dispersion_x;     // Motion noise in x direction
-    double dispersion_y;     // Motion noise in y direction
-    double dispersion_theta; // Motion noise in orientation
-};
-
-struct OdometryData
-{
-    Eigen::Vector3d pose;      // x, y, theta
-    Eigen::Vector3d velocity;  // vx, vy, vtheta
-    double timestamp;
-    
-    OdometryData() : pose(Eigen::Vector3d::Zero()), 
-                     velocity(Eigen::Vector3d::Zero()), 
-                     timestamp(0.0) {}
-};
 
 class MotionModel
 {

@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include "particle_filter_cpp/utils.hpp"
+#include "particle_filter_cpp/particle_filter.hpp"
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <random>
+#include <thread>
 
 class MapUtilsTest : public ::testing::Test
 {
@@ -218,10 +220,4 @@ TEST_F(RandomUtilsTest, UniformNoise)
     
     // Should be approximately 0 for uniform [-1, 1]
     EXPECT_NEAR(mean, 0.0, 0.1);
-}
-
-int main(int argc, char** argv)
-{
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
 }

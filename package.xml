@@ -39,7 +39,7 @@
   <depend>pcl_conversions</depend>
   
   <!-- For parameter handling -->
-  <depend>rclcpp_parameters</depend>
+  <!--<depend>rclcpp_parameters</depend>-->
   
   <!-- For launch files -->
   <build_depend>launch_ros</build_depend>

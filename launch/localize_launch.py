@@ -28,7 +28,7 @@ def generate_launch_description():
     
     odom_topic_arg = DeclareLaunchArgument(
         'odom_topic',
-        default_value='/odom',
+        default_value='/ego_racecar/odom',  # Changed to match config file
         description='Odometry topic name'
     )
     
@@ -90,8 +90,8 @@ def generate_launch_description():
         parameters=[
             config_file_path,
             {
-                'scan_topic': LaunchConfiguration('scan_topic'),
-                'odom_topic': LaunchConfiguration('odom_topic')
+                'scan_topic': LaunchConfiguration('scan_topic')
+                # Removed odom_topic override to use config file setting
             }
         ],
         remappings=[
