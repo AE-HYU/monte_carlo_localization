@@ -31,41 +31,48 @@ find_package(angles REQUIRED)
 # Optional: Find nav2_map_server for map loading
 find_package(nav2_map_server QUIET)
 
-# Find RangeLibc (external dependency)
-find_path(RANGELIBC_INCLUDE_DIR 
-    NAMES RangeLib.h
-    PATHS 
-        /usr/local/include/range_libc/includes
-        /usr/include/range_libc/includes
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../range_libc/includes
-        $ENV{HOME}/range_libc/includes
-    DOC "RangeLibc include directory"
-)
+# Find RangeLibc (external dependency) - Debug and find approach
+# Add multiple search paths for RangeLibc
+list(APPEND CMAKE_PREFIX_PATH "/usr/local" "/usr/local/share")
 
-find_library(RANGELIBC_LIBRARY
-    NAMES range_libc rangelibc
-    PATHS
-        /usr/local/lib
-        /usr/lib
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../range_libc/build
-        $ENV{HOME}/range_libc/build
-    DOC "RangeLibc library"
-)
+# Debug: Show what CMake is searching
+message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 
-if(RANGELIBC_INCLUDE_DIR AND RANGELIBC_LIBRARY)
-    message(STATUS "Found RangeLibc: ${RANGELIBC_LIBRARY}")
+find_package(range_libc QUIET)
+
+if(range_libc_FOUND)
+    message(STATUS "Found RangeLibc: using optimized ray casting from ${range_libc_DIR}")
     set(RANGELIBC_FOUND TRUE)
     add_definitions(-DUSE_RANGELIBC)
 else()
-    message(WARNING "RangeLibc not found. Ray casting will use slower fallback implementation.")
-    set(RANGELIBC_FOUND FALSE)
+    # Try to find it manually if the package approach fails
+    message(STATUS "Package approach failed, trying manual search...")
+    
+    find_path(RANGELIBC_INCLUDE_DIR 
+        NAMES RangeLib.h
+        PATHS /usr/local/include/range_libc
+        DOC "RangeLibc include directory"
+    )
+    
+    find_library(RANGELIBC_LIBRARY
+        NAMES range_libc
+        PATHS /usr/local/lib
+        DOC "RangeLibc library"
+    )
+    
+    if(RANGELIBC_INCLUDE_DIR AND RANGELIBC_LIBRARY)
+        message(STATUS "Found RangeLibc manually: ${RANGELIBC_LIBRARY}")
+        set(RANGELIBC_FOUND TRUE)
+        add_definitions(-DUSE_RANGELIBC)
+    else()
+        message(WARNING "RangeLibc not found. Ray casting will use slower fallback implementation.")
+        set(RANGELIBC_FOUND FALSE)
+    endif()
 endif()
 
 # Include directories
 include_directories(include)
-if(RANGELIBC_FOUND)
-    include_directories(${RANGELIBC_INCLUDE_DIR})
-endif()
+# RangeLibc includes are handled automatically by the target_link_libraries() with range_libc::range_libc
 
 # Set dependencies list
 set(dependencies
@@ -103,8 +110,16 @@ ament_target_dependencies(particle_filter_node ${dependencies})
 
 # Link RangeLibc if found
 if(RANGELIBC_FOUND)
-    target_link_libraries(${PROJECT_NAME}_lib ${RANGELIBC_LIBRARY})
-    target_link_libraries(particle_filter_node ${RANGELIBC_LIBRARY})
+    if(range_libc_FOUND)
+        # Modern CMake target approach
+        target_link_libraries(${PROJECT_NAME}_lib range_libc::range_libc)
+        target_link_libraries(particle_filter_node range_libc::range_libc)
+    else()
+        # Manual approach - add include directories and link library
+        target_include_directories(${PROJECT_NAME}_lib PRIVATE ${RANGELIBC_INCLUDE_DIR})
+        target_link_libraries(${PROJECT_NAME}_lib ${RANGELIBC_LIBRARY})
+        target_link_libraries(particle_filter_node ${RANGELIBC_LIBRARY})
+    endif()
 endif()
 
 # Create component library for composition
