@@ -25,7 +25,7 @@ particle_filter:
     
     # Topic names
     scan_topic: "/scan"
-    # odom_topic: "/ego_racecar/odom"
+    odom_topic: "/ego_racecar/odom"
     
     
     # Publishing options
@@ -42,5 +42,5 @@ particle_filter:
     laser_frame: "laser"
     
     # Map configuration
-    # map_file: "levine.yaml"
-    map_file: "map_1753950572.yaml"
+    map_file: "levine.yaml"
+    # map_file: "map_1753950572.yaml"
