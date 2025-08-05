@@ -28,7 +28,7 @@ def generate_launch_description():
     
     odom_topic_arg = DeclareLaunchArgument(
         'odom_topic',
-        default_value='/ego_racecar/odom',  # Changed to match config file
+        default_value='/ego_racecar/odom',
         description='Odometry topic name'
     )
     
@@ -38,15 +38,9 @@ def generate_launch_description():
         description='Whether to launch RViz'
     )
     
-    config_file_arg = DeclareLaunchArgument(
-        'config_file',
-        default_value='localize.yaml',
-        description='Configuration file name'
-    )
-    
     # Paths
     config_file_path = PathJoinSubstitution([
-        pkg_share, 'config', LaunchConfiguration('config_file')
+        pkg_share, 'config', 'localize.yaml'
     ])
     
     map_file_path = PathJoinSubstitution([
@@ -82,18 +76,13 @@ def generate_launch_description():
         }]
     )
     
+    # Use the particle filter with config file
     particle_filter_node = Node(
         package='particle_filter_cpp',
         executable='particle_filter_node',
         name='particle_filter',
         output='screen',
-        parameters=[
-            config_file_path,
-            {
-                'scan_topic': LaunchConfiguration('scan_topic')
-                # Removed odom_topic override to use config file setting
-            }
-        ],
+        parameters=[config_file_path],
         remappings=[
             ('/scan', LaunchConfiguration('scan_topic')),
             ('/odom', LaunchConfiguration('odom_topic'))
@@ -115,7 +104,6 @@ def generate_launch_description():
         scan_topic_arg,
         odom_topic_arg,
         use_rviz_arg,
-        config_file_arg,
         
         # Nodes
         map_server_node,

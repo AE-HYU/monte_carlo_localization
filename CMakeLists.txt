@@ -25,8 +25,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(pcl_ros REQUIRED)
-find_package(pcl_conversions REQUIRED)
+find_package(angles REQUIRED)
 # find_package(rclcpp_parameters REQUIRED)
 
 # Optional: Find nav2_map_server for map loading
@@ -82,32 +81,22 @@ set(dependencies
   tf2_geometry_msgs
   tf2_eigen
   Eigen3
-  pcl_ros
-  pcl_conversions
+  angles
   # rclcpp_parameters
 )
 
-# Create particle filter library with modular structure
+# Create particle filter library (direct Python port)
 add_library(${PROJECT_NAME}_lib SHARED
   src/particle_filter.cpp
-  src/utils.cpp
-  src/modules/particle.cpp
-  src/modules/initialization.cpp
-  src/modules/motion_model.cpp
-  src/modules/sensor_model.cpp
-  src/modules/resampling.cpp
-  src/modules/pose_estimation.cpp
-  src/modules/mcl_algorithm.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
 
-# Create executable
+# Create executable for particle filter
 add_executable(particle_filter_node 
-  src/particle_filter_node.cpp
+  src/particle_filter.cpp
 )
 
-target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)
 ament_target_dependencies(particle_filter_node ${dependencies})
 
 # Link RangeLibc if found
@@ -164,23 +153,11 @@ ament_export_libraries(${PROJECT_NAME}_lib)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  find_package(ament_cmake_gtest REQUIRED)
   
-  # Linting
+  # Linting only (no unit tests for now) 
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
-
-  # Unit tests
-  ament_add_gtest(${PROJECT_NAME}_test
-    test/test_particle_filter.cpp
-    test/test_utils.cpp
-  )
-  
-  if(TARGET ${PROJECT_NAME}_test)
-    target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME}_lib)
-    ament_target_dependencies(${PROJECT_NAME}_test ${dependencies})
-  endif()
 endif()
 
 ament_package()

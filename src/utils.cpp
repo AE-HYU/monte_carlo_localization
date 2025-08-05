@@ -1,6 +1,4 @@
 #include "particle_filter_cpp/utils.hpp"
-#include "particle_filter_cpp/modules/particle.hpp"
-#include "particle_filter_cpp/particle_filter.hpp"
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <cmath>
