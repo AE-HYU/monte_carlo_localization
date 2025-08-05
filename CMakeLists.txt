@@ -32,8 +32,41 @@ find_package(rclcpp_parameters REQUIRED)
 # Optional: Find nav2_map_server for map loading
 find_package(nav2_map_server QUIET)
 
+# Find RangeLibc (external dependency)
+find_path(RANGELIBC_INCLUDE_DIR 
+    NAMES RangeLib.h
+    PATHS 
+        /usr/local/include/range_libc/includes
+        /usr/include/range_libc/includes
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../range_libc/includes
+        $ENV{HOME}/range_libc/includes
+    DOC "RangeLibc include directory"
+)
+
+find_library(RANGELIBC_LIBRARY
+    NAMES range_libc rangelibc
+    PATHS
+        /usr/local/lib
+        /usr/lib
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../range_libc/build
+        $ENV{HOME}/range_libc/build
+    DOC "RangeLibc library"
+)
+
+if(RANGELIBC_INCLUDE_DIR AND RANGELIBC_LIBRARY)
+    message(STATUS "Found RangeLibc: ${RANGELIBC_LIBRARY}")
+    set(RANGELIBC_FOUND TRUE)
+    add_definitions(-DUSE_RANGELIBC)
+else()
+    message(WARNING "RangeLibc not found. Ray casting will use slower fallback implementation.")
+    set(RANGELIBC_FOUND FALSE)
+endif()
+
 # Include directories
 include_directories(include)
+if(RANGELIBC_FOUND)
+    include_directories(${RANGELIBC_INCLUDE_DIR})
+endif()
 
 # Set dependencies list
 set(dependencies
@@ -69,6 +102,12 @@ add_executable(particle_filter_node
 
 target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)
 ament_target_dependencies(particle_filter_node ${dependencies})
+
+# Link RangeLibc if found
+if(RANGELIBC_FOUND)
+    target_link_libraries(${PROJECT_NAME}_lib ${RANGELIBC_LIBRARY})
+    target_link_libraries(particle_filter_node ${RANGELIBC_LIBRARY})
+endif()
 
 # Create component library for composition
 rclcpp_components_register_nodes(${PROJECT_NAME}_lib "particle_filter_cpp::ParticleFilter")
