@@ -3,7 +3,7 @@ particle_filter:
     # Particle filter parameters - match Python reference
     num_particles: 4000
     max_viz_particles: 60
-    max_range: 10.0
+    max_range: 5.0
     
     # Motion model noise parameters - match Python reference
     motion_dispersion_x: 0.05      # Python value
@@ -25,7 +25,8 @@ particle_filter:
     
     # Topic names
     scan_topic: "/scan"
-    odom_topic: "/ego_racecar/odom"
+    # odom_topic: "/ego_racecar/odom"
+    
     
     # Publishing options
     publish_odom: true
@@ -39,3 +40,7 @@ particle_filter:
     map_frame: "map"
     base_frame: "base_link"
     laser_frame: "laser"
+    
+    # Map configuration
+    # map_file: "levine.yaml"
+    map_file: "map_1753950572.yaml"

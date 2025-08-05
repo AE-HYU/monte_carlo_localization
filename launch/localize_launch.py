@@ -8,15 +8,24 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 import os
+import yaml
 
 def generate_launch_description():
     # Package directories
     pkg_share = FindPackageShare('particle_filter_cpp')
     
+    # Read config file to get map file
+    config_path = os.path.join(get_package_share_directory('particle_filter_cpp'), 'config', 'localize.yaml')
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Get map file from config, fallback to default
+    map_file_from_config = config.get('particle_filter', {}).get('ros__parameters', {}).get('map_file', 'levine.yaml')
+    
     # Launch arguments
     map_file_arg = DeclareLaunchArgument(
         'map_file',
-        default_value='levine.yaml',
+        default_value=map_file_from_config,
         description='Map file to load (without path)'
     )
     
