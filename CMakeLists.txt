@@ -87,10 +87,17 @@ set(dependencies
   rclcpp_parameters
 )
 
-# Create particle filter library
+# Create particle filter library with modular structure
 add_library(${PROJECT_NAME}_lib SHARED
   src/particle_filter.cpp
   src/utils.cpp
+  src/modules/particle.cpp
+  src/modules/initialization.cpp
+  src/modules/motion_model.cpp
+  src/modules/sensor_model.cpp
+  src/modules/resampling.cpp
+  src/modules/pose_estimation.cpp
+  src/modules/mcl_algorithm.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
