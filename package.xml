@@ -3,24 +3,51 @@
 <package format="3">
   <name>particle_filter_cpp</name>
   <version>0.0.0</version>
-  <description>: Particle Filter Localization with C++</description>
+  <description>C++ Particle Filter for Robot Localization using Monte Carlo Localization</description>
   <maintainer email="journeyofbabo@gmail.com">Jisang Yun</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <!-- Core ROS 2 -->
   <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  
+  <!-- Message types -->
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>visualization_msgs</depend>
+  
+  <!-- Transforms -->
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_eigen</depend>
+  
+  <!-- Math/Utility libraries -->
+  <depend>eigen3_cmake_module</depend>
+  <depend>Eigen3</depend>
+  
+  <!-- Map server for occupancy grids -->
+  <build_depend>nav2_map_server</build_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  
+  <!-- Optional for point cloud processing -->
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  
+  <!-- For parameter handling -->
+  <depend>rclcpp_parameters</depend>
+  
+  <!-- For launch files -->
+  <build_depend>launch_ros</build_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
