@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.event_handlers import OnProcessStart
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
@@ -37,7 +37,7 @@ def generate_launch_description():
     
     odom_topic_arg = DeclareLaunchArgument(
         'odom_topic',
-        default_value='/ego_racecar/odom',
+        default_value='/odom',
         description='Odometry topic name'
     )
     
@@ -45,6 +45,13 @@ def generate_launch_description():
         'use_rviz',
         default_value='true',
         description='Whether to launch RViz'
+    )
+    
+    # Add use_sim_time argument
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use simulation time'
     )
     
     # Paths
@@ -60,17 +67,25 @@ def generate_launch_description():
         pkg_share, 'rviz', 'particle_filter.rviz'
     ])
     
+    # Common parameters for all nodes
+    common_params = {
+        'use_sim_time': LaunchConfiguration('use_sim_time')
+    }
+    
     # Nodes
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
         name='map_server',
         output='screen',
-        parameters=[{
-            'yaml_filename': map_file_path,
-            'topic_name': 'map',
-            'frame_id': 'map'
-        }]
+        parameters=[
+            common_params,  # Add use_sim_time
+            {
+                'yaml_filename': map_file_path,
+                'topic_name': 'map',
+                'frame_id': 'map'
+            }
+        ]
     )
     
     map_server_lifecycle = Node(
@@ -78,11 +93,13 @@ def generate_launch_description():
         executable='lifecycle_manager',
         name='lifecycle_manager_mapper',
         output='screen',
-        parameters=[{
-            'use_sim_time': False,
-            'autostart': True,
-            'node_names': ['map_server']
-        }]
+        parameters=[
+            common_params,  # Add use_sim_time (changed from False)
+            {
+                'autostart': True,
+                'node_names': ['map_server']
+            }
+        ]
     )
     
     # Use the particle filter with config file
@@ -91,7 +108,10 @@ def generate_launch_description():
         executable='particle_filter_node',
         name='particle_filter',
         output='screen',
-        parameters=[config_file_path],
+        parameters=[
+            config_file_path,
+            common_params  # Add use_sim_time
+        ],
         remappings=[
             ('/scan', LaunchConfiguration('scan_topic')),
             ('/odom', LaunchConfiguration('odom_topic'))
@@ -104,7 +124,8 @@ def generate_launch_description():
         name='rviz2',
         arguments=['-d', rviz_config_path],
         condition=IfCondition(LaunchConfiguration('use_rviz')),
-        output='screen'
+        output='screen',
+        parameters=[common_params]  # Add use_sim_time
     )
     
     return LaunchDescription([
@@ -113,10 +134,35 @@ def generate_launch_description():
         scan_topic_arg,
         odom_topic_arg,
         use_rviz_arg,
+        use_sim_time_arg,  # Add new argument
         
-        # Nodes
+        # Nodes - Start map server and lifecycle manager first
         map_server_node,
         map_server_lifecycle,
-        particle_filter_node,
-        rviz_node
+        
+        # Start particle filter after lifecycle manager starts
+        RegisterEventHandler(
+            OnProcessStart(
+                target_action=map_server_lifecycle,
+                on_start=[
+                    TimerAction(
+                        period=5.0,
+                        actions=[particle_filter_node]
+                    )
+                ]
+            )
+        ),
+        
+        # Start RViz after particle filter
+        RegisterEventHandler(
+            OnProcessStart(
+                target_action=particle_filter_node,
+                on_start=[
+                    TimerAction(
+                        period=5.0,
+                        actions=[rviz_node]
+                    )
+                ]
+            )
+        )
     ])
