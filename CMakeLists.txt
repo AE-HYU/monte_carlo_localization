@@ -88,6 +88,7 @@ set(dependencies
 # Create particle filter library (direct Python port)
 add_library(${PROJECT_NAME}_lib SHARED
   src/particle_filter.cpp
+  src/utils.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
@@ -97,6 +98,7 @@ add_executable(particle_filter_node
   src/particle_filter.cpp
 )
 
+target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)
 ament_target_dependencies(particle_filter_node ${dependencies})
 
 # Link RangeLibc if found

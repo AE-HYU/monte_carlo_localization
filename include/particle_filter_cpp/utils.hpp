@@ -1,7 +1,7 @@
 #ifndef PARTICLE_FILTER_CPP__UTILS_HPP_
 #define PARTICLE_FILTER_CPP__UTILS_HPP_
 
-#include <eigen3/Eigen/Dense>
+#include <Eigen/Dense>
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -13,16 +13,10 @@
 
 namespace particle_filter_cpp
 {
-
-// Forward declaration - use the modules version
-namespace modules {
-    struct Particle;
-}
-
 namespace utils
 {
 
-// Angle and quaternion utilities
+// Quaternion/angle conversion utilities  
 double quaternion_to_yaw(const geometry_msgs::msg::Quaternion& q);
 geometry_msgs::msg::Quaternion yaw_to_quaternion(double yaw);
 double normalize_angle(double angle);
@@ -31,31 +25,13 @@ double normalize_angle(double angle);
 Eigen::Vector3d map_to_world(const Eigen::Vector3d& map_coord, const nav_msgs::msg::MapMetaData& map_info);
 Eigen::Vector3d world_to_map(const Eigen::Vector3d& world_coord, const nav_msgs::msg::MapMetaData& map_info);
 
-// Map utilities
-bool is_valid_point(const Eigen::Vector2d& point, const nav_msgs::msg::OccupancyGrid& map);
-double get_map_value(const Eigen::Vector2d& point, const nav_msgs::msg::OccupancyGrid& map);
-std::vector<Eigen::Vector2d> get_free_space_points(const nav_msgs::msg::OccupancyGrid& map);
+// ROS message utilities for particles
+geometry_msgs::msg::PoseArray particles_to_pose_array(const Eigen::MatrixXd& particles);
+geometry_msgs::msg::Pose eigen_to_pose(const Eigen::Vector3d& pose_vec);
 
-// Particle utilities
-geometry_msgs::msg::PoseArray particles_to_pose_array(const std::vector<modules::Particle>& particles);
-geometry_msgs::msg::Pose particle_to_pose(const modules::Particle& particle);
-std::vector<modules::Particle> pose_array_to_particles(const geometry_msgs::msg::PoseArray& pose_array);
-
-// Statistical utilities
-std::vector<double> normalize_weights(const std::vector<double>& weights);
-double compute_effective_sample_size(const std::vector<double>& weights);
-std::vector<int> systematic_resampling(const std::vector<double>& weights, int num_samples);
-std::vector<int> low_variance_resampling(const std::vector<double>& weights, int num_samples);
-
-// Random number generation utilities
-std::vector<double> generate_gaussian_noise(int count, double mean, double std_dev, std::mt19937& gen);
-std::vector<double> generate_uniform_noise(int count, double min, double max, std::mt19937& gen);
-
-// Ray casting utilities
-double cast_ray(const Eigen::Vector2d& start, double angle, double max_range, 
-                const nav_msgs::msg::OccupancyGrid& map);
-std::vector<double> cast_rays(const Eigen::Vector3d& pose, const std::vector<double>& angles,
-                              double max_range, const nav_msgs::msg::OccupancyGrid& map);
+// Matrix utilities
+Eigen::Matrix2d rotation_matrix(double angle);
+void map_to_world_inplace(Eigen::MatrixXd& poses, const nav_msgs::msg::MapMetaData& map_info);
 
 // Timer utility class
 class Timer

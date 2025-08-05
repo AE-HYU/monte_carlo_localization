@@ -1,4 +1,5 @@
 #include "particle_filter_cpp/particle_filter.hpp"
+#include "particle_filter_cpp/utils.hpp"
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/polygon_stamped.hpp>
@@ -621,42 +622,25 @@ void ParticleFilter::visualize()
 
 void ParticleFilter::publish_particles(const Eigen::MatrixXd& particles_to_pub)
 {
-    geometry_msgs::msg::PoseArray pa;
+    auto pa = utils::particles_to_pose_array(particles_to_pub);
     pa.header.stamp = this->get_clock()->now();
     pa.header.frame_id = "/map";
-    
-    for (int i = 0; i < particles_to_pub.rows(); ++i) {
-        geometry_msgs::msg::Pose pose;
-        pose.position.x = particles_to_pub(i, 0);
-        pose.position.y = particles_to_pub(i, 1);
-        pose.orientation = angle_to_quaternion(particles_to_pub(i, 2));
-        pa.poses.push_back(pose);
-    }
-    
     particle_pub_->publish(pa);
 }
 
 double ParticleFilter::quaternion_to_angle(const geometry_msgs::msg::Quaternion& q)
 {
-    tf2::Quaternion tf_q(q.x, q.y, q.z, q.w);
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
-    return yaw;
+    return utils::quaternion_to_yaw(q);
 }
 
 geometry_msgs::msg::Quaternion ParticleFilter::angle_to_quaternion(double angle)
 {
-    tf2::Quaternion q;
-    q.setRPY(0, 0, angle);
-    return tf2::toMsg(q);
+    return utils::yaw_to_quaternion(angle);
 }
 
 Eigen::Matrix2d ParticleFilter::rotation_matrix(double angle)
 {
-    Eigen::Matrix2d rot;
-    rot << std::cos(angle), -std::sin(angle),
-           std::sin(angle),  std::cos(angle);
-    return rot;
+    return utils::rotation_matrix(angle);
 }
 
 } // namespace particle_filter_cpp
