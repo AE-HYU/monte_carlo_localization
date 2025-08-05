@@ -119,7 +119,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Get the map
     get_omap();
-    precompute_sensor_model();
     initialize_global();
 
     RCLCPP_INFO(this->get_logger(), "Finished initializing, waiting on messages...");
@@ -171,6 +170,9 @@ void ParticleFilter::get_omap()
 
         map_initialized_ = true;
         RCLCPP_INFO(this->get_logger(), "Done loading map");
+
+        // Now that map is loaded, precompute sensor model
+        precompute_sensor_model();
     }
     else
     {
@@ -182,7 +184,25 @@ void ParticleFilter::precompute_sensor_model()
 {
     RCLCPP_INFO(this->get_logger(), "Precomputing sensor model");
 
+    // Safety check for map resolution
+    if (map_resolution_ <= 0.0) {
+        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f. Cannot precompute sensor model.", map_resolution_);
+        return;
+    }
+
     int table_width = MAX_RANGE_PX + 1;
+    RCLCPP_INFO(this->get_logger(), "MAX_RANGE_METERS: %.2f, map_resolution_: %.6f", MAX_RANGE_METERS, map_resolution_);
+    RCLCPP_INFO(this->get_logger(), "MAX_RANGE_PX: %d, table_width: %d", MAX_RANGE_PX, table_width);
+    
+    // Safety check for reasonable table size
+    if (table_width <= 0 || table_width > 10000) {
+        RCLCPP_ERROR(this->get_logger(), "Invalid table_width: %d. Cannot allocate sensor model table.", table_width);
+        return;
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "Attempting to allocate %dx%d matrix (%zu MB)", table_width, table_width,
+                (table_width * table_width * sizeof(double)) / (1024 * 1024));
+
     sensor_model_table_ = Eigen::MatrixXd::Zero(table_width, table_width);
 
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -611,7 +631,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     geometry_msgs::msg::TransformStamped t;
     t.header.stamp = stamp.nanoseconds() > 0 ? stamp : this->get_clock()->now();
     t.header.frame_id = "/map";
-    t.child_frame_id = "/laser";
+    t.child_frame_id = "/odom";
     t.transform.translation.x = pose[0];
     t.transform.translation.y = pose[1];
     t.transform.translation.z = 0.0;
