@@ -31,48 +31,8 @@ find_package(angles REQUIRED)
 # Optional: Find nav2_map_server for map loading
 find_package(nav2_map_server QUIET)
 
-# Find RangeLibc (external dependency) - Debug and find approach
-# Add multiple search paths for RangeLibc
-list(APPEND CMAKE_PREFIX_PATH "/usr/local" "/usr/local/share")
-
-# Debug: Show what CMake is searching
-message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
-
-find_package(range_libc QUIET)
-
-if(range_libc_FOUND)
-    message(STATUS "Found RangeLibc: using optimized ray casting from ${range_libc_DIR}")
-    set(RANGELIBC_FOUND TRUE)
-    add_definitions(-DUSE_RANGELIBC)
-else()
-    # Try to find it manually if the package approach fails
-    message(STATUS "Package approach failed, trying manual search...")
-    
-    find_path(RANGELIBC_INCLUDE_DIR 
-        NAMES RangeLib.h
-        PATHS /usr/local/include/range_libc
-        DOC "RangeLibc include directory"
-    )
-    
-    find_library(RANGELIBC_LIBRARY
-        NAMES range_libc
-        PATHS /usr/local/lib
-        DOC "RangeLibc library"
-    )
-    
-    if(RANGELIBC_INCLUDE_DIR AND RANGELIBC_LIBRARY)
-        message(STATUS "Found RangeLibc manually: ${RANGELIBC_LIBRARY}")
-        set(RANGELIBC_FOUND TRUE)
-        add_definitions(-DUSE_RANGELIBC)
-    else()
-        message(WARNING "RangeLibc not found. Ray casting will use slower fallback implementation.")
-        set(RANGELIBC_FOUND FALSE)
-    endif()
-endif()
-
 # Include directories
 include_directories(include)
-# RangeLibc includes are handled automatically by the target_link_libraries() with range_libc::range_libc
 
 # Set dependencies list
 set(dependencies
@@ -108,19 +68,7 @@ add_executable(particle_filter_node
 target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)
 ament_target_dependencies(particle_filter_node ${dependencies})
 
-# Link RangeLibc if found
-if(RANGELIBC_FOUND)
-    if(range_libc_FOUND)
-        # Modern CMake target approach
-        target_link_libraries(${PROJECT_NAME}_lib range_libc::range_libc)
-        target_link_libraries(particle_filter_node range_libc::range_libc)
-    else()
-        # Manual approach - add include directories and link library
-        target_include_directories(${PROJECT_NAME}_lib PRIVATE ${RANGELIBC_INCLUDE_DIR})
-        target_link_libraries(${PROJECT_NAME}_lib ${RANGELIBC_LIBRARY})
-        target_link_libraries(particle_filter_node ${RANGELIBC_LIBRARY})
-    endif()
-endif()
+# No external ray casting library - using built-in implementation
 
 # Create component library for composition
 rclcpp_components_register_nodes(${PROJECT_NAME}_lib "particle_filter_cpp::ParticleFilter")
