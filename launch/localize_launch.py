@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from ament_index_python.packages import get_package_share_directory
+import os
+import yaml
 
 
 def generate_launch_description():
     # Package directory
     pkg_share = FindPackageShare('particle_filter_cpp')
     
+    # Read config file to get map name (like Python version)
+    config_file = os.path.join(
+        get_package_share_directory('particle_filter_cpp'),
+        'config',
+        'localize.yaml'
+    )
+    config_dict = yaml.safe_load(open(config_file, 'r'))
+    map_name = config_dict['map_server']['ros__parameters']['map']
+    
     # Launch arguments
-    map_file_arg = DeclareLaunchArgument(
-        'map_file',
-        default_value='levine.yaml',
-        description='Map file to load (without path)'
+    map_name_arg = DeclareLaunchArgument(
+        'map_name',
+        default_value=map_name,
+        description='Map name (without .yaml extension, e.g., levine, map_1753950572, Spielberg_map)'
     )
     
     scan_topic_arg = DeclareLaunchArgument(
@@ -44,8 +56,8 @@ def generate_launch_description():
     )
     
     # File paths
-    config_file = PathJoinSubstitution([pkg_share, 'config', 'localize.yaml'])
-    map_file = PathJoinSubstitution([pkg_share, 'maps', LaunchConfiguration('map_file')])
+    config_file_path = PathJoinSubstitution([pkg_share, 'config', 'localize.yaml'])
+    map_file = PathJoinSubstitution([pkg_share, 'maps', PythonExpression(['"', LaunchConfiguration('map_name'), '"', ' + ".yaml"'])])
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
     
     # Common parameters
@@ -78,16 +90,21 @@ def generate_launch_description():
         ]
     )
     
-    # Particle filter node
-    particle_filter_node = Node(
-        package='particle_filter_cpp',
-        executable='particle_filter_node',
-        name='particle_filter',
-        output='screen',
-        parameters=[config_file, common_params],
-        remappings=[
-            ('/scan', LaunchConfiguration('scan_topic')),
-            ('/odom', LaunchConfiguration('odom_topic'))
+    # Particle filter node (delayed to ensure map server is ready)
+    particle_filter_node = TimerAction(
+        period=2.0,
+        actions=[
+            Node(
+                package='particle_filter_cpp',
+                executable='particle_filter_node',
+                name='particle_filter',
+                output='screen',
+                parameters=[config_file_path, common_params],
+                remappings=[
+                    ('/scan', LaunchConfiguration('scan_topic')),
+                    ('/odom', LaunchConfiguration('odom_topic'))
+                ]
+            )
         ]
     )
     
@@ -104,7 +121,7 @@ def generate_launch_description():
     
     return LaunchDescription([
         # Launch arguments
-        map_file_arg,
+        map_name_arg,
         scan_topic_arg,
         odom_topic_arg,
         use_rviz_arg,
