@@ -17,11 +17,11 @@ particle_filter:
     z_rand: 0.12     # Weight for random measurements
     sigma_hit: 8.0   # Standard deviation for hit measurements
     
-    # RangeLibc parameters
-    range_method: "cddt"        # Options: bl, rm, rmgpu, cddt, pcddt, glt
-    theta_discretization: 112   # Number of discrete angles for lookup table methods
-    angle_step: 18              # Downsampling parameter
-    squash_factor: 2.2         # Sensor model parameter
+    # Ray-casting parameters
+    range_method: "cddt"        # (unused) Ray-casting method
+    theta_discretization: 112   # (unused) Ray-casting angle discretization
+    angle_step: 18              # Laser scan downsampling step size
+    squash_factor: 2.2          # Sensor model parameter for weight normalization
     
     # Topic names
     scan_topic: "/scan"
