@@ -15,8 +15,9 @@ def generate_launch_description():
     # Package directory
     pkg_share = FindPackageShare('particle_filter_cpp')
     
-    # Read config file to get map name 
-    config_file = os.path.join(
+    # Read config file to get map name - use source config file directly
+    src_config_file = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize.yaml')
+    config_file = src_config_file if os.path.exists(src_config_file) else os.path.join(
         get_package_share_directory('particle_filter_cpp'),
         'config',
         'localize.yaml'
@@ -55,8 +56,9 @@ def generate_launch_description():
         description='Use simulation time'
     )
     
-    # File paths
-    config_file_path = PathJoinSubstitution([pkg_share, 'config', 'localize.yaml'])
+    # File paths - use source config file directly
+    src_config_path = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize.yaml')
+    config_file_path = src_config_path if os.path.exists(src_config_path) else PathJoinSubstitution([pkg_share, 'config', 'localize.yaml'])
     map_file = PathJoinSubstitution([pkg_share, 'maps', PythonExpression(['"', LaunchConfiguration('map_name'), '"', ' + ".yaml"'])])
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
     
