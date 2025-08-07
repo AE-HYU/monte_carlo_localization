@@ -15,7 +15,7 @@ namespace particle_filter_cpp
 ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), uniform_dist_(0.0, 1.0), normal_dist_(0.0, 1.0)
 {
-    // Declare parameters with default values from Python implementation
+    // Declare parameters
     this->declare_parameter("angle_step", 18);
     this->declare_parameter("max_particles", 4000);
     this->declare_parameter("max_viz_particles", 60);
@@ -185,21 +185,24 @@ void ParticleFilter::precompute_sensor_model()
     RCLCPP_INFO(this->get_logger(), "Precomputing sensor model");
 
     // Safety check for map resolution
-    if (map_resolution_ <= 0.0) {
-        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f. Cannot precompute sensor model.", map_resolution_);
+    if (map_resolution_ <= 0.0)
+    {
+        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f. Cannot precompute sensor model.",
+                     map_resolution_);
         return;
     }
 
     int table_width = MAX_RANGE_PX + 1;
     RCLCPP_INFO(this->get_logger(), "MAX_RANGE_METERS: %.2f, map_resolution_: %.6f", MAX_RANGE_METERS, map_resolution_);
     RCLCPP_INFO(this->get_logger(), "MAX_RANGE_PX: %d, table_width: %d", MAX_RANGE_PX, table_width);
-    
+
     // Safety check for reasonable table size
-    if (table_width <= 0 || table_width > 10000) {
+    if (table_width <= 0 || table_width > 10000)
+    {
         RCLCPP_ERROR(this->get_logger(), "Invalid table_width: %d. Cannot allocate sensor model table.", table_width);
         return;
     }
-    
+
     RCLCPP_INFO(this->get_logger(), "Attempting to allocate %dx%d matrix (%zu MB)", table_width, table_width,
                 (table_width * table_width * sizeof(double)) / (1024 * 1024));
 
@@ -316,7 +319,7 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         last_pose_ = position;
     }
 
-    // Update on odometry (like Python version)
+    // Update on odometry
     update();
 }
 
@@ -400,7 +403,7 @@ void ParticleFilter::initialize_global()
 
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
-    // Vectorized motion model like Python version
+    // Vectorized motion model
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         double cos_theta = std::cos(proposal_dist(i, 2));

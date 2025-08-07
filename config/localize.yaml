@@ -1,14 +1,14 @@
 particle_filter:
   ros__parameters:
-    # Particle filter parameters - match Python reference
+    # Particle filter parameters 
     num_particles: 4000
     max_viz_particles: 60
     max_range: 5.0
     
-    # Motion model noise parameters - match Python reference
-    motion_dispersion_x: 0.05      # Python value
-    motion_dispersion_y: 0.025     # Python value
-    motion_dispersion_theta: 0.25  # Python value
+    # Motion model noise parameters 
+    motion_dispersion_x: 0.05      
+    motion_dispersion_y: 0.025    
+    motion_dispersion_theta: 0.25 
     
     # Sensor model parameters
     z_hit: 0.75      # Weight for correct range measurements
@@ -33,7 +33,7 @@ particle_filter:
     publish_odom: true
     viz: true
     
-    # Update thresholds - disable like Python version
+    # Update thresholds 
     update_min_distance: 0.0
     update_min_angle: 0.0
     

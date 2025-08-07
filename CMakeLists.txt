@@ -52,7 +52,7 @@ set(dependencies
   # rclcpp_parameters
 )
 
-# Create particle filter library (direct Python port)
+# Create particle filter library 
 add_library(${PROJECT_NAME}_lib SHARED
   src/particle_filter.cpp
   src/utils.cpp

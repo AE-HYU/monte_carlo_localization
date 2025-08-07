@@ -15,7 +15,7 @@ def generate_launch_description():
     # Package directory
     pkg_share = FindPackageShare('particle_filter_cpp')
     
-    # Read config file to get map name (like Python version)
+    # Read config file to get map name 
     config_file = os.path.join(
         get_package_share_directory('particle_filter_cpp'),
         'config',

@@ -1,6 +1,6 @@
 # Particle Filter C++ 
 
-High-performance Monte Carlo Localization (MCL) for robot navigation. Direct C++ port of the working Python implementation with optimizations.
+High-performance Monte Carlo Localization (MCL) for robot navigation. 
 
 ## Quick Start
 
@@ -65,7 +65,7 @@ Particles → Motion Model → Sensor Model → Resampling → Pose Estimate
 
 ```cpp
 class ParticleFilter {
-    // Core MCL algorithm (direct from Python)
+    // Core MCL algorithm 
     void MCL(action, observation);
     void motion_model(particles, action);     // Add noise to particle motion
     void sensor_model(particles, scan);       // Weight by scan likelihood
@@ -90,7 +90,6 @@ class ParticleFilter {
 
 ## Implementation Notes
 
-- **Direct Python Port**: Preserves exact algorithm from working Python version
 - **Vectorized Operations**: Uses Eigen for fast matrix operations  
 - **Pre-computed Sensor Model**: Lookup table for fast likelihood computation
 - **Simple Ray Casting**: Basic implementation (RangeLibc optional for speed)
