@@ -64,7 +64,6 @@ class ParticleFilter : public rclcpp::Node
     void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);  // TF + odom
     void visualize();                                                        // RViz displays
     void publish_particles(const Eigen::MatrixXd &particles_to_pub);         // Particle cloud
-    void publish_scan(const std::vector<float> &angles, const std::vector<float> &ranges);  // Debug scan
 
     // --------------------------------- UTILITY FUNCTIONS ---------------------------------
     double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);    // Quaternion → yaw
@@ -132,9 +131,6 @@ class ParticleFilter : public rclcpp::Node
     std::vector<float> ranges_;       // [N×K×1] ray casting results
     std::vector<float> tiled_angles_; // [N×K×1] angle array for all particles
 
-    // --------------------------------- VISUALIZATION CACHE ---------------------------------
-    Eigen::MatrixXd viz_queries_;  // Visualization ray queries
-    std::vector<float> viz_ranges_; // Visualization ray results
 
     // --------------------------------- ROS2 INTERFACES ---------------------------------
     // Subscribers
@@ -147,8 +143,6 @@ class ParticleFilter : public rclcpp::Node
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr particle_pub_;    // Particle cloud
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;      // Pose estimate
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;             // Navigation odom
-    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr pub_fake_scan_;     // Debug scan
-    rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr rect_pub_;   // Debug shapes
 
     // Services and TF
     rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;        // Map service client
