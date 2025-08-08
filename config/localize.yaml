@@ -8,7 +8,12 @@ particle_filter:
     # Motion model noise parameters 
     motion_dispersion_x: 0.05          # Motion noise in x-direction (meters)
     motion_dispersion_y: 0.025         # Motion noise in y-direction (meters)
-    motion_dispersion_theta: 0.25      # Motion noise in rotation (radians) 
+    motion_dispersion_theta: 0.25      # Motion noise in rotation (radians)
+    
+    # Robot geometry and sensor mounting
+    lidar_offset_x: 0.288              # LiDAR X offset from base_link (meters) - 288mm forward from rear wheel
+    lidar_offset_y: 0.0                # LiDAR Y offset from base_link (meters) - centered laterally
+    wheelbase: 0.324                   # Distance between front and rear wheels (meters) 
     
     # Sensor model parameters
     z_hit: 0.75      # Weight for correct range measurements
@@ -20,8 +25,12 @@ particle_filter:
     # Ray-casting parameters
     range_method: "cddt"        # (unused) Ray-casting method
     theta_discretization: 112   # (unused) Ray-casting angle discretization
+    rangelib_variant: 2         # (unused) Ray-casting library variant
     angle_step: 18              # Laser scan downsampling step size
     squash_factor: 2.2          # Sensor model parameter for weight normalization
+    
+    # Performance and debugging
+    fine_timing: 0              # Enable detailed timing output (0=false, 1=true)
     
     # Topic names
     scan_topic: "/scan"                # LaserScan topic for sensor updates

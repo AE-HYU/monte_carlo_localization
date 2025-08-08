@@ -71,6 +71,7 @@ class ParticleFilter : public rclcpp::Node
     geometry_msgs::msg::Quaternion angle_to_quaternion(double angle);       // Yaw → quaternion
     void map_to_world(Eigen::MatrixXd &poses);                             // Coordinate transform
     Eigen::Matrix2d rotation_matrix(double angle);                         // 2D rotation matrix
+    Eigen::Vector2d transform_to_lidar_frame(const Eigen::Vector3d &base_pose);  // base_link → LiDAR transform
 
     // --------------------------------- RAY CASTING ---------------------------------
     std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);  // Batch processing
@@ -94,6 +95,10 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- MOTION MODEL PARAMETERS ---------------------------------
     double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;  // Process noise σ
+
+    // --------------------------------- SENSOR FRAME PARAMETERS ---------------------------------
+    double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;  // LiDAR position relative to base_link [m]
+    double WHEELBASE;                        // Distance between front and rear wheels [m]
 
     // --------------------------------- PARTICLE FILTER STATE ---------------------------------
     Eigen::MatrixXd particles_;    // [N×3] particle states [x, y, θ]

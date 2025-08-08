@@ -26,28 +26,31 @@ namespace particle_filter_cpp
 ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), uniform_dist_(0.0, 1.0), normal_dist_(0.0, 1.0)
 {
-    // ROS2 parameter declarations with defaults
-    this->declare_parameter("angle_step", 18);
-    this->declare_parameter("max_particles", 4000);
-    this->declare_parameter("max_viz_particles", 60);
-    this->declare_parameter("squash_factor", 2.2);
-    this->declare_parameter("max_range", 10.0);
-    this->declare_parameter("theta_discretization", 112);
-    this->declare_parameter("range_method", "rmgpu");
-    this->declare_parameter("rangelib_variant", 2);
-    this->declare_parameter("fine_timing", 0);
-    this->declare_parameter("publish_odom", true);
-    this->declare_parameter("viz", true);
-    this->declare_parameter("z_short", 0.01);
-    this->declare_parameter("z_max", 0.07);
-    this->declare_parameter("z_rand", 0.12);
-    this->declare_parameter("z_hit", 0.75);
-    this->declare_parameter("sigma_hit", 8.0);
-    this->declare_parameter("motion_dispersion_x", 0.05);
-    this->declare_parameter("motion_dispersion_y", 0.025);
-    this->declare_parameter("motion_dispersion_theta", 0.25);
-    this->declare_parameter("scan_topic", "/scan");
-    this->declare_parameter("odom_topic", "/odom");
+    // ROS2 parameter declarations (defaults loaded from config file)
+    this->declare_parameter("angle_step");
+    this->declare_parameter("max_particles");
+    this->declare_parameter("max_viz_particles");
+    this->declare_parameter("squash_factor");
+    this->declare_parameter("max_range");
+    this->declare_parameter("theta_discretization");
+    this->declare_parameter("range_method");
+    this->declare_parameter("rangelib_variant");
+    this->declare_parameter("fine_timing");
+    this->declare_parameter("publish_odom");
+    this->declare_parameter("viz");
+    this->declare_parameter("z_short");
+    this->declare_parameter("z_max");
+    this->declare_parameter("z_rand");
+    this->declare_parameter("z_hit");
+    this->declare_parameter("sigma_hit");
+    this->declare_parameter("motion_dispersion_x");
+    this->declare_parameter("motion_dispersion_y");
+    this->declare_parameter("motion_dispersion_theta");
+    this->declare_parameter("lidar_offset_x");
+    this->declare_parameter("lidar_offset_y");
+    this->declare_parameter("wheelbase");
+    this->declare_parameter("scan_topic");
+    this->declare_parameter("odom_topic");
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -73,6 +76,11 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     MOTION_DISPERSION_X = this->get_parameter("motion_dispersion_x").as_double();
     MOTION_DISPERSION_Y = this->get_parameter("motion_dispersion_y").as_double();
     MOTION_DISPERSION_THETA = this->get_parameter("motion_dispersion_theta").as_double();
+
+    // LiDAR sensor frame offset and robot geometry
+    LIDAR_OFFSET_X = this->get_parameter("lidar_offset_x").as_double();
+    LIDAR_OFFSET_Y = this->get_parameter("lidar_offset_y").as_double();
+    WHEELBASE = this->get_parameter("wheelbase").as_double();
 
     // System state initialization
     MAX_RANGE_PX = 0;
@@ -460,15 +468,18 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
         first_sensor_update_ = false;
     }
 
-    // Generate ray queries: (particle_pos + ray_angle) for each particle×ray pair
+    // Generate ray queries: transform base_link pose to LiDAR frame
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
+        // Transform particle pose from base_link to LiDAR world position
+        Eigen::Vector2d lidar_world_pos = transform_to_lidar_frame(proposal_dist.row(i).transpose());
+        
         for (int j = 0; j < num_rays; ++j)
         {
             int idx = i * num_rays + j;
-            queries_(idx, 0) = proposal_dist(i, 0);
-            queries_(idx, 1) = proposal_dist(i, 1);
-            queries_(idx, 2) = proposal_dist(i, 2) + downsampled_angles_[j];
+            queries_(idx, 0) = lidar_world_pos[0];  // LiDAR X position in world frame
+            queries_(idx, 1) = lidar_world_pos[1];  // LiDAR Y position in world frame
+            queries_(idx, 2) = proposal_dist(i, 2) + downsampled_angles_[j];  // Ray angle from LiDAR
         }
     }
 
@@ -739,6 +750,16 @@ geometry_msgs::msg::Quaternion ParticleFilter::angle_to_quaternion(double angle)
 Eigen::Matrix2d ParticleFilter::rotation_matrix(double angle)
 {
     return utils::rotation_matrix(angle);
+}
+
+Eigen::Vector2d ParticleFilter::transform_to_lidar_frame(const Eigen::Vector3d &base_pose)
+{
+    // Transform LiDAR offset from base_link to world coordinates
+    double cos_theta = std::cos(base_pose[2]);
+    double sin_theta = std::sin(base_pose[2]);
+    double lidar_world_x = base_pose[0] + cos_theta * LIDAR_OFFSET_X - sin_theta * LIDAR_OFFSET_Y;
+    double lidar_world_y = base_pose[1] + sin_theta * LIDAR_OFFSET_X + cos_theta * LIDAR_OFFSET_Y;
+    return Eigen::Vector2d(lidar_world_x, lidar_world_y);
 }
 
 } // namespace particle_filter_cpp
