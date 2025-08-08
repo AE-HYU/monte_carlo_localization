@@ -1,5 +1,9 @@
-// Particle Filter Implementation - Monte Carlo Localization (MCL)
+// ================================================================================================
+// PARTICLE FILTER IMPLEMENTATION - Monte Carlo Localization (MCL)
+// ================================================================================================
+// Simplified version based on Python implementation
 // Features: Multinomial resampling, velocity motion model, beam sensor model, ray casting
+// ================================================================================================
 
 #include "particle_filter_cpp/particle_filter.hpp"
 #include "particle_filter_cpp/utils.hpp"
@@ -15,11 +19,11 @@
 namespace particle_filter_cpp
 {
 
-// ========== CONSTRUCTOR & INITIALIZATION ==========
+// --------------------------------- CONSTRUCTOR & INITIALIZATION ---------------------------------
 ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), uniform_dist_(0.0, 1.0), normal_dist_(0.0, 1.0)
 {
-    // ROS2 parameter declarations (defaults loaded from config file)
+    // ROS2 parameter declarations
     this->declare_parameter("angle_step", 18);
     this->declare_parameter("max_particles", 4000);
     this->declare_parameter("max_viz_particles", 60);
@@ -58,7 +62,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
     DO_VIZ = this->get_parameter("viz").as_bool();
 
-    // Sensor model parameters (Z_HIT + Z_SHORT + Z_MAX + Z_RAND = 1.0)
+    // 4-component sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
     Z_MAX = this->get_parameter("z_max").as_double();
     Z_RAND = this->get_parameter("z_rand").as_double();
@@ -84,11 +88,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_initialized_ = false;
     first_sensor_update_ = true;
     current_speed_ = 0.0;
-    
-    // Motion prediction and interpolation state
-    last_odom_time_ = rclcpp::Time(0);
-    predicted_pose_ = Eigen::Vector3d::Zero();
-    prediction_initialized_ = false;
 
     // Initialize particles with uniform weights
     particles_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
@@ -113,11 +112,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Initialize TF broadcaster
     pub_tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    
-    // 100Hz prediction timer for smooth TF publishing
-    prediction_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(10), // 100Hz = 10ms
-        std::bind(&ParticleFilter::prediction_timer_callback, this));
 
     // Setup subscribers
     laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -144,7 +138,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(this->get_logger(), "Finished initializing, waiting on messages...");
 }
 
-// ========== MAP LOADING & PREPROCESSING ==========
+// --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
 void ParticleFilter::get_omap()
 {
     RCLCPP_INFO(this->get_logger(), "Requesting map from map server...");
@@ -162,7 +156,6 @@ void ParticleFilter::get_omap()
     if (rclcpp::spin_until_future_complete(this->get_node_base_interface(), future) ==
         rclcpp::FutureReturnCode::SUCCESS)
     {
-
         map_msg_ = std::make_shared<nav_msgs::msg::OccupancyGrid>(future.get()->map);
         map_resolution_ = map_msg_->info.resolution;
         map_origin_ = Eigen::Vector3d(map_msg_->info.origin.position.x, map_msg_->info.origin.position.y,
@@ -201,48 +194,33 @@ void ParticleFilter::get_omap()
     }
 }
 
-// ========== SENSOR MODEL PRECOMPUTATION ==========
+// --------------------------------- SENSOR MODEL PRECOMPUTATION ---------------------------------
 void ParticleFilter::precompute_sensor_model()
 {
     RCLCPP_INFO(this->get_logger(), "Precomputing sensor model");
 
-    // Safety check for map resolution
     if (map_resolution_ <= 0.0)
     {
-        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f. Cannot precompute sensor model.",
-                     map_resolution_);
+        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f", map_resolution_);
         return;
     }
 
     int table_width = MAX_RANGE_PX + 1;
-    RCLCPP_INFO(this->get_logger(), "MAX_RANGE_METERS: %.2f, map_resolution_: %.6f", MAX_RANGE_METERS, map_resolution_);
-    RCLCPP_INFO(this->get_logger(), "MAX_RANGE_PX: %d, table_width: %d", MAX_RANGE_PX, table_width);
-
-    // Safety check for reasonable table size
-    if (table_width <= 0 || table_width > 10000)
-    {
-        RCLCPP_ERROR(this->get_logger(), "Invalid table_width: %d. Cannot allocate sensor model table.", table_width);
-        return;
-    }
-
-    RCLCPP_INFO(this->get_logger(), "Attempting to allocate %dx%d matrix (%zu MB)", table_width, table_width,
-                (table_width * table_width * sizeof(double)) / (1024 * 1024));
-
     sensor_model_table_ = Eigen::MatrixXd::Zero(table_width, table_width);
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Build (observed_range × expected_range) probability lookup table
-    for (int d = 0; d < table_width; ++d)  // d = expected range (raycast result)
+    // Build lookup table
+    for (int d = 0; d < table_width; ++d)  // d = expected range
     {
         double norm = 0.0;
 
-        for (int r = 0; r < table_width; ++r)  // r = observed range (sensor reading)
+        for (int r = 0; r < table_width; ++r)  // r = observed range
         {
             double prob = 0.0;
             double z = static_cast<double>(r - d);
 
-            // Z_HIT: Gaussian around expected range (correct measurement)
+            // Z_HIT: Gaussian around expected range
             prob += Z_HIT * std::exp(-(z * z) / (2.0 * SIGMA_HIT * SIGMA_HIT)) / (SIGMA_HIT * std::sqrt(2.0 * M_PI));
 
             // Z_SHORT: Exponential for early obstacles
@@ -257,7 +235,7 @@ void ParticleFilter::precompute_sensor_model()
                 prob += Z_MAX;
             }
 
-            // Z_RAND: Uniform distribution for noise
+            // Z_RAND: Uniform distribution
             if (r < MAX_RANGE_PX)
             {
                 prob += Z_RAND * 1.0 / static_cast<double>(MAX_RANGE_PX);
@@ -267,7 +245,7 @@ void ParticleFilter::precompute_sensor_model()
             sensor_model_table_(r, d) = prob;
         }
 
-        // Normalize to form valid probability distribution
+        // Normalize
         if (norm > 0)
         {
             sensor_model_table_.col(d) /= norm;
@@ -279,14 +257,14 @@ void ParticleFilter::precompute_sensor_model()
     RCLCPP_INFO(this->get_logger(), "Sensor model precomputed in %ld ms", duration.count());
 }
 
-// ========== SENSOR CALLBACKS ==========
+// --------------------------------- SENSOR CALLBACKS ---------------------------------
 void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
     if (laser_angles_.empty())
     {
         RCLCPP_INFO(this->get_logger(), "...Received first LiDAR message");
 
-        // First message: extract scan parameters and downsample
+        // Extract scan parameters and downsample
         laser_angles_.resize(msg->ranges.size());
         for (size_t i = 0; i < msg->ranges.size(); ++i)
         {
@@ -299,11 +277,10 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
             downsampled_angles_.push_back(laser_angles_[i]);
         }
 
-
         RCLCPP_INFO(this->get_logger(), "Downsampled to %zu angles", downsampled_angles_.size());
     }
 
-    // Extract every ANGLE_STEP-th measurement for efficiency
+    // Extract every ANGLE_STEP-th measurement
     downsampled_ranges_.clear();
     for (size_t i = 0; i < msg->ranges.size(); i += ANGLE_STEP)
     {
@@ -319,51 +296,30 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
                              quaternion_to_angle(msg->pose.pose.orientation));
 
     current_speed_ = msg->twist.twist.linear.x;
-    current_angular_velocity_ = msg->twist.twist.angular.z;
-
-    rclcpp::Time current_time = msg->header.stamp;
 
     if (last_pose_.norm() > 0)
-    { 
+    {
         // Transform global displacement to robot-local coordinates
         Eigen::Matrix2d rot = rotation_matrix(-last_pose_[2]);
         Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
         Eigen::Vector2d local_delta = rot * delta;
 
         odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
-        
-        // Calculate time delta for velocity estimation
-        if (last_odom_time_.nanoseconds() > 0) {
-            double dt = (current_time - last_odom_time_).seconds();
-            if (dt > 0) {
-                odom_velocity_ = Eigen::Vector3d(local_delta[0] / dt, local_delta[1] / dt, 
-                                               (position[2] - last_pose_[2]) / dt);
-            }
-        }
-        
         last_pose_ = position;
-        last_stamp_ = current_time;
-        last_odom_time_ = current_time;
+        last_stamp_ = msg->header.stamp;
         odom_initialized_ = true;
-        
-        // Initialize prediction state
-        if (!prediction_initialized_) {
-            predicted_pose_ = position;
-            prediction_initialized_ = true;
-        }
     }
     else
     {
         RCLCPP_INFO(this->get_logger(), "...Received first Odometry message");
         last_pose_ = position;
-        last_odom_time_ = current_time;
     }
 
     // Trigger MCL update cycle
     update();
 }
 
-// ========== INTERACTIVE INITIALIZATION ==========
+// --------------------------------- INTERACTIVE INITIALIZATION ---------------------------------
 void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
     Eigen::Vector3d pose(msg->pose.pose.position.x, msg->pose.pose.position.y,
@@ -376,7 +332,7 @@ void ParticleFilter::clicked_point(const geometry_msgs::msg::PointStamped::Share
     initialize_global();
 }
 
-// ========== PARTICLE INITIALIZATION ==========
+// --------------------------------- PARTICLE INITIALIZATION ---------------------------------
 void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
 {
     RCLCPP_INFO(this->get_logger(), "SETTING POSE");
@@ -404,7 +360,7 @@ void ParticleFilter::initialize_global()
 
     std::lock_guard<std::mutex> lock(state_lock_);
 
-    // Extract all free space cells for uniform sampling
+    // Extract all free space cells
     std::vector<std::pair<int, int>> permissible_positions;
     for (int i = 0; i < permissible_region_.rows(); ++i)
     {
@@ -433,8 +389,8 @@ void ParticleFilter::initialize_global()
         auto pos = permissible_positions[idx];
 
         // Grid to world coordinate transformation
-        particles_(i, 0) = pos.second * map_resolution_ + map_origin_[0]; // x = j * resolution + origin_x
-        particles_(i, 1) = pos.first * map_resolution_ + map_origin_[1];  // y = i * resolution + origin_y
+        particles_(i, 0) = pos.second * map_resolution_ + map_origin_[0];
+        particles_(i, 1) = pos.first * map_resolution_ + map_origin_[1];
         particles_(i, 2) = angle_dist(rng_);
     }
 
@@ -444,7 +400,7 @@ void ParticleFilter::initialize_global()
                 permissible_positions.size());
 }
 
-// ========== MCL ALGORITHM CORE ==========
+// --------------------------------- MCL ALGORITHM CORE ---------------------------------
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
     // Apply motion transformation: local → global coordinates
@@ -487,25 +443,22 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
         first_sensor_update_ = false;
     }
 
-    // Generate ray queries: transform base_link pose to LiDAR frame
+    // Generate ray queries
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        // Transform particle pose from base_link to LiDAR world position
-        Eigen::Vector2d lidar_world_pos = transform_to_lidar_frame(proposal_dist.row(i).transpose());
-        
         for (int j = 0; j < num_rays; ++j)
         {
             int idx = i * num_rays + j;
-            queries_(idx, 0) = lidar_world_pos[0];  // LiDAR X position in world frame
-            queries_(idx, 1) = lidar_world_pos[1];  // LiDAR Y position in world frame
-            queries_(idx, 2) = proposal_dist(i, 2) + downsampled_angles_[j];  // Ray angle from LiDAR
+            queries_(idx, 0) = proposal_dist(i, 0);
+            queries_(idx, 1) = proposal_dist(i, 1);
+            queries_(idx, 2) = proposal_dist(i, 2) + downsampled_angles_[j];
         }
     }
 
-    // Batch ray casting: simulate LiDAR measurements
+    // Batch ray casting
     ranges_ = calc_range_many(queries_);
 
-    // Convert to pixel units and compute particle weights
+    // Convert to pixel units and compute weights
     std::vector<float> obs_px(obs.size());
     std::vector<float> ranges_px(ranges_.size());
 
@@ -541,7 +494,7 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
     }
 }
 
-// ========== RAY CASTING ==========
+// --------------------------------- RAY CASTING ---------------------------------
 std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &queries)
 {
     std::vector<float> results(queries.rows());
@@ -586,7 +539,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
         if (map_idx >= 0 && map_idx < static_cast<int>(map_msg_->data.size()))
         {
             if (map_msg_->data[map_idx] > 50)
-            { // Occupied
+            {
                 return step * map_resolution_;
             }
         }
@@ -597,7 +550,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
 
 void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
-    // Step 1: Multinomial resampling based on weights
+    // Step 1: Multinomial resampling
     std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
     Eigen::MatrixXd proposal_distribution(MAX_PARTICLES, 3);
 
@@ -613,7 +566,7 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
     // Step 3: Sensor likelihood evaluation
     sensor_model(proposal_distribution, observation, weights_);
 
-    // Step 4: Weight normalization for probability distribution
+    // Step 4: Weight normalization
     double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
     if (sum_weights > 0)
     {
@@ -637,7 +590,7 @@ Eigen::Vector3d ParticleFilter::expected_pose()
     return pose;
 }
 
-// ========== MAIN UPDATE LOOP ==========
+// --------------------------------- MAIN UPDATE LOOP ---------------------------------
 void ParticleFilter::update()
 {
     if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
@@ -658,9 +611,6 @@ void ParticleFilter::update()
 
         // Final pose estimate: weighted mean
         inferred_pose_ = expected_pose();
-        
-        // Update prediction with MCL result
-        predicted_pose_ = inferred_pose_;
 
         state_lock_.unlock();
 
@@ -681,15 +631,14 @@ void ParticleFilter::update()
     }
 }
 
-// ========== OUTPUT & VISUALIZATION ==========
+// --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
 void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
 {
-    // Publish direct map → base_link transform for localization
+    // Publish map → laser transform
     geometry_msgs::msg::TransformStamped t;
-    // Use the original timestamp from sensor data to maintain consistency
-    t.header.stamp = stamp;
-    t.header.frame_id = "map";
-    t.child_frame_id = "base_link";
+    t.header.stamp = stamp.nanoseconds() > 0 ? stamp : this->get_clock()->now();
+    t.header.frame_id = "/map";
+    t.child_frame_id = "/laser";
     t.transform.translation.x = pose[0];
     t.transform.translation.y = pose[1];
     t.transform.translation.z = 0.0;
@@ -697,7 +646,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
 
     pub_tf_->sendTransform(t);
 
-    // Optional navigation odometry output
+    // Optional odometry output
     if (PUBLISH_ODOM && odom_pub_)
     {
         nav_msgs::msg::Odometry odom;
@@ -733,7 +682,7 @@ void ParticleFilter::visualize()
     {
         if (MAX_PARTICLES > MAX_VIZ_PARTICLES)
         {
-            // Weighted downsampling to preserve distribution shape
+            // Weighted downsampling
             std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
             Eigen::MatrixXd viz_particles(MAX_VIZ_PARTICLES, 3);
 
@@ -750,7 +699,6 @@ void ParticleFilter::visualize()
             publish_particles(particles_);
         }
     }
-
 }
 
 void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
@@ -761,8 +709,7 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
     particle_pub_->publish(pa);
 }
 
-
-// ========== UTILITY FUNCTIONS ==========
+// --------------------------------- UTILITY FUNCTIONS ---------------------------------
 double ParticleFilter::quaternion_to_angle(const geometry_msgs::msg::Quaternion &q)
 {
     return utils::quaternion_to_yaw(q);
@@ -778,109 +725,9 @@ Eigen::Matrix2d ParticleFilter::rotation_matrix(double angle)
     return utils::rotation_matrix(angle);
 }
 
-Eigen::Vector2d ParticleFilter::transform_to_lidar_frame(const Eigen::Vector3d &base_pose)
-{
-    // Transform LiDAR offset from base_link to world coordinates
-    double cos_theta = std::cos(base_pose[2]);
-    double sin_theta = std::sin(base_pose[2]);
-    double lidar_world_x = base_pose[0] + cos_theta * LIDAR_OFFSET_X - sin_theta * LIDAR_OFFSET_Y;
-    double lidar_world_y = base_pose[1] + sin_theta * LIDAR_OFFSET_X + cos_theta * LIDAR_OFFSET_Y;
-    return Eigen::Vector2d(lidar_world_x, lidar_world_y);
-}
-
-// ========== MOTION PREDICTION FOR HIGH-FREQUENCY OUTPUT ==========
-void ParticleFilter::prediction_timer_callback()
-{
-    if (!prediction_initialized_ || !odom_initialized_) {
-        return;
-    }
-    
-    rclcpp::Time current_time = this->get_clock()->now();
-    static rclcpp::Time last_prediction_time = current_time;
-    
-    // Calculate actual dt from last prediction (not from last odom)
-    double dt = (current_time - last_prediction_time).seconds();
-    
-    if (dt > 0 && dt < 0.1) {  // Sanity check: dt should be ~0.01s (100Hz)
-        // Use constant velocity model for prediction
-        Eigen::Vector3d predicted_delta;
-        predicted_delta[0] = current_speed_ * dt;  // Forward velocity
-        predicted_delta[1] = 0.0;  // Assume no lateral motion
-        predicted_delta[2] = current_angular_velocity_ * dt;  // Angular velocity
-        
-        // Apply motion model to predicted pose
-        double cos_theta = std::cos(predicted_pose_[2]);
-        double sin_theta = std::sin(predicted_pose_[2]);
-        
-        predicted_pose_[0] += cos_theta * predicted_delta[0] - sin_theta * predicted_delta[1];
-        predicted_pose_[1] += sin_theta * predicted_delta[0] + cos_theta * predicted_delta[1];
-        predicted_pose_[2] += predicted_delta[2];
-        
-        // Normalize angle
-        predicted_pose_[2] = std::fmod(predicted_pose_[2] + M_PI, 2.0 * M_PI) - M_PI;
-        
-        // Update inferred pose for high-frequency output
-        inferred_pose_ = predicted_pose_;
-    }
-    
-    last_prediction_time = current_time;
-    
-    // Publish both TF and inferred pose at 100Hz
-    publish_predicted_tf(predicted_pose_, current_time);
-    publish_high_freq_pose(current_time);
-}
-
-void ParticleFilter::publish_predicted_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
-{
-    // Only publish if we have valid sensor data timestamps
-    if (!odom_initialized_ || last_stamp_.nanoseconds() == 0) {
-        return;
-    }
-    
-    // Publish main transform using sensor data timestamp for consistency
-    geometry_msgs::msg::TransformStamped t;
-    t.header.stamp = last_stamp_;  // Use last sensor timestamp instead of current time
-    t.header.frame_id = "map";
-    t.child_frame_id = "base_link";
-    t.transform.translation.x = pose[0];
-    t.transform.translation.y = pose[1];
-    t.transform.translation.z = 0.0;
-    t.transform.rotation = angle_to_quaternion(pose[2]);
-
-    pub_tf_->sendTransform(t);
-    
-    // Publish high-frequency odometry
-    if (PUBLISH_ODOM && odom_pub_) {
-        nav_msgs::msg::Odometry odom;
-        odom.header.stamp = stamp;
-        odom.header.frame_id = "/map";
-        odom.child_frame_id = "base_link";
-        odom.pose.pose.position.x = pose[0];
-        odom.pose.pose.position.y = pose[1];
-        odom.pose.pose.orientation = angle_to_quaternion(pose[2]);
-        odom.twist.twist.linear.x = current_speed_;
-        odom.twist.twist.angular.z = current_angular_velocity_;
-        odom_pub_->publish(odom);
-    }
-}
-
-void ParticleFilter::publish_high_freq_pose(const rclcpp::Time &stamp)
-{
-    // Publish inferred pose at 100Hz
-    if (DO_VIZ && pose_pub_ && pose_pub_->get_subscription_count() > 0) {
-        geometry_msgs::msg::PoseStamped ps;
-        ps.header.stamp = stamp;
-        ps.header.frame_id = "/map";
-        ps.pose.position.x = inferred_pose_[0];
-        ps.pose.position.y = inferred_pose_[1];
-        ps.pose.orientation = angle_to_quaternion(inferred_pose_[2]);
-        pose_pub_->publish(ps);
-    }
-}
-
 } // namespace particle_filter_cpp
 
-// ========== PROGRAM ENTRY POINT ==========
+// --------------------------------- PROGRAM ENTRY POINT ---------------------------------
 int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);

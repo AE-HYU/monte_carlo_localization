@@ -1,12 +1,8 @@
 // ================================================================================================
 // PARTICLE FILTER HEADER - Monte Carlo Localization (MCL) Class Definition
 // ================================================================================================
-// Core MCL implementation with:
-// - Multinomial resampling for particle selection
-// - Velocity motion model with Gaussian noise
-// - 4-component beam sensor model (Z_HIT + Z_SHORT + Z_MAX + Z_RAND)
-// - Lookup table optimization for O(1) sensor probability queries
-// - Real-time ray casting for range simulation
+// Simplified MCL implementation based on Python version
+// Features: Multinomial resampling, velocity motion model, beam sensor model, ray casting
 // ================================================================================================
 
 #ifndef PARTICLE_FILTER_CPP__PARTICLE_FILTER_HPP_
@@ -32,7 +28,6 @@
 namespace particle_filter_cpp
 {
 
-// Monte Carlo Localization node with performance optimizations
 class ParticleFilter : public rclcpp::Node
 {
   public:
@@ -44,93 +39,90 @@ class ParticleFilter : public rclcpp::Node
     void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
-    Eigen::Vector3d expected_pose();  // Weighted mean pose estimation
+    Eigen::Vector3d expected_pose();
 
     // --------------------------------- INITIALIZATION ---------------------------------
-    void initialize_global();               // Global localization (uniform over free space)
-    void initialize_particles_pose(const Eigen::Vector3d &pose);  // Local initialization
-    void precompute_sensor_model();         // Build lookup table for sensor model
+    void initialize_global();
+    void initialize_particles_pose(const Eigen::Vector3d &pose);
+    void precompute_sensor_model();
 
     // --------------------------------- ROS2 CALLBACKS ---------------------------------
-    void lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg);    // LiDAR measurements
-    void odomCB(const nav_msgs::msg::Odometry::SharedPtr msg);         // Odometry + trigger MCL
-    void clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);  // RViz pose
-    void clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg);             // RViz global init
+    void lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg);
+    void odomCB(const nav_msgs::msg::Odometry::SharedPtr msg);
+    void clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
+    void clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg);
 
     // --------------------------------- MAP MANAGEMENT ---------------------------------
-    void get_omap();  // Load occupancy grid and extract free space
+    void get_omap();
 
     // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
-    void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);  // TF + odom
-    void visualize();                                                        // RViz displays
-    void publish_particles(const Eigen::MatrixXd &particles_to_pub);         // Particle cloud
+    void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);
+    void visualize();
+    void publish_particles(const Eigen::MatrixXd &particles_to_pub);
 
     // --------------------------------- UTILITY FUNCTIONS ---------------------------------
-    double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);    // Quaternion → yaw
-    geometry_msgs::msg::Quaternion angle_to_quaternion(double angle);       // Yaw → quaternion
-    void map_to_world(Eigen::MatrixXd &poses);                             // Coordinate transform
-    Eigen::Matrix2d rotation_matrix(double angle);                         // 2D rotation matrix
-    Eigen::Vector2d transform_to_lidar_frame(const Eigen::Vector3d &base_pose);  // base_link → LiDAR transform
+    double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);
+    geometry_msgs::msg::Quaternion angle_to_quaternion(double angle);
+    Eigen::Matrix2d rotation_matrix(double angle);
 
     // --------------------------------- RAY CASTING ---------------------------------
-    std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);  // Batch processing
-    float cast_ray(double x, double y, double angle);                    // Individual ray
+    std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);
+    float cast_ray(double x, double y, double angle);
 
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
-    int ANGLE_STEP;              // LiDAR downsampling factor
-    int MAX_PARTICLES;           // Number of particles (N)
-    int MAX_VIZ_PARTICLES;       // Visualization particle limit
-    double INV_SQUASH_FACTOR;    // 1/squash_factor for weight variance reduction
-    double MAX_RANGE_METERS;     // Sensor maximum range [m]
-    int THETA_DISCRETIZATION;    // Angular discretization
-    std::string WHICH_RM;        // Range method identifier
-    int RANGELIB_VAR;           // Range library variant
-    bool SHOW_FINE_TIMING;      // Performance timing flag
-    bool PUBLISH_ODOM;          // Navigation odometry output
-    bool DO_VIZ;                // Visualization enable
+    int ANGLE_STEP;
+    int MAX_PARTICLES;
+    int MAX_VIZ_PARTICLES;
+    double INV_SQUASH_FACTOR;
+    double MAX_RANGE_METERS;
+    int THETA_DISCRETIZATION;
+    std::string WHICH_RM;
+    int RANGELIB_VAR;
+    bool SHOW_FINE_TIMING;
+    bool PUBLISH_ODOM;
+    bool DO_VIZ;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
-    double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;  // 4-component mixture weights + Gaussian σ
+    double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
 
     // --------------------------------- MOTION MODEL PARAMETERS ---------------------------------
-    double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;  // Process noise σ
+    double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;
 
     // --------------------------------- SENSOR FRAME PARAMETERS ---------------------------------
-    double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;  // LiDAR position relative to base_link [m]
-    double WHEELBASE;                        // Distance between front and rear wheels [m]
+    double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;
+    double WHEELBASE;
 
     // --------------------------------- PARTICLE FILTER STATE ---------------------------------
-    Eigen::MatrixXd particles_;    // [N×3] particle states [x, y, θ]
-    std::vector<double> weights_;  // [N×1] normalized particle weights
-    Eigen::Vector3d inferred_pose_; // Final pose estimate
-    Eigen::Vector3d odometry_data_; // Current motion command [Δx, Δy, Δθ]
-    Eigen::Vector3d last_pose_;     // Previous pose for motion computation
+    Eigen::MatrixXd particles_;
+    std::vector<double> weights_;
+    Eigen::Vector3d inferred_pose_;
+    Eigen::Vector3d odometry_data_;
+    Eigen::Vector3d last_pose_;
 
     // --------------------------------- SENSOR DATA ---------------------------------
-    std::vector<float> laser_angles_;        // Full LiDAR angle array
-    std::vector<float> downsampled_angles_;  // Downsampled angles for efficiency
-    std::vector<float> downsampled_ranges_;  // Current downsampled measurements
+    std::vector<float> laser_angles_;
+    std::vector<float> downsampled_angles_;
+    std::vector<float> downsampled_ranges_;
 
     // --------------------------------- MAP DATA ---------------------------------
-    nav_msgs::msg::OccupancyGrid::SharedPtr map_msg_;  // Occupancy grid map
-    Eigen::MatrixXi permissible_region_;               // Binary free space mask
-    bool map_initialized_;     // Map loading status
-    bool lidar_initialized_;   // LiDAR initialization status
-    bool odom_initialized_;    // Odometry initialization status
-    bool first_sensor_update_; // First sensor model call flag
+    nav_msgs::msg::OccupancyGrid::SharedPtr map_msg_;
+    Eigen::MatrixXi permissible_region_;
+    bool map_initialized_;
+    bool lidar_initialized_;
+    bool odom_initialized_;
+    bool first_sensor_update_;
 
     // --------------------------------- SENSOR MODEL OPTIMIZATION ---------------------------------
-    Eigen::MatrixXd sensor_model_table_;  // [range_px × range_px] probability lookup table
-    int MAX_RANGE_PX;          // Maximum range in pixels
-    double map_resolution_;    // Map resolution [m/pixel]
-    Eigen::Vector3d map_origin_; // Map origin [x, y, θ]
+    Eigen::MatrixXd sensor_model_table_;
+    int MAX_RANGE_PX;
+    double map_resolution_;
+    Eigen::Vector3d map_origin_;
 
     // --------------------------------- PERFORMANCE CACHES ---------------------------------
-    Eigen::MatrixXd local_deltas_;    // [N×3] motion transformation cache
-    Eigen::MatrixXd queries_;         // [N×K×3] ray casting query matrix
-    std::vector<float> ranges_;       // [N×K×1] ray casting results
-    std::vector<float> tiled_angles_; // [N×K×1] angle array for all particles
-
+    Eigen::MatrixXd local_deltas_;
+    Eigen::MatrixXd queries_;
+    std::vector<float> ranges_;
+    std::vector<float> tiled_angles_;
 
     // --------------------------------- ROS2 INTERFACES ---------------------------------
     // Subscribers
@@ -140,45 +132,32 @@ class ParticleFilter : public rclcpp::Node
     rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr click_sub_;
 
     // Publishers
-    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr particle_pub_;    // Particle cloud
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;      // Pose estimate
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;             // Navigation odom
+    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr particle_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
 
     // Services and TF
-    rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;        // Map service client
-    std::unique_ptr<tf2_ros::TransformBroadcaster> pub_tf_;             // TF broadcaster
+    rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
+    std::unique_ptr<tf2_ros::TransformBroadcaster> pub_tf_;
 
     // --------------------------------- THREADING ---------------------------------
-    std::mutex state_lock_;  // MCL update synchronization
+    std::mutex state_lock_;
 
     // --------------------------------- RANDOM NUMBER GENERATION ---------------------------------
-    std::mt19937 rng_;                                    // Mersenne Twister RNG
-    std::uniform_real_distribution<double> uniform_dist_; // U(0,1) for sampling
-    std::normal_distribution<double> normal_dist_;        // N(0,1) for noise
+    std::mt19937 rng_;
+    std::uniform_real_distribution<double> uniform_dist_;
+    std::normal_distribution<double> normal_dist_;
 
     // --------------------------------- TIMING & STATISTICS ---------------------------------
-    rclcpp::Time last_stamp_;  // Last sensor timestamp
-    int iters_;                // MCL iteration counter
-    double current_speed_;     // Current robot speed [m/s]
+    rclcpp::Time last_stamp_;
+    int iters_;
+    double current_speed_;
 
     // --------------------------------- ALGORITHM INTERNALS ---------------------------------
-    std::vector<int> particle_indices_;  // Index array for resampling
-
-    // --------------------------------- MOTION PREDICTION FOR HIGH-FREQUENCY OUTPUT ---------------------------------
-    void prediction_timer_callback();  // 100Hz prediction timer
-    void publish_predicted_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);  // High-freq TF
-    void publish_high_freq_pose(const rclcpp::Time &stamp);  // High-freq inferred pose
-
-    // --------------------------------- PREDICTION STATE ---------------------------------
-    rclcpp::TimerBase::SharedPtr prediction_timer_;  // 100Hz prediction timer
-    rclcpp::Time last_odom_time_;                     // Last odometry timestamp
-    Eigen::Vector3d predicted_pose_;                  // Predicted pose for interpolation
-    Eigen::Vector3d odom_velocity_;                   // Estimated velocity from odometry
-    bool prediction_initialized_;                     // Prediction state flag
-    double current_angular_velocity_;                 // Current angular velocity [rad/s]
+    std::vector<int> particle_indices_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
-    void update();  // Main MCL update loop
+    void update();
 };
 
 } // namespace particle_filter_cpp
