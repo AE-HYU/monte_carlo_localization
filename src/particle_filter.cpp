@@ -27,30 +27,30 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), uniform_dist_(0.0, 1.0), normal_dist_(0.0, 1.0)
 {
     // ROS2 parameter declarations (defaults loaded from config file)
-    this->declare_parameter("angle_step");
-    this->declare_parameter("max_particles");
-    this->declare_parameter("max_viz_particles");
-    this->declare_parameter("squash_factor");
-    this->declare_parameter("max_range");
-    this->declare_parameter("theta_discretization");
-    this->declare_parameter("range_method");
-    this->declare_parameter("rangelib_variant");
-    this->declare_parameter("fine_timing");
-    this->declare_parameter("publish_odom");
-    this->declare_parameter("viz");
-    this->declare_parameter("z_short");
-    this->declare_parameter("z_max");
-    this->declare_parameter("z_rand");
-    this->declare_parameter("z_hit");
-    this->declare_parameter("sigma_hit");
-    this->declare_parameter("motion_dispersion_x");
-    this->declare_parameter("motion_dispersion_y");
-    this->declare_parameter("motion_dispersion_theta");
-    this->declare_parameter("lidar_offset_x");
-    this->declare_parameter("lidar_offset_y");
-    this->declare_parameter("wheelbase");
-    this->declare_parameter("scan_topic");
-    this->declare_parameter("odom_topic");
+    this->declare_parameter("angle_step", 18);
+    this->declare_parameter("max_particles", 4000);
+    this->declare_parameter("max_viz_particles", 60);
+    this->declare_parameter("squash_factor", 2.2);
+    this->declare_parameter("max_range", 12.0);
+    this->declare_parameter("theta_discretization", 112);
+    this->declare_parameter("range_method", "rmgpu");
+    this->declare_parameter("rangelib_variant", 1);
+    this->declare_parameter("fine_timing", 0);
+    this->declare_parameter("publish_odom", true);
+    this->declare_parameter("viz", true);
+    this->declare_parameter("z_short", 0.01);
+    this->declare_parameter("z_max", 0.07);
+    this->declare_parameter("z_rand", 0.12);
+    this->declare_parameter("z_hit", 0.80);
+    this->declare_parameter("sigma_hit", 8.0);
+    this->declare_parameter("motion_dispersion_x", 0.05);
+    this->declare_parameter("motion_dispersion_y", 0.025);
+    this->declare_parameter("motion_dispersion_theta", 0.25);
+    this->declare_parameter("lidar_offset_x", 0.0);
+    this->declare_parameter("lidar_offset_y", 0.0);
+    this->declare_parameter("wheelbase", 0.325);
+    this->declare_parameter("scan_topic", "/scan");
+    this->declare_parameter("odom_topic", "/odom");
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
