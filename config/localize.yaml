@@ -1,17 +1,11 @@
-# Configuration for real F1TENTH car localization
+# Configuration for F1TENTH Gym simulation
 particle_filter:
   ros__parameters:
-    # Particle filter parameters
-    max_particles: 1000                # Total particles for localization (balanced for real-time)
+    # Particle filter parameters (higher count for simulation accuracy)
+    max_particles: 4000                # More particles for simulation precision
     max_viz_particles: 60              # Particles shown in RViz (performance optimization)
     max_range: 5.0                      # Maximum laser range in meters
     
-<<<<<<< Updated upstream
-    # Motion model noise parameters 
-    motion_dispersion_x: 0.05          # Motion noise in x-direction (meters)
-    motion_dispersion_y: 0.025         # Motion noise in y-direction (meters)
-    motion_dispersion_theta: 0.25      # Motion noise in rotation (radians) 
-=======
     # Motion model noise parameters
     motion_dispersion_x: 0.05          # Noise in forward motion (m)
     motion_dispersion_y: 0.025         # Noise in lateral motion (m)
@@ -21,7 +15,6 @@ particle_filter:
     lidar_offset_x: 0.288              # LiDAR forward offset from base_link (m)
     lidar_offset_y: 0.0                # LiDAR lateral offset from base_link (m)
     wheelbase: 0.324                   # Distance between front and rear axles (m)
->>>>>>> Stashed changes
     
     # Sensor model parameters (beam model)
     z_hit: 0.75      # Weight for correct measurements
@@ -31,17 +24,6 @@ particle_filter:
     sigma_hit: 8.0   # Standard deviation for measurement noise
     
     # Ray-casting parameters
-<<<<<<< Updated upstream
-    range_method: "cddt"        # (unused) Ray-casting method
-    theta_discretization: 112   # (unused) Ray-casting angle discretization
-    angle_step: 18              # Laser scan downsampling step size
-    squash_factor: 2.2          # Sensor model parameter for weight normalization
-    
-    # Topic names
-    scan_topic: "/scan"                # LaserScan topic for sensor updates
-    # odom_topic: "/odom"                # Real F1TENTH car odometry topic
-    odom_topic: "/ego_racecar/odom"  # F1TENTH Gym simulation odometry topic
-=======
     range_method: "cddt"        # Distance transform method
     theta_discretization: 112   # Angular resolution for ray casting
     rangelib_variant: 2         # Ray casting library variant
@@ -50,11 +32,11 @@ particle_filter:
     
     # Performance and debugging
     fine_timing: 0              # Enable detailed timing (0=off, 1=on)
->>>>>>> Stashed changes
     
-    # ROS topic configuration
+    # ROS topic configuration (simulation specific)
     scan_topic: "/scan"                # LaserScan input topic
-    odom_topic: "/odom"                # Odometry input topic (real car)
+    # odom_topic: "/odom"                # Input odometry from real encoders/IMU
+    odom_topic: "/ego_racecar/odom"    # Odometry from F1TENTH Gym simulation
     
     # Publishing options
     publish_odom: true                  # Publish pose as odometry message
@@ -71,12 +53,9 @@ particle_filter:
     
 map_server:
   ros__parameters:
-<<<<<<< Updated upstream
-    # Map configuration - assuming map file is in particle_filter_cpp/maps
-    # map: 'levine'                     # Levine Hall map option
-    map: 'Spielberg_map'              # Spielberg track map option
-    # map: 'map_1753950572'               # Map with SLAM
-=======
-    # Available maps: levine, Spielberg_map, map_1753950572
-    map: 'map_1753950572'
->>>>>>> Stashed changes
+    # Map selection for localization (SLAM-generated maps)
+    # Available options:
+    #   - levine: Multi-floor building map with complex geometry
+    #   - Spielberg_map: Race track configuration 
+    #   - map_1753950572: Custom SLAM-generated map from real data
+    map: 'Spielberg_map'           # Selected map file (without .yaml extension)
