@@ -34,8 +34,8 @@ particle_filter:
     
     # Topic names
     scan_topic: "/scan"                # LaserScan topic for sensor updates
-    # odom_topic: "/odom"                # Real F1TENTH car odometry topic
-    odom_topic: "/ego_racecar/odom"  # F1TENTH Gym simulation odometry topic
+    odom_topic: "/odom"                # Real F1TENTH car odometry topic
+    # odom_topic: "/ego_racecar/odom"  # F1TENTH Gym simulation odometry topic
     
     
     # Publishing options
@@ -55,5 +55,5 @@ map_server:
   ros__parameters:
     # Map configuration - assuming map file is in particle_filter_cpp/maps
     # map: 'levine'                     # Levine Hall map option
-    map: 'Spielberg_map'              # Spielberg track map option
-    # map: 'map_1753950572'               # Map with SLAM
+    # map: 'Spielberg_map'              # Spielberg track map option
+    map: 'map_1753950572'               # Map with SLAM

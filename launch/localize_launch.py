@@ -110,6 +110,16 @@ def generate_launch_description():
         ]
     )
     
+    # Static transform publisher for laser frame
+    static_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_tf_publisher',
+        arguments=['0.288', '0.0', '0.0', '0.0', '0.0', '0.0', 'base_link', 'laser'],
+        output='screen',
+        parameters=[common_params]
+    )
+    
     # RViz node
     rviz_node = Node(
         package='rviz2',
@@ -132,6 +142,7 @@ def generate_launch_description():
         # Nodes (simple sequential launch)
         map_server_node,
         lifecycle_manager_node,
+        static_tf_node,
         particle_filter_node,
         rviz_node,
     ])

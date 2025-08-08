@@ -662,10 +662,11 @@ void ParticleFilter::update()
 // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
 void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
 {
+    // Publish direct map → base_link transform for localization
     geometry_msgs::msg::TransformStamped t;
     t.header.stamp = stamp.nanoseconds() > 0 ? stamp : this->get_clock()->now();
-    t.header.frame_id = "/map";
-    t.child_frame_id = "/odom";
+    t.header.frame_id = "map";
+    t.child_frame_id = "base_link";
     t.transform.translation.x = pose[0];
     t.transform.translation.y = pose[1];
     t.transform.translation.z = 0.0;
