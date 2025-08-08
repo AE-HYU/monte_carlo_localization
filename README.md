@@ -6,32 +6,72 @@ High-performance Monte Carlo Localization (MCL) for robot navigation.
 
 ```bash
 # Build
-colcon build --packages-select particle_filter_cpp
+colcon build --packages-select particle_filter_cpp --symlink-install
 
-# Run
+# For F1TENTH Gym Simulation
+ros2 launch particle_filter_cpp localize_sim_launch.py
+
+# For Real F1TENTH Car with SLAM Map
+ros2 launch particle_filter_cpp localize_slam_launch.py
+
+# Generic launch (configure manually)
 ros2 launch particle_filter_cpp localize_launch.py
 ```
 
-## Configuration
+## Configuration Files
 
-Edit `config/localize.yaml` to customize:
-- `num_particles`: 4000 (default)
-- `max_range`: 10.0 meters  
+### 1. `config/localize_sim.yaml` - Simulation Config
+**Optimized for F1TENTH Gym simulation:**
+- Lower motion noise (cleaner simulation physics)
+- Higher `z_hit` weight (less sensor noise)
+- Default topics: `/ego_racecar/odom`
+- Default map: `Spielberg_map`
+
+### 2. `config/localize_slam.yaml` - Real Car Config  
+**Tuned for real F1TENTH hardware:**
+- Higher motion noise (real-world uncertainties)
+- Higher `z_rand` weight (sensor noise compensation)
+- Default topics: `/odom`
+- Default map: `map_1753950572`
+
+### 3. `config/localize.yaml` - Generic Config
+**General purpose configuration** - manually adjust as needed
+
+**Key Parameters:**
+- `max_particles`: 4000 (default)
+- `max_range`: 5.0 meters  
 - `motion_dispersion_*`: Noise parameters
 - `z_hit/short/max/rand`: Sensor model weights
+
+## Launch Files
+
+### 1. Simulation Launch (`localize_sim_launch.py`)
+**Default Settings:**
+- Map: `Spielberg_map` 
+- Odom Topic: `/ego_racecar/odom`
+- Simulation Time: `True`
+
+### 2. SLAM Map Launch (`localize_slam_launch.py`)
+**Default Settings:**
+- Map: `map_1753950572` (SLAM generated)
+- Odom Topic: `/odom` (real F1TENTH car)
+- Simulation Time: `False`
+
+### 3. Generic Launch (`localize_launch.py`)
+**Configurable via config file**
 
 ## Launch Options
 
 ```bash
 # Custom map
-ros2 launch particle_filter_cpp localize_launch.py map_file:=your_map.yaml
+ros2 launch particle_filter_cpp localize_sim_launch.py map_name:=levine
 
 # Without RViz  
-ros2 launch particle_filter_cpp localize_launch.py use_rviz:=false
+ros2 launch particle_filter_cpp localize_slam_launch.py use_rviz:=false
 
 # Custom topics
-ros2 launch particle_filter_cpp localize_launch.py \
-    scan_topic:=/scan odom_topic:=/ego_racecar/odom
+ros2 launch particle_filter_cpp localize_sim_launch.py \
+    scan_topic:=/custom_scan odom_topic:=/custom_odom
 ```
 
 ## Key Topics
