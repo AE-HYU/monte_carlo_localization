@@ -91,6 +91,11 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_initialized_ = false;
     first_sensor_update_ = true;
     current_speed_ = 0.0;
+    
+    // Motion prediction and interpolation state
+    last_odom_time_ = rclcpp::Time(0);
+    predicted_pose_ = Eigen::Vector3d::Zero();
+    prediction_initialized_ = false;
 
     // Particle filter core: N particles with uniform weights
     particles_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
@@ -117,6 +122,11 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Initialize TF broadcaster
     pub_tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    
+    // High-frequency prediction timer (100Hz)
+    prediction_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(10), // 100Hz = 10ms
+        std::bind(&ParticleFilter::prediction_timer_callback, this));
 
     // Sensor data and user input subscribers
     laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -321,23 +331,44 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
                              quaternion_to_angle(msg->pose.pose.orientation));
 
     current_speed_ = msg->twist.twist.linear.x;
+    current_angular_velocity_ = msg->twist.twist.angular.z;
+
+    rclcpp::Time current_time = msg->header.stamp;
 
     if (last_pose_.norm() > 0)
-    { // Check if we have a previous pose
+    { 
         // Transform global displacement to robot-local coordinates
         Eigen::Matrix2d rot = rotation_matrix(-last_pose_[2]);
         Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
         Eigen::Vector2d local_delta = rot * delta;
 
         odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
+        
+        // Calculate time delta for velocity estimation
+        if (last_odom_time_.nanoseconds() > 0) {
+            double dt = (current_time - last_odom_time_).seconds();
+            if (dt > 0) {
+                odom_velocity_ = Eigen::Vector3d(local_delta[0] / dt, local_delta[1] / dt, 
+                                               (position[2] - last_pose_[2]) / dt);
+            }
+        }
+        
         last_pose_ = position;
-        last_stamp_ = msg->header.stamp;
+        last_stamp_ = current_time;
+        last_odom_time_ = current_time;
         odom_initialized_ = true;
+        
+        // Initialize prediction state
+        if (!prediction_initialized_) {
+            predicted_pose_ = position;
+            prediction_initialized_ = true;
+        }
     }
     else
     {
         RCLCPP_INFO(this->get_logger(), "...Received first Odometry message");
         last_pose_ = position;
+        last_odom_time_ = current_time;
     }
 
     // Trigger MCL update cycle
@@ -639,6 +670,9 @@ void ParticleFilter::update()
 
         // Final pose estimate: weighted mean
         inferred_pose_ = expected_pose();
+        
+        // Update prediction with MCL result
+        predicted_pose_ = inferred_pose_;
 
         state_lock_.unlock();
 
@@ -727,6 +761,7 @@ void ParticleFilter::visualize()
             publish_particles(particles_);
         }
     }
+
 }
 
 void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
@@ -736,6 +771,7 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
     pa.header.frame_id = "/map";
     particle_pub_->publish(pa);
 }
+
 
 // --------------------------------- UTILITY FUNCTIONS ---------------------------------
 double ParticleFilter::quaternion_to_angle(const geometry_msgs::msg::Quaternion &q)
@@ -761,6 +797,91 @@ Eigen::Vector2d ParticleFilter::transform_to_lidar_frame(const Eigen::Vector3d &
     double lidar_world_x = base_pose[0] + cos_theta * LIDAR_OFFSET_X - sin_theta * LIDAR_OFFSET_Y;
     double lidar_world_y = base_pose[1] + sin_theta * LIDAR_OFFSET_X + cos_theta * LIDAR_OFFSET_Y;
     return Eigen::Vector2d(lidar_world_x, lidar_world_y);
+}
+
+// --------------------------------- MOTION PREDICTION FOR HIGH-FREQUENCY OUTPUT ---------------------------------
+void ParticleFilter::prediction_timer_callback()
+{
+    if (!prediction_initialized_ || !odom_initialized_) {
+        return;
+    }
+    
+    rclcpp::Time current_time = this->get_clock()->now();
+    static rclcpp::Time last_prediction_time = current_time;
+    
+    // Calculate actual dt from last prediction (not from last odom)
+    double dt = (current_time - last_prediction_time).seconds();
+    
+    if (dt > 0 && dt < 0.1) {  // Sanity check: dt should be ~0.01s (100Hz)
+        // Use constant velocity model for prediction
+        Eigen::Vector3d predicted_delta;
+        predicted_delta[0] = current_speed_ * dt;  // Forward velocity
+        predicted_delta[1] = 0.0;  // Assume no lateral motion
+        predicted_delta[2] = current_angular_velocity_ * dt;  // Angular velocity
+        
+        // Apply motion model to predicted pose
+        double cos_theta = std::cos(predicted_pose_[2]);
+        double sin_theta = std::sin(predicted_pose_[2]);
+        
+        predicted_pose_[0] += cos_theta * predicted_delta[0] - sin_theta * predicted_delta[1];
+        predicted_pose_[1] += sin_theta * predicted_delta[0] + cos_theta * predicted_delta[1];
+        predicted_pose_[2] += predicted_delta[2];
+        
+        // Normalize angle
+        predicted_pose_[2] = std::fmod(predicted_pose_[2] + M_PI, 2.0 * M_PI) - M_PI;
+        
+        // Update inferred pose for high-frequency output
+        inferred_pose_ = predicted_pose_;
+    }
+    
+    last_prediction_time = current_time;
+    
+    // Publish both TF and inferred pose at 100Hz
+    publish_predicted_tf(predicted_pose_, current_time);
+    publish_high_freq_pose(current_time);
+}
+
+void ParticleFilter::publish_predicted_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
+{
+    // Publish main transform at 100Hz
+    geometry_msgs::msg::TransformStamped t;
+    t.header.stamp = stamp;
+    t.header.frame_id = "map";
+    t.child_frame_id = "base_link";  // Use main base_link frame
+    t.transform.translation.x = pose[0];
+    t.transform.translation.y = pose[1];
+    t.transform.translation.z = 0.0;
+    t.transform.rotation = angle_to_quaternion(pose[2]);
+
+    pub_tf_->sendTransform(t);
+    
+    // Publish high-frequency odometry
+    if (PUBLISH_ODOM && odom_pub_) {
+        nav_msgs::msg::Odometry odom;
+        odom.header.stamp = stamp;
+        odom.header.frame_id = "/map";
+        odom.child_frame_id = "base_link";
+        odom.pose.pose.position.x = pose[0];
+        odom.pose.pose.position.y = pose[1];
+        odom.pose.pose.orientation = angle_to_quaternion(pose[2]);
+        odom.twist.twist.linear.x = current_speed_;
+        odom.twist.twist.angular.z = current_angular_velocity_;
+        odom_pub_->publish(odom);
+    }
+}
+
+void ParticleFilter::publish_high_freq_pose(const rclcpp::Time &stamp)
+{
+    // Publish inferred pose at 100Hz
+    if (DO_VIZ && pose_pub_ && pose_pub_->get_subscription_count() > 0) {
+        geometry_msgs::msg::PoseStamped ps;
+        ps.header.stamp = stamp;
+        ps.header.frame_id = "/map";
+        ps.pose.position.x = inferred_pose_[0];
+        ps.pose.position.y = inferred_pose_[1];
+        ps.pose.orientation = angle_to_quaternion(inferred_pose_[2]);
+        pose_pub_->publish(ps);
+    }
 }
 
 } // namespace particle_filter_cpp

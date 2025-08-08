@@ -170,6 +170,19 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- ALGORITHM INTERNALS ---------------------------------
     std::vector<int> particle_indices_;  // Index array for resampling
 
+    // --------------------------------- MOTION PREDICTION FOR HIGH-FREQUENCY OUTPUT ---------------------------------
+    void prediction_timer_callback();  // 100Hz prediction timer
+    void publish_predicted_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);  // High-freq TF
+    void publish_high_freq_pose(const rclcpp::Time &stamp);  // High-freq inferred pose
+
+    // --------------------------------- PREDICTION STATE ---------------------------------
+    rclcpp::TimerBase::SharedPtr prediction_timer_;  // 100Hz prediction timer
+    rclcpp::Time last_odom_time_;                     // Last odometry timestamp
+    Eigen::Vector3d predicted_pose_;                  // Predicted pose for interpolation
+    Eigen::Vector3d odom_velocity_;                   // Estimated velocity from odometry
+    bool prediction_initialized_;                     // Prediction state flag
+    double current_angular_velocity_;                 // Current angular velocity [rad/s]
+
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void update();  // Main MCL update loop
 };
