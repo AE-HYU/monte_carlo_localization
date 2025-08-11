@@ -1,7 +1,6 @@
 // ================================================================================================
 // PARTICLE FILTER IMPLEMENTATION - Monte Carlo Localization (MCL)
 // ================================================================================================
-// Simplified version based on Python implementation
 // Features: Multinomial resampling, velocity motion model, beam sensor model, ray casting
 // ================================================================================================
 

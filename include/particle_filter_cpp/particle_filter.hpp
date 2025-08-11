@@ -1,7 +1,6 @@
 // ================================================================================================
 // PARTICLE FILTER HEADER - Monte Carlo Localization (MCL) Class Definition
 // ================================================================================================
-// Simplified MCL implementation based on Python version
 // Features: Multinomial resampling, velocity motion model, beam sensor model, ray casting
 // ================================================================================================
 
