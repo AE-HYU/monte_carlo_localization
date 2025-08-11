@@ -56,8 +56,13 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
     void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);
+    void publish_odom_100hz();
     void visualize();
     void publish_particles(const Eigen::MatrixXd &particles_to_pub);
+    
+    // --------------------------------- POSE MANAGEMENT ---------------------------------
+    Eigen::Vector3d get_current_pose();
+    bool is_pose_valid(const Eigen::Vector3d& pose);
 
     // --------------------------------- UTILITY FUNCTIONS ---------------------------------
     double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);
@@ -173,6 +178,7 @@ class ParticleFilter : public rclcpp::Node
     void update();
     void timer_update();
     void apply_interpolated_motion();
+    bool should_interpolate_motion();
 };
 
 } // namespace particle_filter_cpp

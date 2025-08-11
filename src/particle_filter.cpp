@@ -140,13 +140,13 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     get_omap();
     initialize_global();
 
-    // Setup 100Hz update timer (10ms interval)
+    // Setup 100Hz update timer for motion interpolation
     update_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(10),
         std::bind(&ParticleFilter::timer_update, this)
     );
 
-    RCLCPP_INFO(this->get_logger(), "Finished initializing with 100Hz timer, waiting on messages...");
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized with 100Hz odometry publishing");
 }
 
 // --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
@@ -324,7 +324,7 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
             rclcpp::Time current_stamp = rclcpp::Time(msg->header.stamp);
             double actual_dt = (current_stamp - prev_odom_received_).seconds();
             expected_steps_between_odom_ = std::max(1, static_cast<int>(std::round(actual_dt / 0.01)));  // 10ms timer
-            RCLCPP_INFO(this->get_logger(), "Odom interval: %.1fms, expected_steps: %d", actual_dt * 1000, expected_steps_between_odom_);
+            // Store interval info for interpolation
         }
         
         // Calculate remaining motion after subtracting what timer already applied
@@ -341,11 +341,7 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         accumulated_timer_motion_ = Eigen::Vector3d::Zero();
         steps_since_odom_ = 0;
         
-        RCLCPP_INFO(this->get_logger(), "ODOM: full=[%.4f,%.4f,%.4f], timer_used=[%.4f,%.4f,%.4f], remaining=[%.4f,%.4f,%.4f], step=[%.4f,%.4f,%.4f] (%d steps)",
-                   full_motion[0], full_motion[1], full_motion[2],
-                   accumulated_timer_motion_[0], accumulated_timer_motion_[1], accumulated_timer_motion_[2],
-                   remaining_motion[0], remaining_motion[1], remaining_motion[2],
-                   last_odom_motion_[0], last_odom_motion_[1], last_odom_motion_[2], expected_steps_between_odom_);
+        // Motion decomposition complete
         
         last_pose_ = position;
         last_stamp_ = msg->header.stamp;
@@ -676,33 +672,32 @@ void ParticleFilter::update()
 // --------------------------------- 100HZ TIMER UPDATE ---------------------------------
 void ParticleFilter::timer_update()
 {
-    if (!has_recent_odom_ || !lidar_initialized_ || !odom_initialized_ || !map_initialized_)
+    // Always publish odometry at 100Hz
+    publish_odom_100hz();
+    
+    // Handle motion interpolation if conditions are met
+    if (should_interpolate_motion())
     {
-        return;
+        steps_since_odom_++;
+        apply_interpolated_motion();
     }
+}
 
-    // Check if odom data is recent (within last 50ms)
+bool ParticleFilter::should_interpolate_motion()
+{
+    if (!has_recent_odom_ || !lidar_initialized_ || !odom_initialized_ || !map_initialized_)
+        return false;
+
     auto now = this->get_clock()->now();
     double time_since_odom = (now - last_odom_received_).seconds();
     
-    if (time_since_odom > 0.05)  // 50ms timeout (a bit more than 1/50Hz)
+    if (time_since_odom > 0.05)  // 50ms timeout
     {
         has_recent_odom_ = false;
-        return;
+        return false;
     }
 
-    // Only interpolate between odom updates (dynamic number of steps)
-    if (steps_since_odom_ < expected_steps_between_odom_ - 1)  // Leave 1 step for new odom
-    {
-        steps_since_odom_++;
-        RCLCPP_INFO(this->get_logger(), "TIMER: step %d/%d, applying motion=[%.4f,%.4f,%.4f]",
-                   steps_since_odom_, expected_steps_between_odom_-1, last_odom_motion_[0], last_odom_motion_[1], last_odom_motion_[2]);
-        apply_interpolated_motion();
-    }
-    else
-    {
-        // RCLCPP_INFO(this->get_logger(), "TIMER: skipping step %d (waiting for new odom)", steps_since_odom_);
-    }
+    return steps_since_odom_ < expected_steps_between_odom_ - 1;
 }
 
 void ParticleFilter::apply_interpolated_motion()
@@ -771,6 +766,50 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         odom.twist.twist.linear.x = current_speed_;
         odom_pub_->publish(odom);
     }
+}
+
+void ParticleFilter::publish_odom_100hz()
+{
+    if (!PUBLISH_ODOM || !odom_pub_)
+        return;
+    
+    nav_msgs::msg::Odometry odom;
+    odom.header.stamp = this->get_clock()->now();
+    odom.header.frame_id = "map";
+    odom.child_frame_id = "laser";
+    
+    // Get best available pose
+    Eigen::Vector3d pose_to_publish = get_current_pose();
+    odom.pose.pose.position.x = pose_to_publish[0];
+    odom.pose.pose.position.y = pose_to_publish[1];
+    odom.pose.pose.position.z = 0.0;
+    odom.pose.pose.orientation = angle_to_quaternion(pose_to_publish[2]);
+    
+    // Set velocity
+    odom.twist.twist.linear.x = current_speed_;
+    odom.twist.twist.angular.z = current_angular_velocity_;
+    
+    odom_pub_->publish(odom);
+}
+
+Eigen::Vector3d ParticleFilter::get_current_pose()
+{
+    // Use particle filter estimate if valid
+    if (is_pose_valid(inferred_pose_))
+        return inferred_pose_;
+    
+    // Fallback to last known good pose
+    if (is_pose_valid(last_pose_))
+        return last_pose_;
+    
+    // Default to origin
+    return Eigen::Vector3d::Zero();
+}
+
+bool ParticleFilter::is_pose_valid(const Eigen::Vector3d& pose)
+{
+    return std::isfinite(pose[0]) && std::isfinite(pose[1]) && std::isfinite(pose[2]) &&
+           std::abs(pose[0]) < 1000.0 && std::abs(pose[1]) < 1000.0;
 }
 
 void ParticleFilter::visualize()
