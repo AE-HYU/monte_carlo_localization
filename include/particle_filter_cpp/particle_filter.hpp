@@ -138,6 +138,9 @@ class ParticleFilter : public rclcpp::Node
     // Services and TF
     rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> pub_tf_;
+    
+    // Timer for high-frequency updates
+    rclcpp::TimerBase::SharedPtr update_timer_;
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
@@ -151,12 +154,25 @@ class ParticleFilter : public rclcpp::Node
     rclcpp::Time last_stamp_;
     int iters_;
     double current_speed_;
+    double current_angular_velocity_;
+    rclcpp::Time last_odom_time_;
+    bool has_recent_odom_;
+    
+    // Interpolation state
+    Eigen::Vector3d last_odom_motion_;
+    rclcpp::Time last_odom_received_;
+    rclcpp::Time prev_odom_received_;
+    int steps_since_odom_;
+    int expected_steps_between_odom_;
+    Eigen::Vector3d accumulated_timer_motion_;
 
     // --------------------------------- ALGORITHM INTERNALS ---------------------------------
     std::vector<int> particle_indices_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void update();
+    void timer_update();
+    void apply_interpolated_motion();
 };
 
 } // namespace particle_filter_cpp

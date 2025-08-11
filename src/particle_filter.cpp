@@ -87,6 +87,12 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_initialized_ = false;
     first_sensor_update_ = true;
     current_speed_ = 0.0;
+    current_angular_velocity_ = 0.0;
+    has_recent_odom_ = false;
+    last_odom_motion_ = Eigen::Vector3d::Zero();
+    steps_since_odom_ = 0;
+    expected_steps_between_odom_ = 2;  // Default: assume 20ms odom = 2 steps of 10ms
+    accumulated_timer_motion_ = Eigen::Vector3d::Zero();
 
     // Initialize particles with uniform weights
     particles_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
@@ -134,7 +140,13 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     get_omap();
     initialize_global();
 
-    RCLCPP_INFO(this->get_logger(), "Finished initializing, waiting on messages...");
+    // Setup 100Hz update timer (10ms interval)
+    update_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(10),
+        std::bind(&ParticleFilter::timer_update, this)
+    );
+
+    RCLCPP_INFO(this->get_logger(), "Finished initializing with 100Hz timer, waiting on messages...");
 }
 
 // --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
@@ -295,6 +307,9 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
                              quaternion_to_angle(msg->pose.pose.orientation));
 
     current_speed_ = msg->twist.twist.linear.x;
+    current_angular_velocity_ = msg->twist.twist.angular.z;
+    last_odom_time_ = msg->header.stamp;
+    has_recent_odom_ = true;
 
     if (last_pose_.norm() > 0)
     {
@@ -303,19 +318,47 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
         Eigen::Vector2d local_delta = rot * delta;
 
-        odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
+        // Calculate actual odom interval and steps needed
+        if (prev_odom_received_.nanoseconds() > 0)
+        {
+            rclcpp::Time current_stamp = rclcpp::Time(msg->header.stamp);
+            double actual_dt = (current_stamp - prev_odom_received_).seconds();
+            expected_steps_between_odom_ = std::max(1, static_cast<int>(std::round(actual_dt / 0.01)));  // 10ms timer
+            RCLCPP_INFO(this->get_logger(), "Odom interval: %.1fms, expected_steps: %d", actual_dt * 1000, expected_steps_between_odom_);
+        }
+        
+        // Calculate remaining motion after subtracting what timer already applied
+        Eigen::Vector3d full_motion(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
+        Eigen::Vector3d remaining_motion = full_motion - accumulated_timer_motion_;
+        
+        // Store the motion for interpolation (divide by actual number of steps)
+        last_odom_motion_ = full_motion / static_cast<double>(expected_steps_between_odom_);
+        prev_odom_received_ = last_odom_received_;
+        last_odom_received_ = rclcpp::Time(msg->header.stamp);
+        
+        // Use remaining motion for MCL update instead of full motion
+        odometry_data_ = remaining_motion;
+        accumulated_timer_motion_ = Eigen::Vector3d::Zero();
+        steps_since_odom_ = 0;
+        
+        RCLCPP_INFO(this->get_logger(), "ODOM: full=[%.4f,%.4f,%.4f], timer_used=[%.4f,%.4f,%.4f], remaining=[%.4f,%.4f,%.4f], step=[%.4f,%.4f,%.4f] (%d steps)",
+                   full_motion[0], full_motion[1], full_motion[2],
+                   accumulated_timer_motion_[0], accumulated_timer_motion_[1], accumulated_timer_motion_[2],
+                   remaining_motion[0], remaining_motion[1], remaining_motion[2],
+                   last_odom_motion_[0], last_odom_motion_[1], last_odom_motion_[2], expected_steps_between_odom_);
+        
         last_pose_ = position;
         last_stamp_ = msg->header.stamp;
         odom_initialized_ = true;
+        
+        // Trigger immediate update for full odometry step
+        update();
     }
     else
     {
         RCLCPP_INFO(this->get_logger(), "...Received first Odometry message");
         last_pose_ = position;
     }
-
-    // Trigger MCL update cycle
-    update();
 }
 
 // --------------------------------- INTERACTIVE INITIALIZATION ---------------------------------
@@ -627,6 +670,77 @@ void ParticleFilter::update()
     else
     {
         RCLCPP_INFO(this->get_logger(), "Concurrency error avoided");
+    }
+}
+
+// --------------------------------- 100HZ TIMER UPDATE ---------------------------------
+void ParticleFilter::timer_update()
+{
+    if (!has_recent_odom_ || !lidar_initialized_ || !odom_initialized_ || !map_initialized_)
+    {
+        return;
+    }
+
+    // Check if odom data is recent (within last 50ms)
+    auto now = this->get_clock()->now();
+    double time_since_odom = (now - last_odom_received_).seconds();
+    
+    if (time_since_odom > 0.05)  // 50ms timeout (a bit more than 1/50Hz)
+    {
+        has_recent_odom_ = false;
+        return;
+    }
+
+    // Only interpolate between odom updates (dynamic number of steps)
+    if (steps_since_odom_ < expected_steps_between_odom_ - 1)  // Leave 1 step for new odom
+    {
+        steps_since_odom_++;
+        RCLCPP_INFO(this->get_logger(), "TIMER: step %d/%d, applying motion=[%.4f,%.4f,%.4f]",
+                   steps_since_odom_, expected_steps_between_odom_-1, last_odom_motion_[0], last_odom_motion_[1], last_odom_motion_[2]);
+        apply_interpolated_motion();
+    }
+    else
+    {
+        // RCLCPP_INFO(this->get_logger(), "TIMER: skipping step %d (waiting for new odom)", steps_since_odom_);
+    }
+}
+
+void ParticleFilter::apply_interpolated_motion()
+{
+    if (state_lock_.try_lock())
+    {
+        // Apply interpolation step and accumulate it
+        Eigen::Vector3d small_motion = last_odom_motion_;
+        accumulated_timer_motion_ += small_motion;
+        
+        // Apply motion model with very reduced noise for interpolation
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            double cos_theta = std::cos(particles_(i, 2));
+            double sin_theta = std::sin(particles_(i, 2));
+
+            local_deltas_(i, 0) = cos_theta * small_motion[0] - sin_theta * small_motion[1];
+            local_deltas_(i, 1) = sin_theta * small_motion[0] + cos_theta * small_motion[1];
+            local_deltas_(i, 2) = small_motion[2];
+        }
+
+        particles_ += local_deltas_;
+
+        // Add very small noise for interpolation (2% of normal)
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            particles_(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * 0.02;
+            particles_(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * 0.02;
+            particles_(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * 0.02;
+        }
+        
+        // Update pose estimate
+        inferred_pose_ = expected_pose();
+        
+        state_lock_.unlock();
+        
+        // Publish updated transform at 100Hz
+        publish_tf(inferred_pose_, this->get_clock()->now());
     }
 }
 
