@@ -67,8 +67,19 @@ def generate_launch_description():
     # SLAM config file: optimized for real-time performance with SLAM maps
     src_config_path = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize_slam.yaml')
     config_file_path = src_config_path if os.path.exists(src_config_path) else PathJoinSubstitution([pkg_share, 'config', 'localize_slam.yaml'])
-    # SLAM-generated map file path (typically map_1753950572 or similar timestamp)
-    map_file = PathJoinSubstitution([pkg_share, 'maps', PythonExpression(['"', LaunchConfiguration('map_name'), '"', ' + ".yaml"'])])
+    
+    # SLAM-generated map file: resolve path dynamically
+    # If map_name contains '/', it's already a full path, otherwise resolve from maps directory
+    if '/' in map_name:
+        map_file = map_name + '.yaml'
+    else:
+        # Try source directory first (for development)
+        src_maps_path = os.path.join('src', 'particle_filter_cpp', 'maps', map_name + '.yaml')
+        if os.path.exists(src_maps_path):
+            map_file = os.path.abspath(src_maps_path)
+        else:
+            # Fallback to package share directory
+            map_file = os.path.join(get_package_share_directory('particle_filter_cpp'), 'maps', map_name + '.yaml')
     # RViz config for real-time localization visualization
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
     

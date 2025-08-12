@@ -15,7 +15,7 @@ def generate_launch_description():
     # Get package share directory for resource paths
     pkg_share = FindPackageShare('particle_filter_cpp')
     
-    # Read config file to auto-detect map name
+    # Read config file to auto-detect map name (runtime resolution)
     # Try source directory first (development), then install directory
     src_config_file = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize.yaml')
     config_file = src_config_file if os.path.exists(src_config_file) else os.path.join(
@@ -62,8 +62,19 @@ def generate_launch_description():
     # Config file: prefer source directory for development
     src_config_path = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize.yaml')
     config_file_path = src_config_path if os.path.exists(src_config_path) else PathJoinSubstitution([pkg_share, 'config', 'localize.yaml'])
-    # Map file: dynamically construct path with launch argument
-    map_file = PathJoinSubstitution([pkg_share, 'maps', PythonExpression(['"', LaunchConfiguration('map_name'), '"', ' + ".yaml"'])])
+    
+    # Map file: resolve path dynamically like f1tenth_gym_ros
+    # If map_name contains '/', it's already a full path, otherwise resolve from maps directory
+    if '/' in map_name:
+        map_file = map_name + '.yaml'
+    else:
+        # Try source directory first (for development)
+        src_maps_path = os.path.join('src', 'particle_filter_cpp', 'maps', map_name + '.yaml')
+        if os.path.exists(src_maps_path):
+            map_file = os.path.abspath(src_maps_path)
+        else:
+            # Fallback to package share directory
+            map_file = os.path.join(get_package_share_directory('particle_filter_cpp'), 'maps', map_name + '.yaml')
     # RViz configuration file
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
     
@@ -78,7 +89,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             common_params,
-            {'yaml_filename': map_file}  # Map file from launch argument
+            {'yaml_filename': map_file}  # Map file auto-resolved from config
         ]
     )
     
