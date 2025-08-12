@@ -47,6 +47,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("wheelbase", 0.325);
     this->declare_parameter("scan_topic", "/scan");
     this->declare_parameter("odom_topic", "/odom");
+    this->declare_parameter("timer_frequency", 100.0);
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -60,6 +61,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     SHOW_FINE_TIMING = this->get_parameter("fine_timing").as_int() > 0;
     PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
     DO_VIZ = this->get_parameter("viz").as_bool();
+    TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
 
     // 4-component sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -91,7 +93,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     has_recent_odom_ = false;
     last_odom_motion_ = Eigen::Vector3d::Zero();
     steps_since_odom_ = 0;
-    expected_steps_between_odom_ = 2;  // Default: assume 20ms odom = 2 steps of 10ms
+    expected_steps_between_odom_ = static_cast<int>(0.02 * TIMER_FREQUENCY);  // Default: 50Hz odom = 20ms interval
     accumulated_timer_motion_ = Eigen::Vector3d::Zero();
 
     // Initialize particles with uniform weights
@@ -140,13 +142,14 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     get_omap();
     initialize_global();
 
-    // Setup 100Hz update timer for motion interpolation
+    // Setup configurable frequency update timer for motion interpolation
+    int timer_interval_ms = static_cast<int>(1000.0 / TIMER_FREQUENCY);
     update_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(10),
+        std::chrono::milliseconds(timer_interval_ms),
         std::bind(&ParticleFilter::timer_update, this)
     );
 
-    RCLCPP_INFO(this->get_logger(), "Particle filter initialized with 100Hz odometry publishing");
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
 }
 
 // --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
@@ -323,7 +326,8 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         {
             rclcpp::Time current_stamp = rclcpp::Time(msg->header.stamp);
             double actual_dt = (current_stamp - prev_odom_received_).seconds();
-            expected_steps_between_odom_ = std::max(1, static_cast<int>(std::round(actual_dt / 0.01)));  // 10ms timer
+            double timer_dt = 1.0 / TIMER_FREQUENCY;  // Timer interval in seconds
+            expected_steps_between_odom_ = std::max(1, static_cast<int>(std::round(actual_dt / timer_dt)));
             // Store interval info for interpolation
         }
         
@@ -669,10 +673,10 @@ void ParticleFilter::update()
     }
 }
 
-// --------------------------------- 100HZ TIMER UPDATE ---------------------------------
+// --------------------------------- CONFIGURABLE TIMER UPDATE ---------------------------------
 void ParticleFilter::timer_update()
 {
-    // Always publish odometry at 100Hz
+    // Always publish odometry at configured frequency
     publish_odom_100hz();
     
     // Handle motion interpolation if conditions are met
@@ -734,7 +738,7 @@ void ParticleFilter::apply_interpolated_motion()
         
         state_lock_.unlock();
         
-        // Publish updated transform at 100Hz
+        // Publish updated transform at configured frequency
         publish_tf(inferred_pose_, this->get_clock()->now());
     }
 }

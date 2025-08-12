@@ -85,6 +85,7 @@ class ParticleFilter : public rclcpp::Node
     bool SHOW_FINE_TIMING;
     bool PUBLISH_ODOM;
     bool DO_VIZ;
+    double TIMER_FREQUENCY;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
