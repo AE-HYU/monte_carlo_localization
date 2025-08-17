@@ -29,6 +29,7 @@ particle_filter:
     rangelib_variant: 2         # Ray casting library variant
     angle_step: 18              # Laser scan downsampling factor
     squash_factor: 2.2          # Weight normalization factor
+    use_dda_raycasting: true    # Use DDA algorithm for ray casting (true) or traditional method (false)
     
     # Performance and debugging
     fine_timing: 0              # Enable detailed timing (0=off, 1=on)

@@ -72,6 +72,7 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- RAY CASTING ---------------------------------
     std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);
     float cast_ray(double x, double y, double angle);
+    float cast_ray_dda(double x, double y, double angle);
 
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
     int ANGLE_STEP;
@@ -87,6 +88,7 @@ class ParticleFilter : public rclcpp::Node
     bool DO_VIZ;
     double TIMER_FREQUENCY;
     bool ENABLE_MOTION_INTERPOLATION;
+    bool USE_DDA_RAYCASTING;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
