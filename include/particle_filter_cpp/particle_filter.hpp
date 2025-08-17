@@ -86,6 +86,7 @@ class ParticleFilter : public rclcpp::Node
     bool PUBLISH_ODOM;
     bool DO_VIZ;
     double TIMER_FREQUENCY;
+    bool ENABLE_MOTION_INTERPOLATION;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
@@ -164,6 +165,17 @@ class ParticleFilter : public rclcpp::Node
     rclcpp::Time last_odom_time_;
     bool has_recent_odom_;
     
+    // Performance profiling
+    struct TimingStats {
+        double total_mcl_time = 0.0;
+        double ray_casting_time = 0.0;
+        double sensor_model_time = 0.0;
+        double motion_model_time = 0.0;
+        double resampling_time = 0.0;
+        double query_prep_time = 0.0;
+        int measurement_count = 0;
+    } timing_stats_;
+    
     // Interpolation state
     Eigen::Vector3d last_odom_motion_;
     rclcpp::Time last_odom_received_;
@@ -180,6 +192,10 @@ class ParticleFilter : public rclcpp::Node
     void timer_update();
     void apply_interpolated_motion();
     bool should_interpolate_motion();
+    
+    // Performance profiling methods
+    void print_performance_stats();
+    void reset_performance_stats();
 };
 
 } // namespace particle_filter_cpp

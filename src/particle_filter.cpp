@@ -48,6 +48,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("scan_topic", "/scan");
     this->declare_parameter("odom_topic", "/odom");
     this->declare_parameter("timer_frequency", 100.0);
+    this->declare_parameter("enable_motion_interpolation", true);
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -62,6 +63,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
     DO_VIZ = this->get_parameter("viz").as_bool();
     TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
+    ENABLE_MOTION_INTERPOLATION = this->get_parameter("enable_motion_interpolation").as_bool();
 
     // 4-component sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -150,6 +152,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     );
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
+    RCLCPP_INFO(this->get_logger(), "Motion interpolation: %s", ENABLE_MOTION_INTERPOLATION ? "ENABLED" : "DISABLED");
 }
 
 // --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
@@ -486,6 +489,7 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
     }
 
     // Generate ray queries
+    auto query_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         for (int j = 0; j < num_rays; ++j)
@@ -496,9 +500,14 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
             queries_(idx, 2) = proposal_dist(i, 2) + downsampled_angles_[j];
         }
     }
+    auto query_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(query_end - query_start).count();
 
-    // Batch ray casting
+    // Batch ray casting (timing handled separately in calc_range_many)
     ranges_ = calc_range_many(queries_);
+
+    // Start timing for sensor model evaluation (lookup table part only)
+    auto sensor_eval_start = std::chrono::high_resolution_clock::now();
 
     // Convert to pixel units and compute weights
     std::vector<float> obs_px(obs.size());
@@ -534,11 +543,16 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
         }
         weights[i] = std::pow(weight, INV_SQUASH_FACTOR);
     }
+
+    auto sensor_eval_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(sensor_eval_end - sensor_eval_start).count();
 }
 
 // --------------------------------- RAY CASTING ---------------------------------
 std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &queries)
 {
+    auto raycast_start = std::chrono::high_resolution_clock::now();
+    
     std::vector<float> results(queries.rows());
 
     for (int i = 0; i < queries.rows(); ++i)
@@ -546,6 +560,9 @@ std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &querie
         results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
     }
 
+    auto raycast_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
+    
     return results;
 }
 
@@ -592,7 +609,10 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
 
 void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
+    auto mcl_start = std::chrono::high_resolution_clock::now();
+    
     // Step 1: Multinomial resampling
+    auto resample_start = std::chrono::high_resolution_clock::now();
     std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
     Eigen::MatrixXd proposal_distribution(MAX_PARTICLES, 3);
 
@@ -601,11 +621,16 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
         int idx = particle_dist(rng_);
         proposal_distribution.row(i) = particles_.row(idx);
     }
+    auto resample_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
 
     // Step 2: Motion prediction with noise
+    auto motion_start = std::chrono::high_resolution_clock::now();
     motion_model(proposal_distribution, action);
+    auto motion_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
-    // Step 3: Sensor likelihood evaluation
+    // Step 3: Sensor likelihood evaluation (timing handled inside sensor_model function)
     sensor_model(proposal_distribution, observation, weights_);
 
     // Step 4: Weight normalization
@@ -620,6 +645,10 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 
     // Step 5: Update particle set
     particles_ = proposal_distribution;
+    
+    auto mcl_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+    timing_stats_.measurement_count++;
 }
 
 Eigen::Vector3d ParticleFilter::expected_pose()
@@ -664,6 +693,11 @@ void ParticleFilter::update()
             RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)", iters_, inferred_pose_[0],
                         inferred_pose_[1], inferred_pose_[2]);
         }
+        
+        if (iters_ % 100 == 0)
+        {
+            print_performance_stats();
+        }
 
         visualize();
     }
@@ -679,8 +713,8 @@ void ParticleFilter::timer_update()
     // Always publish odometry at configured frequency
     publish_odom_100hz();
     
-    // Handle motion interpolation if conditions are met
-    if (should_interpolate_motion())
+    // Handle motion interpolation if enabled and conditions are met
+    if (ENABLE_MOTION_INTERPOLATION && should_interpolate_motion())
     {
         steps_since_odom_++;
         apply_interpolated_motion();
@@ -879,6 +913,52 @@ geometry_msgs::msg::Quaternion ParticleFilter::angle_to_quaternion(double angle)
 Eigen::Matrix2d ParticleFilter::rotation_matrix(double angle)
 {
     return utils::rotation_matrix(angle);
+}
+
+// --------------------------------- PERFORMANCE PROFILING ---------------------------------
+void ParticleFilter::print_performance_stats()
+{
+    if (timing_stats_.measurement_count == 0)
+        return;
+        
+    double avg_total = timing_stats_.total_mcl_time / timing_stats_.measurement_count;
+    double avg_raycast = timing_stats_.ray_casting_time / timing_stats_.measurement_count;
+    double avg_sensor = timing_stats_.sensor_model_time / timing_stats_.measurement_count;
+    double avg_motion = timing_stats_.motion_model_time / timing_stats_.measurement_count;
+    double avg_resample = timing_stats_.resampling_time / timing_stats_.measurement_count;
+    double avg_query = timing_stats_.query_prep_time / timing_stats_.measurement_count;
+    
+    RCLCPP_INFO(this->get_logger(), 
+        "=== PERFORMANCE STATS (last %d iterations) ===", timing_stats_.measurement_count);
+    RCLCPP_INFO(this->get_logger(), 
+        "Total MCL:        %.2f ms/iter (%.1f Hz)", avg_total, 1000.0/avg_total);
+    RCLCPP_INFO(this->get_logger(), 
+        "Ray casting:      %.2f ms/iter (%.1f%%)", avg_raycast, 100.0*avg_raycast/avg_total);
+    RCLCPP_INFO(this->get_logger(), 
+        "Sensor eval:      %.2f ms/iter (%.1f%%) [lookup tables only]", avg_sensor, 100.0*avg_sensor/avg_total);
+    RCLCPP_INFO(this->get_logger(), 
+        "Query prep:       %.2f ms/iter (%.1f%%)", avg_query, 100.0*avg_query/avg_total);
+    RCLCPP_INFO(this->get_logger(), 
+        "Motion model:     %.2f ms/iter (%.1f%%)", avg_motion, 100.0*avg_motion/avg_total);
+    RCLCPP_INFO(this->get_logger(), 
+        "Resampling:       %.2f ms/iter (%.1f%%)", avg_resample, 100.0*avg_resample/avg_total);
+    RCLCPP_INFO(this->get_logger(), 
+        "Particles: %d, Rays/particle: %zu, Total rays: %d", 
+        MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
+    RCLCPP_INFO(this->get_logger(), "=====================================");
+    
+    reset_performance_stats();
+}
+
+void ParticleFilter::reset_performance_stats()
+{
+    timing_stats_.total_mcl_time = 0.0;
+    timing_stats_.ray_casting_time = 0.0;
+    timing_stats_.sensor_model_time = 0.0;
+    timing_stats_.motion_model_time = 0.0;
+    timing_stats_.resampling_time = 0.0;
+    timing_stats_.query_prep_time = 0.0;
+    timing_stats_.measurement_count = 0;
 }
 
 } // namespace particle_filter_cpp
