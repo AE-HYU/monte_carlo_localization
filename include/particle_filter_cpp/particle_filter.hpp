@@ -89,6 +89,8 @@ class ParticleFilter : public rclcpp::Node
     double TIMER_FREQUENCY;
     bool ENABLE_MOTION_INTERPOLATION;
     bool USE_DDA_RAYCASTING;
+    bool USE_PARALLEL_RAYCASTING;
+    int NUM_THREADS;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;

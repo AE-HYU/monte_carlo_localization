@@ -14,6 +14,7 @@
 #include <numeric>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <omp.h>
 
 namespace particle_filter_cpp
 {
@@ -50,6 +51,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("timer_frequency", 100.0);
     this->declare_parameter("enable_motion_interpolation", true);
     this->declare_parameter("use_dda_raycasting", false);
+    this->declare_parameter("use_parallel_raycasting", true);
+    this->declare_parameter("num_threads", 0); // 0 = auto-detect
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -66,6 +69,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
     ENABLE_MOTION_INTERPOLATION = this->get_parameter("enable_motion_interpolation").as_bool();
     USE_DDA_RAYCASTING = this->get_parameter("use_dda_raycasting").as_bool();
+    USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
+    NUM_THREADS = this->get_parameter("num_threads").as_int();
 
     // 4-component sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -99,6 +104,14 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     steps_since_odom_ = 0;
     expected_steps_between_odom_ = static_cast<int>(0.02 * TIMER_FREQUENCY);  // Default: 50Hz odom = 20ms interval
     accumulated_timer_motion_ = Eigen::Vector3d::Zero();
+    
+    // Setup OpenMP for parallel ray casting
+    if (USE_PARALLEL_RAYCASTING) {
+        if (NUM_THREADS == 0) {
+            NUM_THREADS = omp_get_max_threads();
+        }
+        omp_set_num_threads(NUM_THREADS);
+    }
 
     // Initialize particles with uniform weights
     particles_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
@@ -156,6 +169,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
     RCLCPP_INFO(this->get_logger(), "Motion interpolation: %s", ENABLE_MOTION_INTERPOLATION ? "ENABLED" : "DISABLED");
     RCLCPP_INFO(this->get_logger(), "Ray casting method: %s", USE_DDA_RAYCASTING ? "DDA" : "TRADITIONAL");
+    RCLCPP_INFO(this->get_logger(), "Parallel ray casting: %s (%d threads)", 
+        USE_PARALLEL_RAYCASTING ? "ENABLED" : "DISABLED", USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
 }
 
 // --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
@@ -558,12 +573,26 @@ std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &querie
     
     std::vector<float> results(queries.rows());
 
-    for (int i = 0; i < queries.rows(); ++i)
-    {
-        if (USE_DDA_RAYCASTING) {
-            results[i] = cast_ray_dda(queries(i, 0), queries(i, 1), queries(i, 2));
-        } else {
-            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
+    if (USE_PARALLEL_RAYCASTING) {
+        // Parallel ray casting with OpenMP
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            if (USE_DDA_RAYCASTING) {
+                results[i] = cast_ray_dda(queries(i, 0), queries(i, 1), queries(i, 2));
+            } else {
+                results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
+            }
+        }
+    } else {
+        // Sequential ray casting
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            if (USE_DDA_RAYCASTING) {
+                results[i] = cast_ray_dda(queries(i, 0), queries(i, 1), queries(i, 2));
+            } else {
+                results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
+            }
         }
     }
 

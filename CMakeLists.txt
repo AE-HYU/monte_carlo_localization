@@ -26,6 +26,7 @@ find_package(tf2_eigen REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(angles REQUIRED)
+find_package(OpenMP REQUIRED)
 # find_package(rclcpp_parameters REQUIRED)
 
 # Optional: Find nav2_map_server for map loading
@@ -67,6 +68,12 @@ add_executable(particle_filter_node
 
 target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)
 ament_target_dependencies(particle_filter_node ${dependencies})
+
+# Link OpenMP
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(${PROJECT_NAME}_lib OpenMP::OpenMP_CXX)
+    target_link_libraries(particle_filter_node OpenMP::OpenMP_CXX)
+endif()
 
 # No external ray casting library - using built-in implementation
 
