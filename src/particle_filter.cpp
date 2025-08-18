@@ -49,7 +49,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("scan_topic", "/scan");
     this->declare_parameter("odom_topic", "/odom");
     this->declare_parameter("timer_frequency", 100.0);
-    this->declare_parameter("enable_motion_interpolation", true);
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
 
@@ -66,7 +65,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
     DO_VIZ = this->get_parameter("viz").as_bool();
     TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
-    ENABLE_MOTION_INTERPOLATION = this->get_parameter("enable_motion_interpolation").as_bool();
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
     NUM_THREADS = this->get_parameter("num_threads").as_int();
 
@@ -97,11 +95,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     first_sensor_update_ = true;
     current_speed_ = 0.0;
     current_angular_velocity_ = 0.0;
-    has_recent_odom_ = false;
-    last_odom_motion_ = Eigen::Vector3d::Zero();
-    steps_since_odom_ = 0;
-    expected_steps_between_odom_ = static_cast<int>(0.02 * TIMER_FREQUENCY);  // Default: 50Hz odom = 20ms interval
-    accumulated_timer_motion_ = Eigen::Vector3d::Zero();
     
     // --------------------------------- THREADING SETUP ---------------------------------
     // Setup OpenMP for parallel ray casting
@@ -166,7 +159,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     );
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
-    RCLCPP_INFO(this->get_logger(), "Motion interpolation: %s", ENABLE_MOTION_INTERPOLATION ? "ENABLED" : "DISABLED");
     RCLCPP_INFO(this->get_logger(), "Ray casting method: TRADITIONAL");
     RCLCPP_INFO(this->get_logger(), "Parallel ray casting: %s (%d threads)", 
         USE_PARALLEL_RAYCASTING ? "ENABLED" : "DISABLED", USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
@@ -332,7 +324,6 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     current_speed_ = msg->twist.twist.linear.x;
     current_angular_velocity_ = msg->twist.twist.angular.z;
     last_odom_time_ = msg->header.stamp;
-    has_recent_odom_ = true;
 
     if (last_pose_.norm() > 0)
     {
@@ -341,29 +332,8 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
         Eigen::Vector2d local_delta = rot * delta;
 
-        // Calculate actual odom interval and steps needed
-        if (prev_odom_received_.nanoseconds() > 0)
-        {
-            rclcpp::Time current_stamp = rclcpp::Time(msg->header.stamp);
-            double actual_dt = (current_stamp - prev_odom_received_).seconds();
-            double timer_dt = 1.0 / TIMER_FREQUENCY;  // Timer interval in seconds
-            expected_steps_between_odom_ = std::max(1, static_cast<int>(std::round(actual_dt / timer_dt)));
-            // Store interval info for interpolation
-        }
-        
-        // Calculate remaining motion after subtracting what timer already applied
-        Eigen::Vector3d full_motion(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
-        Eigen::Vector3d remaining_motion = full_motion - accumulated_timer_motion_;
-        
-        // Store the motion for interpolation (divide by actual number of steps)
-        last_odom_motion_ = full_motion / static_cast<double>(expected_steps_between_odom_);
-        prev_odom_received_ = last_odom_received_;
-        last_odom_received_ = rclcpp::Time(msg->header.stamp);
-        
-        // Use remaining motion for MCL update instead of full motion
-        odometry_data_ = remaining_motion;
-        accumulated_timer_motion_ = Eigen::Vector3d::Zero();
-        steps_since_odom_ = 0;
+        // Use the motion directly for MCL update
+        odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
         
         // Motion decomposition complete
         
@@ -738,71 +708,8 @@ void ParticleFilter::update()
 // --------------------------------- CONFIGURABLE TIMER UPDATE ---------------------------------
 void ParticleFilter::timer_update()
 {
-    // Always publish odometry at configured frequency
+    // Publish odometry at configured frequency
     publish_odom_100hz();
-    
-    // Handle motion interpolation if enabled and conditions are met
-    if (ENABLE_MOTION_INTERPOLATION && should_interpolate_motion())
-    {
-        steps_since_odom_++;
-        apply_interpolated_motion();
-    }
-}
-
-bool ParticleFilter::should_interpolate_motion()
-{
-    if (!has_recent_odom_ || !lidar_initialized_ || !odom_initialized_ || !map_initialized_)
-        return false;
-
-    auto now = this->get_clock()->now();
-    double time_since_odom = (now - last_odom_received_).seconds();
-    
-    if (time_since_odom > 0.05)  // 50ms timeout
-    {
-        has_recent_odom_ = false;
-        return false;
-    }
-
-    return steps_since_odom_ < expected_steps_between_odom_ - 1;
-}
-
-void ParticleFilter::apply_interpolated_motion()
-{
-    if (state_lock_.try_lock())
-    {
-        // Apply interpolation step and accumulate it
-        Eigen::Vector3d small_motion = last_odom_motion_;
-        accumulated_timer_motion_ += small_motion;
-        
-        // Apply motion model with very reduced noise for interpolation
-        for (int i = 0; i < MAX_PARTICLES; ++i)
-        {
-            double cos_theta = std::cos(particles_(i, 2));
-            double sin_theta = std::sin(particles_(i, 2));
-
-            local_deltas_(i, 0) = cos_theta * small_motion[0] - sin_theta * small_motion[1];
-            local_deltas_(i, 1) = sin_theta * small_motion[0] + cos_theta * small_motion[1];
-            local_deltas_(i, 2) = small_motion[2];
-        }
-
-        particles_ += local_deltas_;
-
-        // Add very small noise for interpolation (2% of normal)
-        for (int i = 0; i < MAX_PARTICLES; ++i)
-        {
-            particles_(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * 0.02;
-            particles_(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * 0.02;
-            particles_(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * 0.02;
-        }
-        
-        // Update pose estimate
-        inferred_pose_ = expected_pose();
-        
-        state_lock_.unlock();
-        
-        // Publish updated transform at configured frequency
-        publish_tf(inferred_pose_, this->get_clock()->now());
-    }
 }
 
 // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------

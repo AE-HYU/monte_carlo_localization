@@ -43,7 +43,6 @@ particle_filter:
     publish_odom: true                  # Publish corrected pose as odometry
     viz: true                           # Enable RViz visualization markers
     timer_frequency: 100.0              # Timer update frequency (Hz) for motion interpolation
-    enable_motion_interpolation: false   # Enable/disable motion interpolation between odometry updates
     
     # Update trigger thresholds (conservative for stability)
     update_min_distance: 0.0           # Minimum distance to trigger update (m)
