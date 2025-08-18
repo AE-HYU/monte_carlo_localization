@@ -29,7 +29,6 @@ particle_filter:
     rangelib_variant: 2         # Ray casting library variant
     angle_step: 18              # Laser scan downsampling factor
     squash_factor: 2.2          # Weight normalization factor
-    use_dda_raycasting: false   # Use DDA algorithm for ray casting (true) or traditional method (false)
     use_parallel_raycasting: true  # Enable parallel ray casting with OpenMP
     num_threads: 0              # Number of threads for parallel ray casting (0 = auto-detect)
     
@@ -37,14 +36,14 @@ particle_filter:
     fine_timing: 0              # Enable detailed timing (0=off, 1=on)
     
     # ROS topic configuration (simulation specific)
-    scan_topic: "/scan"                # LaserScan input topic
-    odom_topic: "/ego_racecar/odom"    # Odometry from F1TENTH Gym simulation
+    scan_topic: "/scan_noisy"                # LaserScan input topic
+    odom_topic: "/ego_racecar/odom_noisy"    # Odometry from F1TENTH Gym simulation
     
     # Publishing options
     publish_odom: true                  # Publish pose as odometry message
     viz: true                           # Enable visualization markers
     timer_frequency: 200.0              # Timer update frequency (Hz) for motion interpolation
-    enable_motion_interpolation: true   # Enable/disable motion interpolation between odometry updates
+    enable_motion_interpolation: false   # Enable/disable motion interpolation between odometry updates
     
     # Update trigger thresholds
     update_min_distance: 0.0           # Min distance to trigger update (m)

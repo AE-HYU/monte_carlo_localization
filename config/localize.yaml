@@ -29,6 +29,8 @@ particle_filter:
     rangelib_variant: 2         # Ray casting library variant
     angle_step: 18              # Laser scan downsampling factor
     squash_factor: 2.2          # Weight normalization factor
+    use_parallel_raycasting: true  # Enable parallel ray casting with OpenMP
+    num_threads: 0              # Number of threads for parallel ray casting (0 = auto-detect)
     
     # Performance and debugging
     fine_timing: 0              # Enable detailed timing (0=off, 1=on)
@@ -42,6 +44,7 @@ particle_filter:
     publish_odom: true                  # Publish pose as odometry message
     viz: true                           # Enable visualization markers
     timer_frequency: 100.0              # Timer update frequency (Hz) for motion interpolation
+    enable_motion_interpolation: false   # Enable/disable motion interpolation between odometry updates
     
     # Update trigger thresholds
     update_min_distance: 0.0           # Min distance to trigger update (m)

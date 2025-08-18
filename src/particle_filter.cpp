@@ -50,7 +50,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("odom_topic", "/odom");
     this->declare_parameter("timer_frequency", 100.0);
     this->declare_parameter("enable_motion_interpolation", true);
-    this->declare_parameter("use_dda_raycasting", false);
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
 
@@ -68,7 +67,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     DO_VIZ = this->get_parameter("viz").as_bool();
     TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
     ENABLE_MOTION_INTERPOLATION = this->get_parameter("enable_motion_interpolation").as_bool();
-    USE_DDA_RAYCASTING = this->get_parameter("use_dda_raycasting").as_bool();
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
     NUM_THREADS = this->get_parameter("num_threads").as_int();
 
@@ -105,6 +103,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     expected_steps_between_odom_ = static_cast<int>(0.02 * TIMER_FREQUENCY);  // Default: 50Hz odom = 20ms interval
     accumulated_timer_motion_ = Eigen::Vector3d::Zero();
     
+    // --------------------------------- THREADING SETUP ---------------------------------
     // Setup OpenMP for parallel ray casting
     if (USE_PARALLEL_RAYCASTING) {
         if (NUM_THREADS == 0) {
@@ -168,7 +167,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
     RCLCPP_INFO(this->get_logger(), "Motion interpolation: %s", ENABLE_MOTION_INTERPOLATION ? "ENABLED" : "DISABLED");
-    RCLCPP_INFO(this->get_logger(), "Ray casting method: %s", USE_DDA_RAYCASTING ? "DDA" : "TRADITIONAL");
+    RCLCPP_INFO(this->get_logger(), "Ray casting method: TRADITIONAL");
     RCLCPP_INFO(this->get_logger(), "Parallel ray casting: %s (%d threads)", 
         USE_PARALLEL_RAYCASTING ? "ENABLED" : "DISABLED", USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
 }
@@ -573,26 +572,19 @@ std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &querie
     
     std::vector<float> results(queries.rows());
 
+    // --------------------------------- PARALLEL PROCESSING ---------------------------------
     if (USE_PARALLEL_RAYCASTING) {
         // Parallel ray casting with OpenMP
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < queries.rows(); ++i)
         {
-            if (USE_DDA_RAYCASTING) {
-                results[i] = cast_ray_dda(queries(i, 0), queries(i, 1), queries(i, 2));
-            } else {
-                results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
-            }
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
         }
     } else {
         // Sequential ray casting
         for (int i = 0; i < queries.rows(); ++i)
         {
-            if (USE_DDA_RAYCASTING) {
-                results[i] = cast_ray_dda(queries(i, 0), queries(i, 1), queries(i, 2));
-            } else {
-                results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
-            }
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
         }
     }
 
@@ -641,115 +633,6 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
     }
 
     return MAX_RANGE_METERS;
-}
-
-float ParticleFilter::cast_ray_dda(double x, double y, double angle)
-{
-    if (!map_initialized_)
-        return MAX_RANGE_METERS;
-
-    // DDA Ray Casting Algorithm
-    // Convert world coordinates to grid coordinates
-    double start_x = (x - map_origin_[0]) / map_resolution_;
-    double start_y = (y - map_origin_[1]) / map_resolution_;
-    
-    // Ray direction
-    double rayDirX = std::cos(angle);
-    double rayDirY = std::sin(angle);
-    
-    // Avoid division by zero
-    if (std::abs(rayDirX) < 1e-10) rayDirX = (rayDirX >= 0) ? 1e-10 : -1e-10;
-    if (std::abs(rayDirY) < 1e-10) rayDirY = (rayDirY >= 0) ? 1e-10 : -1e-10;
-    
-    // Current grid position
-    int mapX = static_cast<int>(start_x);
-    int mapY = static_cast<int>(start_y);
-    
-    // Grid bounds
-    int width = static_cast<int>(map_msg_->info.width);
-    int height = static_cast<int>(map_msg_->info.height);
-    
-    // Check if starting position is out of bounds
-    if (mapX < 0 || mapX >= width || mapY < 0 || mapY >= height)
-        return 0.0;
-    
-    // Length of ray from current grid position to next grid line
-    double deltaDistX = std::abs(1.0 / rayDirX);
-    double deltaDistY = std::abs(1.0 / rayDirY);
-    
-    // Step and initial sideDist
-    int stepX, stepY;
-    double sideDistX, sideDistY;
-    
-    if (rayDirX < 0) {
-        stepX = -1;
-        sideDistX = (start_x - mapX) * deltaDistX;
-    } else {
-        stepX = 1;
-        sideDistX = (mapX + 1.0 - start_x) * deltaDistX;
-    }
-    
-    if (rayDirY < 0) {
-        stepY = -1;
-        sideDistY = (start_y - mapY) * deltaDistY;
-    } else {
-        stepY = 1;
-        sideDistY = (mapY + 1.0 - start_y) * deltaDistY;
-    }
-    
-    // Perform DDA
-    int hit = 0;
-    int side; // 0: X-side, 1: Y-side
-    double distance = 0.0;
-    
-    while (hit == 0) {
-        // Jump to next map square, either in x-direction, or in y-direction
-        if (sideDistX < sideDistY) {
-            sideDistX += deltaDistX;
-            mapX += stepX;
-            side = 0;
-        } else {
-            sideDistY += deltaDistY;
-            mapY += stepY;
-            side = 1;
-        }
-        
-        // Check if ray has hit a wall or boundary
-        if (mapX < 0 || mapX >= width || mapY < 0 || mapY >= height) {
-            // Hit boundary - calculate distance to boundary
-            if (side == 0) {
-                distance = (mapX - start_x + (1 - stepX) / 2) / rayDirX;
-            } else {
-                distance = (mapY - start_y + (1 - stepY) / 2) / rayDirY;
-            }
-            hit = 1;
-        } else {
-            // Check for obstacle
-            int map_idx = mapY * width + mapX;
-            if (map_idx >= 0 && map_idx < static_cast<int>(map_msg_->data.size()) && 
-                map_msg_->data[map_idx] > 50) {
-                // Hit obstacle - calculate distance
-                if (side == 0) {
-                    distance = (mapX - start_x + (1 - stepX) / 2) / rayDirX;
-                } else {
-                    distance = (mapY - start_y + (1 - stepY) / 2) / rayDirY;
-                }
-                hit = 1;
-            }
-        }
-        
-        // Safety check for maximum range
-        double current_distance = (side == 0) ? 
-            std::abs((mapX - start_x) / rayDirX) : 
-            std::abs((mapY - start_y) / rayDirY);
-        
-        if (current_distance * map_resolution_ > MAX_RANGE_METERS) {
-            return MAX_RANGE_METERS;
-        }
-    }
-    
-    // Convert grid distance back to world distance
-    return std::abs(distance) * map_resolution_;
 }
 
 void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
