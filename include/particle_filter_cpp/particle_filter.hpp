@@ -56,13 +56,18 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
     void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);
-    void publish_odom_100hz();
     void visualize();
     void publish_particles(const Eigen::MatrixXd &particles_to_pub);
     
     // --------------------------------- POSE MANAGEMENT ---------------------------------
     Eigen::Vector3d get_current_pose();
     bool is_pose_valid(const Eigen::Vector3d& pose);
+    
+    // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
+    void initialize_odom_tracking(const Eigen::Vector3d& initial_pose);
+    void update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg);
+    Eigen::Vector3d odom_to_rear_axle(const Eigen::Vector3d& odom_pose);
+    Eigen::Vector3d rear_axle_to_odom(const Eigen::Vector3d& rear_axle_pose);
 
     // --------------------------------- UTILITY FUNCTIONS ---------------------------------
     double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);
@@ -105,6 +110,12 @@ class ParticleFilter : public rclcpp::Node
     Eigen::Vector3d inferred_pose_;
     Eigen::Vector3d odometry_data_;
     Eigen::Vector3d last_pose_;
+    
+    // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
+    Eigen::Vector3d odom_pose_;              // Current odometry-based pose estimate (rear axle)
+    Eigen::Vector3d odom_reference_pose_;    // Reference pose from last MCL correction
+    Eigen::Vector3d odom_reference_odom_;    // Odometry reading at last MCL correction
+    bool pose_initialized_from_rviz_;        // Flag to track if pose was set via 2D Pose Estimate
 
     // --------------------------------- SENSOR DATA ---------------------------------
     std::vector<float> laser_angles_;
