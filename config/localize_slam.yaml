@@ -12,7 +12,7 @@ particle_filter:
     motion_dispersion_theta: 0.25      # Rotational motion noise standard deviation (rad)
     
     # Robot geometry and sensor mounting (F1TENTH physical dimensions)
-    lidar_offset_x: 0.288              # LiDAR forward offset from base_link (m)
+    lidar_offset_x: 0.25              # LiDAR forward offset from base_link (m)
     lidar_offset_y: 0.0                # LiDAR lateral offset from base_link (m)
     wheelbase: 0.324                   # Distance between front and rear axles (m)
     
@@ -30,7 +30,7 @@ particle_filter:
     angle_step: 18              # Laser scan downsampling factor (every 18th beam)
     squash_factor: 2.2          # Weight normalization/squashing factor
     use_parallel_raycasting: true  # Enable parallel ray casting with OpenMP
-    num_threads: 0              # Number of threads for parallel ray casting (0 = auto-detect)
+    num_threads: 3              # Number of threads for parallel ray casting (0 = auto-detect)
     
     # Performance and debugging options
     fine_timing: 0              # Detailed timing profiling (0=disabled, 1=enabled)

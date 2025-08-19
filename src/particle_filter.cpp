@@ -752,16 +752,22 @@ void ParticleFilter::timer_update()
 // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
 void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
 {
-    // Simple X offset correction - lidar is in front of base_link
-    double x_offset = 0.27;  // meters (increased to match ego_racecar/odom)
+    // Apply offset in vehicle coordinate frame (forward direction)
+    double forward_offset = LIDAR_OFFSET_X;  // Use configured lidar offset
+    double cos_theta = std::cos(pose[2]);
+    double sin_theta = std::sin(pose[2]);
+    
+    // Transform to base_link position (lidar position - forward offset)
+    double base_link_x = pose[0] - forward_offset * cos_theta;
+    double base_link_y = pose[1] - forward_offset * sin_theta;
     
     // Publish map → base_link transform
     geometry_msgs::msg::TransformStamped t;
     t.header.stamp = stamp.nanoseconds() > 0 ? stamp : this->get_clock()->now();
     t.header.frame_id = "/map";
     t.child_frame_id = "/base_link";
-    t.transform.translation.x = pose[0] - x_offset;
-    t.transform.translation.y = pose[1];
+    t.transform.translation.x = base_link_x;
+    t.transform.translation.y = base_link_y;
     t.transform.translation.z = 0.0;
     t.transform.rotation = angle_to_quaternion(pose[2]);
 
@@ -774,8 +780,8 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         odom.header.stamp = this->get_clock()->now();
         odom.header.frame_id = "/map";
         odom.child_frame_id = "/base_link";
-        odom.pose.pose.position.x = pose[0] - x_offset;
-        odom.pose.pose.position.y = pose[1];
+        odom.pose.pose.position.x = base_link_x;
+        odom.pose.pose.position.y = base_link_y;
         odom.pose.pose.orientation = angle_to_quaternion(pose[2]);
         odom.twist.twist.linear.x = current_speed_;
         odom_pub_->publish(odom);
@@ -812,14 +818,19 @@ void ParticleFilter::visualize()
     if (!DO_VIZ)
         return;
 
-    // RViz pose visualization
+    // RViz pose visualization (with vehicle frame offset)
     if (pose_pub_ && pose_pub_->get_subscription_count() > 0)
     {
+        // Apply same vehicle frame offset as TF
+        double forward_offset = LIDAR_OFFSET_X;
+        double cos_theta = std::cos(inferred_pose_[2]);
+        double sin_theta = std::sin(inferred_pose_[2]);
+        
         geometry_msgs::msg::PoseStamped ps;
         ps.header.stamp = this->get_clock()->now();
         ps.header.frame_id = "/map";
-        ps.pose.position.x = inferred_pose_[0];
-        ps.pose.position.y = inferred_pose_[1];
+        ps.pose.position.x = inferred_pose_[0] - forward_offset * cos_theta;
+        ps.pose.position.y = inferred_pose_[1] - forward_offset * sin_theta;
         ps.pose.orientation = angle_to_quaternion(inferred_pose_[2]);
         pose_pub_->publish(ps);
     }
@@ -850,7 +861,18 @@ void ParticleFilter::visualize()
 
 void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
 {
-    auto pa = utils::particles_to_pose_array(particles_to_pub);
+    // Apply vehicle frame offset to all particles
+    Eigen::MatrixXd offset_particles = particles_to_pub;
+    double forward_offset = LIDAR_OFFSET_X;
+    
+    for (int i = 0; i < offset_particles.rows(); ++i) {
+        double cos_theta = std::cos(offset_particles(i, 2));
+        double sin_theta = std::sin(offset_particles(i, 2));
+        offset_particles(i, 0) -= forward_offset * cos_theta;
+        offset_particles(i, 1) -= forward_offset * sin_theta;
+    }
+    
+    auto pa = utils::particles_to_pose_array(offset_particles);
     pa.header.stamp = this->get_clock()->now();
     pa.header.frame_id = "/map";
     particle_pub_->publish(pa);
