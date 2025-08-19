@@ -391,7 +391,7 @@ void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
 
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
 
-    // Gaussian distribution around clicked pose
+    // Use clicked pose directly - simple approach
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         particles_(i, 0) = pose[0] + normal_dist_(rng_) * 0.5;  // σ_x = 0.5m
@@ -703,8 +703,8 @@ void ParticleFilter::update()
             // Calculate correction between MCL estimate and odometry estimate
             Eigen::Vector3d correction = inferred_pose_ - odom_pose_;
             
-            // Apply correction to odometry tracking reference
-            odom_reference_pose_ = rear_axle_to_odom(inferred_pose_);
+            // Apply correction to odometry tracking - no coordinate conversion
+            odom_reference_pose_ = inferred_pose_;
             odom_reference_odom_ = last_pose_;
             odom_pose_ = inferred_pose_;
             
@@ -752,31 +752,31 @@ void ParticleFilter::timer_update()
 // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
 void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
 {
-    // Convert rear axle pose to base_link for TF publishing
-    Eigen::Vector3d base_link_pose = rear_axle_to_odom(pose);
+    // Simple X offset correction - lidar is in front of base_link
+    double x_offset = 0.27;  // meters (increased to match ego_racecar/odom)
     
     // Publish map → base_link transform
     geometry_msgs::msg::TransformStamped t;
     t.header.stamp = stamp.nanoseconds() > 0 ? stamp : this->get_clock()->now();
     t.header.frame_id = "/map";
     t.child_frame_id = "/base_link";
-    t.transform.translation.x = base_link_pose[0];
-    t.transform.translation.y = base_link_pose[1];
+    t.transform.translation.x = pose[0] - x_offset;
+    t.transform.translation.y = pose[1];
     t.transform.translation.z = 0.0;
-    t.transform.rotation = angle_to_quaternion(base_link_pose[2]);
+    t.transform.rotation = angle_to_quaternion(pose[2]);
 
     pub_tf_->sendTransform(t);
 
-    // Optional odometry output (also in base_link frame)
+    // Optional odometry output
     if (PUBLISH_ODOM && odom_pub_)
     {
         nav_msgs::msg::Odometry odom;
         odom.header.stamp = this->get_clock()->now();
         odom.header.frame_id = "/map";
         odom.child_frame_id = "/base_link";
-        odom.pose.pose.position.x = base_link_pose[0];
-        odom.pose.pose.position.y = base_link_pose[1];
-        odom.pose.pose.orientation = angle_to_quaternion(base_link_pose[2]);
+        odom.pose.pose.position.x = pose[0] - x_offset;
+        odom.pose.pose.position.y = pose[1];
+        odom.pose.pose.orientation = angle_to_quaternion(pose[2]);
         odom.twist.twist.linear.x = current_speed_;
         odom_pub_->publish(odom);
     }
@@ -924,14 +924,11 @@ void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pos
     RCLCPP_INFO(this->get_logger(), "Initializing odometry tracking from pose: [%.3f, %.3f, %.3f]", 
                 initial_pose[0], initial_pose[1], initial_pose[2]);
     
-    // Initial pose from RViz is typically in base_link frame
-    // Convert to rear axle for internal tracking
-    odom_pose_ = odom_to_rear_axle(initial_pose);
-    
-    // Store reference pose in base_link frame for odometry tracking
+    // Use initial pose directly - no coordinate conversion
+    odom_pose_ = initial_pose;
     odom_reference_pose_ = initial_pose;
     
-    // Store current odometry reading as reference (base_link frame)
+    // Store current odometry reading as reference
     if (last_pose_.norm() > 0) {
         odom_reference_odom_ = last_pose_;
     }
@@ -944,16 +941,15 @@ void ParticleFilter::update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& 
 {
     if (!pose_initialized_from_rviz_) return;
     
-    // Current odometry reading (base_link frame)
-    Eigen::Vector3d current_odom_base_link(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                                           quaternion_to_angle(msg->pose.pose.orientation));
+    // Current odometry reading
+    Eigen::Vector3d current_odom(msg->pose.pose.position.x, msg->pose.pose.position.y,
+                                 quaternion_to_angle(msg->pose.pose.orientation));
     
-    // Calculate odometry displacement since reference (in base_link frame)
-    Eigen::Vector3d odom_delta = current_odom_base_link - odom_reference_odom_;
+    // Calculate odometry displacement since reference
+    Eigen::Vector3d odom_delta = current_odom - odom_reference_odom_;
     
-    // Apply displacement to reference pose (base_link) and convert to rear axle
-    Eigen::Vector3d updated_base_link_pose = odom_reference_pose_ + odom_delta;
-    odom_pose_ = odom_to_rear_axle(updated_base_link_pose);
+    // Apply displacement directly - no coordinate conversion
+    odom_pose_ = odom_reference_pose_ + odom_delta;
 }
 
 Eigen::Vector3d ParticleFilter::odom_to_rear_axle(const Eigen::Vector3d& odom_pose)
