@@ -38,7 +38,6 @@ particle_filter:
     # ROS topic configuration (simulation specific)
     scan_topic: "/scan"                # LaserScan input topic
     odom_topic: "/ego_racecar/odom"    # Odometry from F1TENTH Gym simulation
-    # odom_topic: "/pf/pose/odom"    # DON'T USE - Creates circular dependency!
     # scan_topic: "/scan_noisy"                # Noisy LaserScan input topic
     # odom_topic: "/ego_racecar/odom_noisy"    # Noisy Odometry from F1TENTH Gym simulation
     
