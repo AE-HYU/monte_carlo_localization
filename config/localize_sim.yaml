@@ -36,8 +36,10 @@ particle_filter:
     fine_timing: 0              # Enable detailed timing (0=off, 1=on)
     
     # ROS topic configuration (simulation specific)
-    scan_topic: "/scan_noisy"                # LaserScan input topic
-    odom_topic: "/ego_racecar/odom_noisy"    # Odometry from F1TENTH Gym simulation
+    scan_topic: "/scan"                # LaserScan input topic
+    odom_topic: "/ego_racecar/odom"    # Odometry from F1TENTH Gym simulation
+    # scan_topic: "/scan_noisy"                # Noisy LaserScan input topic
+    # odom_topic: "/ego_racecar/odom_noisy"    # Noisy Odometry from F1TENTH Gym simulation
     
     # Publishing options
     publish_odom: true                  # Publish pose as odometry message
@@ -59,3 +61,4 @@ map_server:
     # map: 'Spielberg_map'
     # map: 'map_1753950572'
     map: 'slam_map'
+    # map: 'new_map'
