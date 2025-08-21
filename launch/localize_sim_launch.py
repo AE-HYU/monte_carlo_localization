@@ -90,7 +90,7 @@ def generate_launch_description():
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
-        name='map_server',
+        name='particle_filter_map_server',
         output='screen',
         parameters=[
             common_params,
@@ -102,13 +102,13 @@ def generate_launch_description():
     lifecycle_manager_node = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
-        name='lifecycle_manager',
+        name='lifecycle_manager_particle_filter',
         output='screen',
         parameters=[
             common_params,
             {
                 'autostart': True,          # Auto-start for simulation convenience
-                'node_names': ['map_server'] # Manage map server lifecycle
+                'node_names': ['particle_filter_map_server'] # Manage map server lifecycle
             }
         ]
     )
@@ -126,7 +126,8 @@ def generate_launch_description():
                 parameters=[config_file_path, common_params],  # Uses localize_sim.yaml
                 remappings=[
                     ('/scan', LaunchConfiguration('scan_topic')),  # F1TENTH Gym laser
-                    ('/odom', LaunchConfiguration('odom_topic'))   # F1TENTH Gym odometry
+                    ('/odom', LaunchConfiguration('odom_topic')),   # F1TENTH Gym odometry
+                    ('/map_server/map', '/particle_filter_map_server/map')  # Map service remapping
                 ]
             )
         ]
@@ -137,7 +138,7 @@ def generate_launch_description():
     static_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        name='static_tf_publisher',
+        name='particle_filter_static_tf_publisher',
         arguments=['0.288', '0.0', '0.0', '0.0', '0.0', '0.0', 'base_link', 'laser'],
         output='screen',
         parameters=[common_params]
