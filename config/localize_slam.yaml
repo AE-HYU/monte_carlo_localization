@@ -60,4 +60,4 @@ map_server:
     #   - levine: Multi-floor building map with complex geometry
     #   - Spielberg_map: Race track configuration 
     #   - map_1753950572: Custom SLAM-generated map from real data
-    map: 'map_1753950572'           # Selected map file (without .yaml extension)
+    map: 'sibal1'           # Selected map file (without .yaml extension)

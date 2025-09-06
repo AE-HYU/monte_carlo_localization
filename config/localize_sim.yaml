@@ -61,4 +61,7 @@ map_server:
     # map: 'Spielberg_map'
     # map: 'map_1753950572'
     # map: 'slam_map'
-    map: 'map_1755669035' # new_map
+    # map: 'map_1755669035' # new_map
+    # map: 'redbull_1'
+    # map: 'icra_2_clean'
+    map: 'sibal1'
