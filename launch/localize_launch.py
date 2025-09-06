@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Particle Filter Launch for Real F1TENTH Car with SLAM Maps
+- Auto-detects map from localize_slam.yaml
+- Optimized for real-time performance
+"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
@@ -15,55 +20,55 @@ def generate_launch_description():
     # Get package share directory for resource paths
     pkg_share = FindPackageShare('particle_filter_cpp')
     
-    # Read config file to auto-detect map name (runtime resolution)
+    # Read SLAM config file to auto-detect map name
     # Try source directory first (development), then install directory
-    src_config_file = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize.yaml')
+    src_config_file = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize_slam.yaml')
     config_file = src_config_file if os.path.exists(src_config_file) else os.path.join(
         get_package_share_directory('particle_filter_cpp'),
         'config',
-        'localize.yaml'
+        'localize_slam.yaml'
     )
-    # Extract default map name from config file
+    # Extract default SLAM-generated map name from config
     config_dict = yaml.safe_load(open(config_file, 'r'))
     map_name = config_dict['map_server']['ros__parameters']['map']
     
-    # Declare launch arguments for runtime configuration
+    # Declare launch arguments for real F1TENTH car with SLAM maps
     map_name_arg = DeclareLaunchArgument(
         'map_name',
         default_value=map_name,
-        description='Map name (without .yaml extension, e.g., levine, map_1753950572, Spielberg_map)'
+        description='SLAM-generated map name (default: map_1753950572 from SLAM)'
     )
     
     scan_topic_arg = DeclareLaunchArgument(
         'scan_topic',
         default_value='/scan',
-        description='Laser scan topic name'
+        description='Real F1TENTH LiDAR scan topic'
     )
     
     odom_topic_arg = DeclareLaunchArgument(
         'odom_topic',
         default_value='/odom',
-        description='Odometry topic name (real car: /odom, sim: /ego_racecar/odom)'
+        description='Real F1TENTH wheel odometry topic'
     )
     
     use_rviz_arg = DeclareLaunchArgument(
         'use_rviz',
         default_value='true',
-        description='Whether to launch RViz visualization'
+        description='Launch RViz for real-time localization monitoring'
     )
     
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
-        description='Use simulation time (set to true for Gazebo/simulation)'
+        description='Use simulation time (false for real hardware)'
     )
     
-    # Configure file paths for resources
-    # Config file: prefer source directory for development
-    src_config_path = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize.yaml')
-    config_file_path = src_config_path if os.path.exists(src_config_path) else PathJoinSubstitution([pkg_share, 'config', 'localize.yaml'])
+    # Configure file paths for SLAM-based localization
+    # SLAM config file: optimized for real-time performance with SLAM maps
+    src_config_path = os.path.join(os.getcwd(), 'src', 'particle_filter_cpp', 'config', 'localize_slam.yaml')
+    config_file_path = src_config_path if os.path.exists(src_config_path) else PathJoinSubstitution([pkg_share, 'config', 'localize_slam.yaml'])
     
-    # Map file: resolve path dynamically like f1tenth_gym_ros
+    # SLAM-generated map file: resolve path dynamically
     # If map_name contains '/', it's already a full path, otherwise resolve from maps directory
     if '/' in map_name:
         map_file = map_name + '.yaml'
@@ -75,13 +80,13 @@ def generate_launch_description():
         else:
             # Fallback to package share directory
             map_file = os.path.join(get_package_share_directory('particle_filter_cpp'), 'maps', map_name + '.yaml')
-    # RViz configuration file
+    # RViz config for real-time localization visualization
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
     
-    # Common ROS parameters for all nodes
+    # Common ROS parameters for real hardware operation
     common_params = {'use_sim_time': LaunchConfiguration('use_sim_time')}
     
-    # Map server node - loads and serves map data
+    # Map server node - serves SLAM-generated map for localization
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
@@ -89,11 +94,11 @@ def generate_launch_description():
         output='screen',
         parameters=[
             common_params,
-            {'yaml_filename': map_file}  # Map file auto-resolved from config
+            {'yaml_filename': map_file}  # SLAM-generated map file
         ]
     )
     
-    # Lifecycle manager - manages map server lifecycle (configure/activate)
+    # Lifecycle manager - manages SLAM map server for real-time operation
     lifecycle_manager_node = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -102,34 +107,34 @@ def generate_launch_description():
         parameters=[
             common_params,
             {
-                'autostart': True,          # Automatically start managed nodes
-                'node_names': ['particle_filter_map_server'] # Nodes under lifecycle management
+                'autostart': True,          # Auto-start for seamless operation
+                'node_names': ['particle_filter_map_server'] # Manage SLAM map server
             }
         ]
     )
     
-    # Particle filter node - main localization algorithm
-    # Delayed start to ensure map server is ready
+    # Particle filter node - real-time localization with SLAM maps
+    # Uses optimized particle count (1000) for real-time performance
     particle_filter_node = TimerAction(
-        period=2.0,  # Wait 2 seconds for map server initialization
+        period=2.0,  # Allow SLAM map server to initialize
         actions=[
             Node(
                 package='particle_filter_cpp',
                 executable='particle_filter_node',
                 name='particle_filter',
                 output='screen',
-                parameters=[config_file_path, common_params],
+                parameters=[config_file_path, common_params],  # Uses localize_slam.yaml
                 remappings=[
-                    ('/scan', LaunchConfiguration('scan_topic')),  # Laser scan input
-                    ('/odom', LaunchConfiguration('odom_topic')),   # Odometry input
+                    ('/scan', LaunchConfiguration('scan_topic')),  # Real F1TENTH LiDAR
+                    ('/odom', LaunchConfiguration('odom_topic')),   # Real F1TENTH odometry
                     ('/map_server/map', '/particle_filter_map_server/map')  # Map service remapping
                 ]
             )
         ]
     )
     
-    # Static transform publisher - defines laser sensor position relative to robot base
-    # Args: x y z roll pitch yaw parent_frame child_frame
+    # Static transform publisher - real F1TENTH LiDAR sensor position
+    # Calibrated offset from base_link to laser frame (288mm forward)
     static_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -139,12 +144,13 @@ def generate_launch_description():
         parameters=[common_params]
     )
     
-    # RViz visualization - launches only if use_rviz is true
+    # RViz visualization - critical for monitoring real-time localization
+    # Shows particle convergence and localization accuracy on SLAM map
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', rviz_config],  # Load custom RViz configuration
+        arguments=['-d', rviz_config],  # Real-time monitoring configuration
         condition=IfCondition(LaunchConfiguration('use_rviz')),
         output='screen',
         parameters=[common_params]

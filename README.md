@@ -11,10 +11,7 @@ colcon build --packages-select particle_filter_cpp --symlink-install
 # For F1TENTH Gym Simulation
 ros2 launch particle_filter_cpp localize_sim_launch.py
 
-# For Real F1TENTH Car with SLAM Map
-ros2 launch particle_filter_cpp localize_slam_launch.py
-
-# Generic launch (configure manually)
+# For Real F1TENTH Car with SLAM Map  
 ros2 launch particle_filter_cpp localize_launch.py
 ```
 
@@ -27,15 +24,13 @@ ros2 launch particle_filter_cpp localize_launch.py
 - Default topics: `/ego_racecar/odom`
 - Default map: `Spielberg_map`
 
-### 2. `config/localize_slam.yaml` - Real Car Config  
+### 2. `config/localize.yaml` - Real Car Config  
 **Tuned for real F1TENTH hardware:**
 - Higher motion noise (real-world uncertainties)
 - Higher `z_rand` weight (sensor noise compensation)
 - Default topics: `/odom`
 - Default map: `map_1753950572`
 
-### 3. `config/localize.yaml` - Generic Config
-**General purpose configuration** - manually adjust as needed
 
 **Key Parameters:**
 - `max_particles`: 4000 (default)
@@ -51,14 +46,12 @@ ros2 launch particle_filter_cpp localize_launch.py
 - Odom Topic: `/ego_racecar/odom`
 - Simulation Time: `True`
 
-### 2. SLAM Map Launch (`localize_slam_launch.py`)
+### 2. SLAM Map Launch (`localize_launch.py`)
 **Default Settings:**
 - Map: `map_1753950572` (SLAM generated)
 - Odom Topic: `/odom` (real F1TENTH car)
 - Simulation Time: `False`
 
-### 3. Generic Launch (`localize_launch.py`)
-**Configurable via config file**
 
 ## Launch Options
 
@@ -67,7 +60,7 @@ ros2 launch particle_filter_cpp localize_launch.py
 ros2 launch particle_filter_cpp localize_sim_launch.py map_name:=levine
 
 # Without RViz  
-ros2 launch particle_filter_cpp localize_slam_launch.py use_rviz:=false
+ros2 launch particle_filter_cpp localize_launch.py use_rviz:=false
 
 # Custom topics
 ros2 launch particle_filter_cpp localize_sim_launch.py \
@@ -98,7 +91,7 @@ Monte Carlo Localization uses particles to estimate robot pose:
 ```
 Particles → Motion Model → Sensor Model → Resampling → Pose Estimate
    ↑                                                        ↓
-   └─────────────── Repeat every update ──────────────────┘
+   └───────────────── Repeat every update ──────────────────┘
 ```
 
 ## Code Architecture
