@@ -13,6 +13,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/srv/get_map.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
@@ -153,13 +154,15 @@ class ParticleFilter : public rclcpp::Node
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr particle_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
 
     // Services and TF
     rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> pub_tf_;
     
-    // Timer for high-frequency updates
+    // Timers
     rclcpp::TimerBase::SharedPtr update_timer_;
+    rclcpp::TimerBase::SharedPtr map_timer_;
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
@@ -194,6 +197,7 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void update();
     void timer_update();
+    void publish_map_periodically();
     
     // Performance profiling methods
     void print_performance_stats();

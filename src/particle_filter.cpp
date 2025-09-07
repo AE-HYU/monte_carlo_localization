@@ -132,6 +132,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/pf/pose/odom", 1);
     }
 
+    // Map publisher for persistent map display in RViz
+    map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(1).transient_local());
+
     // Initialize TF broadcaster
     pub_tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
@@ -162,6 +165,12 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     update_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(timer_interval_ms),
         std::bind(&ParticleFilter::timer_update, this)
+    );
+
+    // Setup periodic map publisher timer (5 Hz for persistent display)
+    map_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(200),
+        std::bind(&ParticleFilter::publish_map_periodically, this)
     );
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
@@ -216,6 +225,12 @@ void ParticleFilter::get_omap()
 
         map_initialized_ = true;
         RCLCPP_INFO(this->get_logger(), "Done loading map");
+
+        // Publish map immediately after loading
+        if (map_pub_) {
+            map_pub_->publish(*map_msg_);
+            RCLCPP_INFO(this->get_logger(), "Map published to /map topic");
+        }
 
         // Generate lookup table for fast sensor model evaluation
         precompute_sensor_model();
@@ -746,6 +761,14 @@ void ParticleFilter::timer_update()
     if (pose_initialized_from_rviz_ || (odom_initialized_ && map_initialized_)) {
         Eigen::Vector3d current_pose = get_current_pose();
         publish_tf(current_pose, this->get_clock()->now());
+    }
+}
+
+void ParticleFilter::publish_map_periodically()
+{
+    // Periodically publish map to maintain persistent display in RViz
+    if (map_initialized_ && map_pub_ && map_msg_) {
+        map_pub_->publish(*map_msg_);
     }
 }
 
