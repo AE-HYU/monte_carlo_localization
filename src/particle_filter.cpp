@@ -101,6 +101,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_reference_pose_ = Eigen::Vector3d::Zero();
     odom_reference_odom_ = Eigen::Vector3d::Zero();
     pose_initialized_from_rviz_ = false;
+    odom_tracking_active_ = false;
     
     // --------------------------------- THREADING SETUP ---------------------------------
     // Setup OpenMP for parallel ray casting
@@ -344,7 +345,11 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     last_odom_time_ = msg->header.stamp;
 
     // Update odometry-based pose tracking (high frequency)
-    if (pose_initialized_from_rviz_) {
+    // Enable when: 1) pose initialized from RViz, OR 2) global initialization done with valid MCL estimate
+    bool can_use_odom_tracking = pose_initialized_from_rviz_ || 
+                               (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_));
+    
+    if (can_use_odom_tracking && odom_tracking_active_) {
         update_odom_pose(msg);
     }
 
@@ -714,7 +719,17 @@ void ParticleFilter::update()
         inferred_pose_ = expected_pose();
         
         // If using odometry tracking, update reference pose for correction
-        if (pose_initialized_from_rviz_) {
+        // Enable when: 1) pose initialized from RViz, OR 2) global initialization done with valid MCL estimate
+        bool can_use_odom_tracking = pose_initialized_from_rviz_ || 
+                                   (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_));
+        
+        if (can_use_odom_tracking) {
+            // Initialize odometry tracking if not already done but conditions are met
+            if (!odom_tracking_active_ && is_pose_valid(inferred_pose_)) {
+                initialize_odom_tracking(inferred_pose_, false);
+                RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized from GLOBAL initialization (not RViz)");
+            }
+            
             // Calculate correction between MCL estimate and odometry estimate
             Eigen::Vector3d correction = inferred_pose_ - odom_pose_;
             
@@ -723,9 +738,10 @@ void ParticleFilter::update()
             odom_reference_odom_ = last_pose_;
             odom_pose_ = inferred_pose_;
             
-            if (iters_ % 10 == 0) {
-                RCLCPP_INFO(this->get_logger(), "MCL correction applied: [%.3f, %.3f, %.3f]", 
-                           correction[0], correction[1], correction[2]);
+            if (iters_ % 50 == 0) {
+                const char* init_source = pose_initialized_from_rviz_ ? "RViz" : "Global";
+                RCLCPP_INFO(this->get_logger(), "MCL correction [%s]: [%.3f, %.3f, %.3f]", 
+                           init_source, correction[0], correction[1], correction[2]);
             }
         }
 
@@ -735,13 +751,13 @@ void ParticleFilter::update()
         Eigen::Vector3d pose_to_publish = get_current_pose();
         publish_tf(pose_to_publish, last_stamp_);
 
-        if (iters_ % 10 == 0)
+        if (iters_ % 50 == 0)
         {
-            RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)", iters_, pose_to_publish[0],
+            RCLCPP_INFO(this->get_logger(), "MCL iter %d: (%.3f, %.3f, %.3f)", iters_, pose_to_publish[0],
                         pose_to_publish[1], pose_to_publish[2]);
         }
         
-        if (iters_ % 100 == 0)
+        if (iters_ % 200 == 0)
         {
             print_performance_stats();
         }
@@ -758,7 +774,7 @@ void ParticleFilter::update()
 void ParticleFilter::timer_update()
 {
     // Publish TF and odometry at timer frequency
-    if (pose_initialized_from_rviz_ || (odom_initialized_ && map_initialized_)) {
+    if (odom_tracking_active_ || (odom_initialized_ && map_initialized_)) {
         Eigen::Vector3d current_pose = get_current_pose();
         publish_tf(current_pose, this->get_clock()->now());
     }
@@ -814,8 +830,8 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
 
 Eigen::Vector3d ParticleFilter::get_current_pose()
 {
-    // Priority 1: Use odometry-based tracking if initialized from RViz
-    if (pose_initialized_from_rviz_ && is_pose_valid(odom_pose_))
+    // Priority 1: Use odometry-based tracking if active and valid
+    if (odom_tracking_active_ && is_pose_valid(odom_pose_))
         return odom_pose_;
     
     // Priority 2: Use particle filter estimate if valid
@@ -964,7 +980,7 @@ void ParticleFilter::reset_performance_stats()
 }
 
 // --------------------------------- ODOMETRY-BASED TRACKING IMPLEMENTATION ---------------------------------
-void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pose)
+void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz)
 {
     RCLCPP_INFO(this->get_logger(), "Initializing odometry tracking from pose: [%.3f, %.3f, %.3f]", 
                 initial_pose[0], initial_pose[1], initial_pose[2]);
@@ -978,13 +994,14 @@ void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pos
         odom_reference_odom_ = last_pose_;
     }
     
-    pose_initialized_from_rviz_ = true;
+    pose_initialized_from_rviz_ = from_rviz;
+    odom_tracking_active_ = true;
     RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized successfully");
 }
 
 void ParticleFilter::update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg)
 {
-    if (!pose_initialized_from_rviz_) return;
+    if (!odom_tracking_active_) return;
     
     // Current odometry reading
     Eigen::Vector3d current_odom(msg->pose.pose.position.x, msg->pose.pose.position.y,
