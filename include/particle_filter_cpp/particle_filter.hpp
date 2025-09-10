@@ -94,6 +94,8 @@ class ParticleFilter : public rclcpp::Node
     double TIMER_FREQUENCY;
     bool USE_PARALLEL_RAYCASTING;
     int NUM_THREADS;
+    double MAX_POSE_RANGE;
+    bool SIM_MODE;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;

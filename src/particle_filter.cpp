@@ -51,6 +51,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("timer_frequency", 100.0);
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
+    this->declare_parameter("max_pose_range", 10000.0); // Maximum valid pose coordinate range
+    this->declare_parameter("sim_mode", false); // Simulation mode flag
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -67,6 +69,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
     NUM_THREADS = this->get_parameter("num_threads").as_int();
+    MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
+    SIM_MODE = this->get_parameter("sim_mode").as_bool();
 
     // 4-component sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -776,7 +780,9 @@ void ParticleFilter::timer_update()
     // Publish TF and odometry at timer frequency
     if (odom_tracking_active_ || (odom_initialized_ && map_initialized_)) {
         Eigen::Vector3d current_pose = get_current_pose();
-        publish_tf(current_pose, this->get_clock()->now());
+        // Use last sensor timestamp if available, otherwise current time
+        rclcpp::Time timestamp = (last_stamp_.nanoseconds() != 0) ? last_stamp_ : this->get_clock()->now();
+        publish_tf(current_pose, timestamp);
     }
 }
 
@@ -802,9 +808,9 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     
     // Publish map → base_link transform
     geometry_msgs::msg::TransformStamped t;
-    t.header.stamp = stamp.nanoseconds() > 0 ? stamp : this->get_clock()->now();
-    t.header.frame_id = "/map";
-    t.child_frame_id = "/base_link";
+    t.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
+    t.header.frame_id = "map";
+    t.child_frame_id = "base_link";
     t.transform.translation.x = base_link_x;
     t.transform.translation.y = base_link_y;
     t.transform.translation.z = 0.0;
@@ -816,9 +822,9 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     if (PUBLISH_ODOM && odom_pub_)
     {
         nav_msgs::msg::Odometry odom;
-        odom.header.stamp = this->get_clock()->now();
-        odom.header.frame_id = "/map";
-        odom.child_frame_id = "/base_link";
+        odom.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
+        odom.header.frame_id = "map";
+        odom.child_frame_id = "base_link";
         odom.pose.pose.position.x = base_link_x;
         odom.pose.pose.position.y = base_link_y;
         odom.pose.pose.orientation = angle_to_quaternion(pose[2]);
@@ -849,7 +855,7 @@ Eigen::Vector3d ParticleFilter::get_current_pose()
 bool ParticleFilter::is_pose_valid(const Eigen::Vector3d& pose)
 {
     return std::isfinite(pose[0]) && std::isfinite(pose[1]) && std::isfinite(pose[2]) &&
-           std::abs(pose[0]) < 1000.0 && std::abs(pose[1]) < 1000.0;
+           std::abs(pose[0]) < MAX_POSE_RANGE && std::abs(pose[1]) < MAX_POSE_RANGE;
 }
 
 void ParticleFilter::visualize()
@@ -867,7 +873,7 @@ void ParticleFilter::visualize()
         
         geometry_msgs::msg::PoseStamped ps;
         ps.header.stamp = this->get_clock()->now();
-        ps.header.frame_id = "/map";
+        ps.header.frame_id = "map";
         ps.pose.position.x = inferred_pose_[0] - forward_offset * cos_theta;
         ps.pose.position.y = inferred_pose_[1] - forward_offset * sin_theta;
         ps.pose.orientation = angle_to_quaternion(inferred_pose_[2]);
@@ -913,7 +919,7 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
     
     auto pa = utils::particles_to_pose_array(offset_particles);
     pa.header.stamp = this->get_clock()->now();
-    pa.header.frame_id = "/map";
+    pa.header.frame_id = "map";
     particle_pub_->publish(pa);
 }
 

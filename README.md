@@ -1,139 +1,202 @@
-# Particle Filter C++ 
+# Monte Carlo Localization (MCL) for F1TENTH
 
-High-performance Monte Carlo Localization (MCL) for robot navigation. 
+High-performance Monte Carlo Localization implementation with unified configuration for both real hardware and simulation environments.
+
+## Features
+- **Unified Configuration**: Single config/launch file for both real and simulation modes
+- **Enhanced Odometry Tracking**: Works with both RViz initialization and global initialization
+- **Configurable Validation**: Adjustable pose range limits for different map sizes
+- **Optimized Performance**: Parallel ray casting, lookup tables, vectorized operations
 
 ## Quick Start
 
+### Real Hardware
 ```bash
 # Build
 colcon build --packages-select particle_filter_cpp --symlink-install
 
-# For F1TENTH Gym Simulation
-ros2 launch particle_filter_cpp localize_sim_launch.py
-
-# For Real F1TENTH Car with SLAM Map  
-ros2 launch particle_filter_cpp localize_launch.py
+# Launch with default settings
+ros2 launch particle_filter_cpp mcl_launch.py
 ```
 
-## Configuration Files
+### Simulation Mode
+```bash
+# Launch with simulation settings
+ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
+```
 
-### 1. `config/localize_sim.yaml` - Simulation Config
-**Optimized for F1TENTH Gym simulation:**
-- Lower motion noise (cleaner simulation physics)
-- Higher `z_hit` weight (less sensor noise)
-- Default topics: `/ego_racecar/odom`
-- Default map: `Spielberg_map`
+## Configuration
 
-### 2. `config/localize.yaml` - Real Car Config  
-**Tuned for real F1TENTH hardware:**
-- Higher motion noise (real-world uncertainties)
-- Higher `z_rand` weight (sensor noise compensation)
-- Default topics: `/odom`
-- Default map: `map_1753950572`
+### Unified Config File: `config/mcl_config.yaml`
 
+**Core Parameters:**
+- `max_particles: 4000` - Number of particles
+- `max_pose_range: 10000.0` - Maximum valid pose coordinate range (meters)
+- `sim_mode: false` - Simulation mode flag (overridden by launch argument)
 
-**Key Parameters:**
-- `max_particles`: 4000 (default)
-- `max_range`: 5.0 meters  
-- `motion_dispersion_*`: Noise parameters
-- `z_hit/short/max/rand`: Sensor model weights
+**Automatic Mode Selection:**
+- **Real Hardware Mode** (`sim_mode:=false`):
+  - Topics: `/scan`, `/odom`
+  - LiDAR offset: `0.288m`
+  - Wheelbase: `0.325m`
+  - Timer frequency: `100Hz`
 
-## Launch Files
-
-### 1. Simulation Launch (`localize_sim_launch.py`)
-**Default Settings:**
-- Map: `Spielberg_map` 
-- Odom Topic: `/ego_racecar/odom`
-- Simulation Time: `True`
-
-### 2. SLAM Map Launch (`localize_launch.py`)
-**Default Settings:**
-- Map: `map_1753950572` (SLAM generated)
-- Odom Topic: `/odom` (real F1TENTH car)
-- Simulation Time: `False`
-
+- **Simulation Mode** (`sim_mode:=true`):
+  - Topics: `/scan`, `/ego_racecar/odom`
+  - LiDAR offset: `0.25m`  
+  - Wheelbase: `0.324m`
+  - Timer frequency: `200Hz`
 
 ## Launch Options
 
+### Basic Usage
 ```bash
+# Real hardware with default map
+ros2 launch particle_filter_cpp mcl_launch.py
+
+# Simulation mode
+ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
+
 # Custom map
-ros2 launch particle_filter_cpp localize_sim_launch.py map_name:=levine
+ros2 launch particle_filter_cpp mcl_launch.py map_name:=Spielberg_map
 
-# Without RViz  
-ros2 launch particle_filter_cpp localize_launch.py use_rviz:=false
-
-# Custom topics
-ros2 launch particle_filter_cpp localize_sim_launch.py \
-    scan_topic:=/custom_scan odom_topic:=/custom_odom
+# Without RViz
+ros2 launch particle_filter_cpp mcl_launch.py use_rviz:=false
 ```
+
+### Combined Options
+```bash
+# Simulation with custom map
+ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true map_name:=levine
+
+# Real hardware with specific map, no RViz
+ros2 launch particle_filter_cpp mcl_launch.py map_name:=map_1753950572 use_rviz:=false
+```
+
+## Odometry Tracking
+
+The system now supports odometry tracking in two scenarios:
+
+### 1. RViz Initialization
+- Use "2D Pose Estimate" tool in RViz
+- Immediate odometry tracking activation
+- Log: `"MCL correction [RViz]: [x, y, theta]"`
+
+### 2. Global Initialization (New!)
+- Automatic activation after system startup
+- Triggered when MCL converges to stable pose estimate
+- Log: `"MCL correction [Global]: [x, y, theta]"`
+
+## Available Maps
+
+Place map files in `maps/` directory:
+- `sibal1` (default)
+- `Spielberg_map`
+- `levine`
+- `map_1753950572`
+- `redbull_1`
+- And more...
 
 ## Key Topics
 
-**Subscribes:**
-- `/scan` - Laser scan data
-- `/ego_racecar/odom` - Odometry data  
+**Subscribed:**
+- `/scan` or `/ego_racecar/odom` - Laser scan data
+- `/odom` or `/ego_racecar/odom` - Odometry data
 - `/initialpose` - Initial pose from RViz
+- `/clicked_point` - Global reinitialization
 
-**Publishes:**
-- `/pf/viz/particles` - Particle cloud
+**Published:**
+- `/pf/viz/particles` - Particle cloud visualization
 - `/pf/viz/inferred_pose` - Estimated pose
-- `/tf` - Map to laser transform
+- `/pf/pose/odom` - Pose as odometry message
+- `/tf` - Transform: map → base_link
+- `/map` - Map data (persistent)
 
-## How MCL Works
+## Algorithm Overview
 
-Monte Carlo Localization uses particles to estimate robot pose:
-
-1. **Prediction**: Move particles based on odometry + noise
-2. **Update**: Weight particles by laser scan likelihood  
-3. **Resampling**: Keep particles with higher weights
-4. **Estimation**: Compute weighted average as robot pose
+Monte Carlo Localization estimates robot pose using particle filtering:
 
 ```
-Particles → Motion Model → Sensor Model → Resampling → Pose Estimate
-   ↑                                                        ↓
-   └───────────────── Repeat every update ──────────────────┘
+1. PREDICTION:   Move particles based on odometry + noise
+2. UPDATE:       Weight particles by laser scan likelihood
+3. RESAMPLING:   Retain high-weight particles
+4. ESTIMATION:   Compute weighted average as pose estimate
+5. CORRECTION:   Apply MCL corrections to odometry tracking
 ```
 
-## Code Architecture
+### Dual-Rate Architecture
+- **High-frequency odometry tracking** (100-200 Hz): Smooth motion interpolation
+- **Low-frequency MCL corrections** (~6 Hz): Drift correction from sensor data
 
+## Performance Features
+
+**Optimized Ray Casting:**
+- Parallel processing with OpenMP
+- Configurable thread count
+- Distance transform methods
+
+**Sensor Model:**
+- Pre-computed lookup tables
+- 4-component beam model (z_hit, z_short, z_max, z_rand)
+- Vectorized likelihood computation
+
+**Memory Management:**
+- Pre-allocated matrices
+- Minimal runtime allocation
+- Eigen-based vectorization
+
+## Troubleshooting
+
+**Large Maps:**
+Increase `max_pose_range` in config for maps larger than 10km:
+```yaml
+particle_filter:
+  ros__parameters:
+    max_pose_range: 50000.0  # 50km range
+```
+
+**Poor Localization:**
+- Check laser scan data quality
+- Verify map-reality correspondence
+- Adjust motion noise parameters
+- Increase particle count for complex environments
+
+**Performance Issues:**
+- Reduce `max_particles` for real-time constraints
+- Disable `viz: false` for headless operation
+- Adjust `angle_step` for fewer laser rays
+
+## Development
+
+**File Structure:**
+```
+├── config/
+│   └── mcl_config.yaml          # Unified configuration
+├── launch/
+│   └── mcl_launch.py           # Unified launch file
+├── src/
+│   └── particle_filter.cpp     # Main implementation
+├── include/particle_filter_cpp/
+│   └── particle_filter.hpp     # Header file
+└── maps/                       # Map files (.yaml + .png/.pgm)
+```
+
+**Key Classes:**
 ```cpp
 class ParticleFilter {
-    // Core MCL algorithm 
+    // Core MCL algorithm
     void MCL(action, observation);
-    void motion_model(particles, action);     // Add noise to particle motion
-    void sensor_model(particles, scan);       // Weight by scan likelihood
-    Eigen::Vector3d expected_pose();          // Weighted average
+    void motion_model(particles, action);
+    void sensor_model(particles, scan);
     
-    // ROS interface
-    void odomCB(odom_msg);                   // Triggers MCL update
-    void lidarCB(scan_msg);                  // Stores scan data
-    void publish_tf(pose);                   // Publishes results
+    // Odometry tracking
+    void initialize_odom_tracking(pose, from_rviz);
+    void update_odom_pose(odom_msg);
     
-    // State
-    Eigen::MatrixXd particles_;              // [N x 3] particle poses
-    std::vector<double> weights_;            // Particle weights
-    Eigen::MatrixXd sensor_model_table_;     // Pre-computed lookup table
+    // Utilities
+    bool is_pose_valid(pose);
+    Eigen::Vector3d get_current_pose();
 };
 ```
 
-**Key Data Flow:**
-1. Odometry → `odomCB()` → `MCL()` → Pose estimate
-2. Laser → `lidarCB()` → Store for next MCL update
-3. MCL → `publish_tf()` → ROS topics
-
-## Implementation Notes
-
-- **Vectorized Operations**: Uses Eigen for fast matrix operations  
-- **Pre-computed Sensor Model**: Lookup table for fast likelihood computation
-- **Simple Ray Casting**: Basic implementation (RangeLibc optional for speed)
-- **Memory Optimized**: Pre-allocated arrays, minimal runtime allocation
-
-## Performance
-
-Expect ~10x faster execution compared to Python version due to:
-- Compiled C++ vs interpreted Python
-- Optimized Eigen matrix operations  
-- Reduced memory allocation overhead
-- Vectorized particle operations
-
-Built for F1TENTH racing simulation and real-time robotic navigation.
+Built for high-performance F1TENTH racing and real-time robotic navigation.
