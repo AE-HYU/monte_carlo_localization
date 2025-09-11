@@ -435,6 +435,10 @@ void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
         particles_(i, 0) = pose[0] + normal_dist_(rng_) * 0.5;  // σ_x = 0.5m
         particles_(i, 1) = pose[1] + normal_dist_(rng_) * 0.5;  // σ_y = 0.5m
         particles_(i, 2) = pose[2] + normal_dist_(rng_) * 0.4;  // σ_θ = 0.4rad
+        
+        // Normalize angle to [-π, π] range
+        while (particles_(i, 2) > M_PI) particles_(i, 2) -= 2.0 * M_PI;
+        while (particles_(i, 2) < -M_PI) particles_(i, 2) += 2.0 * M_PI;
     }
 }
 
@@ -509,6 +513,10 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
         proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
+        
+        // Normalize angle to [-π, π] range
+        while (proposal_dist(i, 2) > M_PI) proposal_dist(i, 2) -= 2.0 * M_PI;
+        while (proposal_dist(i, 2) < -M_PI) proposal_dist(i, 2) += 2.0 * M_PI;
     }
 }
 
@@ -745,10 +753,22 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 Eigen::Vector3d ParticleFilter::expected_pose()
 {
     Eigen::Vector3d pose = Eigen::Vector3d::Zero();
+    double sum_sin = 0.0, sum_cos = 0.0;
+    
+    // Calculate weighted mean for x, y coordinates
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        pose += weights_[i] * particles_.row(i);
+        pose[0] += weights_[i] * particles_(i, 0);  // x
+        pose[1] += weights_[i] * particles_(i, 1);  // y
+        
+        // For circular mean of angles
+        sum_sin += weights_[i] * std::sin(particles_(i, 2));
+        sum_cos += weights_[i] * std::cos(particles_(i, 2));
     }
+    
+    // Calculate circular mean for angle
+    pose[2] = std::atan2(sum_sin, sum_cos);
+    
     return pose;
 }
 
@@ -930,6 +950,10 @@ void ParticleFilter::timer_update()
                     particles_(i, 0) += normal_dist_(rng_) * pos_noise;
                     particles_(i, 1) += normal_dist_(rng_) * pos_noise;
                     particles_(i, 2) += normal_dist_(rng_) * angle_noise;
+                    
+                    // Normalize angle to [-π, π] range
+                    while (particles_(i, 2) > M_PI) particles_(i, 2) -= 2.0 * M_PI;
+                    while (particles_(i, 2) < -M_PI) particles_(i, 2) += 2.0 * M_PI;
                 }
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000, 
                                     "Adding adaptive random motion for convergence (iter: %d, noise: %.3f)", 
