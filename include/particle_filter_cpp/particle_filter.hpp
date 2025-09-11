@@ -8,7 +8,6 @@
 #define PARTICLE_FILTER_CPP__PARTICLE_FILTER_HPP_
 
 #include <geometry_msgs/msg/point_stamped.hpp>
-#include <geometry_msgs/msg/polygon_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
@@ -70,8 +69,6 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
     void initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz = true);
     void update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg);
-    Eigen::Vector3d odom_to_rear_axle(const Eigen::Vector3d& odom_pose);
-    Eigen::Vector3d rear_axle_to_odom(const Eigen::Vector3d& rear_axle_pose);
 
     // --------------------------------- UTILITY FUNCTIONS ---------------------------------
     double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);
@@ -88,17 +85,12 @@ class ParticleFilter : public rclcpp::Node
     int MAX_VIZ_PARTICLES;
     double INV_SQUASH_FACTOR;
     double MAX_RANGE_METERS;
-    int THETA_DISCRETIZATION;
-    std::string WHICH_RM;
-    int RANGELIB_VAR;
-    bool SHOW_FINE_TIMING;
     bool PUBLISH_ODOM;
     bool DO_VIZ;
     double TIMER_FREQUENCY;
     bool USE_PARALLEL_RAYCASTING;
     int NUM_THREADS;
     double MAX_POSE_RANGE;
-    bool SIM_MODE;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
@@ -181,15 +173,10 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- TIMING & STATISTICS ---------------------------------
     rclcpp::Time last_stamp_;
     int iters_;
-    double current_speed_;
-    double current_angular_velocity_;
-    rclcpp::Time last_odom_time_;
     
-    // --------------------------------- VELOCITY-BASED MCL ---------------------------------
+    // --------------------------------- VELOCITY TRACKING ---------------------------------
     double current_velocity_;          // Current linear velocity (m/s)
     double current_angular_vel_;       // Current angular velocity (rad/s)
-    bool new_lidar_available_;         // Flag for new lidar data
-    rclcpp::Time last_mcl_update_time_; // Last MCL update timestamp
     
     // Performance profiling
     utils::performance::TimingStats timing_stats_;
@@ -199,7 +186,6 @@ class ParticleFilter : public rclcpp::Node
     std::vector<int> particle_indices_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
-    void update();
     void timer_update();
     void publish_map_periodically();
     

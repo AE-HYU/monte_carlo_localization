@@ -36,7 +36,7 @@ particle_filter:
     angle_step: 18                     # Laser downsampling factor
     squash_factor: 2.2                 # Weight normalization
     use_parallel_raycasting: true      # Enable parallel processing
-    num_threads: 0                     # Auto-detect threads
+    num_threads: 3                     # Auto-detect threads
     
     # === ROS TOPICS ===
     # Default values (overridden based on sim_mode in launch file)
