@@ -846,10 +846,11 @@ void ParticleFilter::timer_update()
         return;
     }
     
-    // Allow timer to run even without odom for debugging
-    if (!odom_initialized_) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Waiting for odometry data...");
-        return;
+    // Allow timer to run even without odom for initial convergence
+    bool has_odometry_for_motion = odom_initialized_;
+    if (!has_odometry_for_motion) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
+                            "Running MCL without odometry - sensor-only updates for initial convergence");
     }
     
     rclcpp::Time current_time = this->get_clock()->now();
@@ -891,8 +892,8 @@ void ParticleFilter::timer_update()
                         successful_locks, lock_attempts, downsampled_ranges_.size());
         }
         
-        // Apply motion model for any motion (more sensitive tracking)
-        if (apply_motion && (std::abs(current_velocity_) > 0.005 || std::abs(current_angular_vel_) > 0.005)) {
+        // Apply motion model only if odometry is available and there's motion
+        if (has_odometry_for_motion && apply_motion && (std::abs(current_velocity_) > 0.005 || std::abs(current_angular_vel_) > 0.005)) {
             bicycle_motion_model(particles_, current_velocity_, current_angular_vel_, dt);
         }
         
@@ -917,13 +918,38 @@ void ParticleFilter::timer_update()
                 }
             }
             
+            // Add adaptive small random motion to particles during early global initialization
+            // to help with convergence when there's no odometry
+            if (!pose_initialized_from_rviz_ && !has_odometry_for_motion && iters_ < 15) {
+                // Reduce noise as iterations progress to prevent excessive spreading
+                double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
+                double pos_noise = 0.05 * noise_factor;  // Reduced from 0.1 to 0.05
+                double angle_noise = 0.02 * noise_factor;  // Reduced from 0.05 to 0.02
+                
+                for (int i = 0; i < MAX_PARTICLES; ++i) {
+                    particles_(i, 0) += normal_dist_(rng_) * pos_noise;
+                    particles_(i, 1) += normal_dist_(rng_) * pos_noise;
+                    particles_(i, 2) += normal_dist_(rng_) * angle_noise;
+                }
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000, 
+                                    "Adding adaptive random motion for convergence (iter: %d, noise: %.3f)", 
+                                    iters_, noise_factor);
+            }
+            
             // Effective sample size based resampling (more efficient)
             double sum_weights_sq = 0.0;
             for (const auto& w : weights_) {
                 sum_weights_sq += w * w;
             }
             double n_eff = 1.0 / sum_weights_sq;
-            double resample_threshold = MAX_PARTICLES * 0.25;  // Resample when Neff < 25% of particles (less frequent)
+            // Adaptive resampling threshold based on convergence state
+            double resample_threshold;
+            if (pose_initialized_from_rviz_) {
+                resample_threshold = MAX_PARTICLES * 0.25;  // More frequent resampling when initialized from RViz
+            } else {
+                // During global initialization, allow more iterations before resampling
+                resample_threshold = MAX_PARTICLES * 0.1;   // Less frequent resampling for better convergence
+            }
             
             if (n_eff < resample_threshold) {
                 // Multinomial resampling
@@ -938,16 +964,18 @@ void ParticleFilter::timer_update()
                 particles_ = resampled_particles;
                 std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
                 
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
-                                    "Resampled particles - Neff: %.1f", n_eff);
+                const char* init_state = pose_initialized_from_rviz_ ? "RViz-init" : "Global-init";
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
+                                    "Resampled particles [%s] - Neff: %.1f (threshold: %.1f)", 
+                                    init_state, n_eff, resample_threshold);
             }
             
             // Update pose estimate
             inferred_pose_ = expected_pose();
             
-            // Update odometry tracking reference if active
-            bool can_use_odom_tracking = pose_initialized_from_rviz_ || 
-                                       (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_));
+            // Update odometry tracking reference if active and odometry is available
+            bool can_use_odom_tracking = has_odometry_for_motion && (pose_initialized_from_rviz_ || 
+                                       (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
             
             if (can_use_odom_tracking) {
                 if (!odom_tracking_active_ && is_pose_valid(inferred_pose_)) {
@@ -988,11 +1016,27 @@ void ParticleFilter::timer_update()
     // Always update steady time for next calculation
     last_steady_time = current_steady_time;
     
-    // Always publish TF and odometry at timer frequency
-    if (odom_tracking_active_ || (odom_initialized_ && map_initialized_)) {
+    // Always publish TF and odom at timer frequency if we have a valid pose
+    if (map_initialized_) {
         Eigen::Vector3d current_pose = get_current_pose();
-        rclcpp::Time timestamp = (last_stamp_.nanoseconds() != 0) ? last_stamp_ : current_time;
+        rclcpp::Time timestamp = current_time;
+        
+        // Use odometry timestamp if available, otherwise use current time
+        if (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) {
+            timestamp = last_stamp_;
+        }
+        
+        // Always publish, even if pose is at origin during initialization
         publish_tf(current_pose, timestamp);
+        
+        // Debug logging for pose publishing
+        static int publish_count = 0;
+        publish_count++;
+        if (publish_count <= 10 || publish_count % 100 == 0) {
+            RCLCPP_INFO(this->get_logger(), "Publishing pose #%d: [%.3f, %.3f, %.3f] (odom_active: %s)", 
+                        publish_count, current_pose[0], current_pose[1], current_pose[2],
+                        odom_tracking_active_ ? "true" : "false");
+        }
     }
 }
 
@@ -1054,7 +1098,15 @@ Eigen::Vector3d ParticleFilter::get_current_pose()
     if (is_pose_valid(inferred_pose_))
         return inferred_pose_;
     
-    // Priority 3: Fallback to last known good pose
+    // Priority 3: During initialization without pose estimate, use center of particles
+    if (map_initialized_ && particles_.rows() > 0) {
+        Eigen::Vector3d particle_center = particles_.colwise().mean();
+        if (is_pose_valid(particle_center)) {
+            return particle_center;
+        }
+    }
+    
+    // Priority 4: Fallback to last known good pose
     if (is_pose_valid(last_pose_))
         return last_pose_;
     
