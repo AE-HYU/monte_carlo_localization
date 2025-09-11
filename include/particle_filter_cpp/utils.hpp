@@ -10,6 +10,7 @@
 
 #include <Eigen/Dense>
 #include <chrono>
+#include <functional>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
@@ -23,49 +24,79 @@ namespace particle_filter_cpp
 namespace utils
 {
 
-// --------------------------------- GEOMETRIC TRANSFORMATIONS ---------------------------------
+// --------------------------------- GEOMETRY NAMESPACE ---------------------------------
+namespace geometry
+{
+  // Quaternion ↔ Euler angle conversions
+  double quaternion_to_yaw(const geometry_msgs::msg::Quaternion &q);      // Extract Z-axis rotation
+  geometry_msgs::msg::Quaternion yaw_to_quaternion(double yaw);           // Create pure Z rotation
+  double normalize_angle(double angle);                                   // Wrap to [-π, π]
+  
+  // 2D rotation matrix
+  Eigen::Matrix2d rotation_matrix(double angle);                          // Generate R(θ)
+} // namespace geometry
 
-// Quaternion ↔ Euler angle conversions
-double quaternion_to_yaw(const geometry_msgs::msg::Quaternion &q);      // Extract Z-axis rotation
-geometry_msgs::msg::Quaternion yaw_to_quaternion(double yaw);           // Create pure Z rotation
-double normalize_angle(double angle);                                   // Wrap to [-π, π]
+// --------------------------------- COORDINATES NAMESPACE ---------------------------------
+namespace coordinates
+{
+  // Map ↔ world coordinate system transformations
+  Eigen::Vector3d map_to_world(const Eigen::Vector3d &map_coord, const nav_msgs::msg::MapMetaData &map_info);
+  Eigen::Vector3d world_to_map(const Eigen::Vector3d &world_coord, const nav_msgs::msg::MapMetaData &map_info);
+  void map_to_world_inplace(Eigen::MatrixXd &poses, const nav_msgs::msg::MapMetaData &map_info);
+  
+  // Vehicle coordinate frame transformations
+  Eigen::Vector3d odom_to_rear_axle(const Eigen::Vector3d& odom_pose, double wheelbase);
+  Eigen::Vector3d rear_axle_to_odom(const Eigen::Vector3d& rear_axle_pose, double wheelbase);
+} // namespace coordinates
 
-// --------------------------------- COORDINATE TRANSFORMATIONS ---------------------------------
+// --------------------------------- VALIDATION NAMESPACE ---------------------------------
+namespace validation
+{
+  // Pose validation functions
+  bool is_pose_valid(const Eigen::Vector3d& pose, double max_range = 10000.0);
+} // namespace validation
 
-// Map ↔ world coordinate system transformations
-Eigen::Vector3d map_to_world(const Eigen::Vector3d &map_coord, const nav_msgs::msg::MapMetaData &map_info);
-Eigen::Vector3d world_to_map(const Eigen::Vector3d &world_coord, const nav_msgs::msg::MapMetaData &map_info);
+// --------------------------------- PERFORMANCE NAMESPACE ---------------------------------
+namespace performance
+{
+  // Timing statistics structure
+  struct TimingStats
+  {
+    double total_mcl_time = 0.0;
+    double ray_casting_time = 0.0;
+    double sensor_model_time = 0.0;
+    double motion_model_time = 0.0;
+    double resampling_time = 0.0;
+    double query_prep_time = 0.0;
+    int measurement_count = 0;
+    
+    void reset();
+    void print_stats(const std::function<void(const std::string&)>& logger) const;
+  };
+  
+  // Smoothed timing measurements for performance analysis
+  class Timer
+  {
+    public:
+      explicit Timer(int smoothing_size = 10);  // Sliding window size
+      void tick();                              // Record elapsed time
+      double fps() const;                       // Calculate smoothed FPS
+      double mean_duration() const;             // Mean duration [ms]
+
+    private:
+      std::vector<double> durations_;           // Circular buffer [ms]
+      int smoothing_size_;                      // Window size
+      int current_index_;                       // Current buffer position
+      int count_;                              // Number of valid samples
+      std::chrono::steady_clock::time_point last_time_;  // Last measurement time
+  };
+} // namespace performance
 
 // --------------------------------- MESSAGE CONVERSIONS ---------------------------------
 
 // Eigen → ROS message conversions for visualization
 geometry_msgs::msg::PoseArray particles_to_pose_array(const Eigen::MatrixXd &particles);
 geometry_msgs::msg::Pose eigen_to_pose(const Eigen::Vector3d &pose_vec);
-
-// --------------------------------- MATRIX UTILITIES ---------------------------------
-
-// 2D rotation matrix and batch transformations
-Eigen::Matrix2d rotation_matrix(double angle);                          // Generate R(θ)
-void map_to_world_inplace(Eigen::MatrixXd &poses, const nav_msgs::msg::MapMetaData &map_info);
-
-// --------------------------------- PERFORMANCE MONITORING ---------------------------------
-
-// Smoothed timing measurements for performance analysis
-class Timer
-{
-  public:
-    explicit Timer(int smoothing_size = 10);  // Sliding window size
-    void tick();                              // Record elapsed time
-    double fps() const;                       // Calculate smoothed FPS
-    double mean_duration() const;             // Mean duration [ms]
-
-  private:
-    std::vector<double> durations_;           // Circular buffer [ms]
-    int smoothing_size_;                      // Window size
-    int current_index_;                       // Current buffer position
-    int count_;                              // Number of valid samples
-    std::chrono::steady_clock::time_point last_time_;  // Last measurement time
-};
 
 // --------------------------------- DATA STRUCTURES ---------------------------------
 

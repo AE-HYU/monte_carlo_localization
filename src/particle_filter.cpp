@@ -854,8 +854,7 @@ Eigen::Vector3d ParticleFilter::get_current_pose()
 
 bool ParticleFilter::is_pose_valid(const Eigen::Vector3d& pose)
 {
-    return std::isfinite(pose[0]) && std::isfinite(pose[1]) && std::isfinite(pose[2]) &&
-           std::abs(pose[0]) < MAX_POSE_RANGE && std::abs(pose[1]) < MAX_POSE_RANGE;
+    return utils::validation::is_pose_valid(pose, MAX_POSE_RANGE);
 }
 
 void ParticleFilter::visualize()
@@ -926,63 +925,44 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
 // --------------------------------- UTILITY FUNCTIONS ---------------------------------
 double ParticleFilter::quaternion_to_angle(const geometry_msgs::msg::Quaternion &q)
 {
-    return utils::quaternion_to_yaw(q);
+    return utils::geometry::quaternion_to_yaw(q);
 }
 
 geometry_msgs::msg::Quaternion ParticleFilter::angle_to_quaternion(double angle)
 {
-    return utils::yaw_to_quaternion(angle);
+    return utils::geometry::yaw_to_quaternion(angle);
 }
 
 Eigen::Matrix2d ParticleFilter::rotation_matrix(double angle)
 {
-    return utils::rotation_matrix(angle);
+    return utils::geometry::rotation_matrix(angle);
 }
 
 // --------------------------------- PERFORMANCE PROFILING ---------------------------------
 void ParticleFilter::print_performance_stats()
 {
-    if (timing_stats_.measurement_count == 0)
-        return;
-        
-    double avg_total = timing_stats_.total_mcl_time / timing_stats_.measurement_count;
-    double avg_raycast = timing_stats_.ray_casting_time / timing_stats_.measurement_count;
-    double avg_sensor = timing_stats_.sensor_model_time / timing_stats_.measurement_count;
-    double avg_motion = timing_stats_.motion_model_time / timing_stats_.measurement_count;
-    double avg_resample = timing_stats_.resampling_time / timing_stats_.measurement_count;
-    double avg_query = timing_stats_.query_prep_time / timing_stats_.measurement_count;
+    // Create a lambda that captures the logger
+    auto logger_func = [this](const std::string& msg) {
+        RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+    };
     
-    RCLCPP_INFO(this->get_logger(), 
-        "=== PERFORMANCE STATS (last %d iterations) ===", timing_stats_.measurement_count);
-    RCLCPP_INFO(this->get_logger(), 
-        "Total MCL:        %.2f ms/iter (%.1f Hz)", avg_total, 1000.0/avg_total);
-    RCLCPP_INFO(this->get_logger(), 
-        "Ray casting:      %.2f ms/iter (%.1f%%)", avg_raycast, 100.0*avg_raycast/avg_total);
-    RCLCPP_INFO(this->get_logger(), 
-        "Sensor eval:      %.2f ms/iter (%.1f%%) [lookup tables only]", avg_sensor, 100.0*avg_sensor/avg_total);
-    RCLCPP_INFO(this->get_logger(), 
-        "Query prep:       %.2f ms/iter (%.1f%%)", avg_query, 100.0*avg_query/avg_total);
-    RCLCPP_INFO(this->get_logger(), 
-        "Motion model:     %.2f ms/iter (%.1f%%)", avg_motion, 100.0*avg_motion/avg_total);
-    RCLCPP_INFO(this->get_logger(), 
-        "Resampling:       %.2f ms/iter (%.1f%%)", avg_resample, 100.0*avg_resample/avg_total);
-    RCLCPP_INFO(this->get_logger(), 
-        "Particles: %d, Rays/particle: %zu, Total rays: %d", 
-        MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
-    RCLCPP_INFO(this->get_logger(), "=====================================");
+    // Print performance stats using utils
+    timing_stats_.print_stats(logger_func);
+    
+    // Print additional particle filter specific info
+    if (timing_stats_.measurement_count > 0) {
+        RCLCPP_INFO(this->get_logger(), 
+            "Particles: %d, Rays/particle: %zu, Total rays: %d", 
+            MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
+        RCLCPP_INFO(this->get_logger(), "=====================================");
+    }
     
     reset_performance_stats();
 }
 
 void ParticleFilter::reset_performance_stats()
 {
-    timing_stats_.total_mcl_time = 0.0;
-    timing_stats_.ray_casting_time = 0.0;
-    timing_stats_.sensor_model_time = 0.0;
-    timing_stats_.motion_model_time = 0.0;
-    timing_stats_.resampling_time = 0.0;
-    timing_stats_.query_prep_time = 0.0;
-    timing_stats_.measurement_count = 0;
+    timing_stats_.reset();
 }
 
 // --------------------------------- ODOMETRY-BASED TRACKING IMPLEMENTATION ---------------------------------
@@ -1022,36 +1002,12 @@ void ParticleFilter::update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& 
 
 Eigen::Vector3d ParticleFilter::odom_to_rear_axle(const Eigen::Vector3d& odom_pose)
 {
-    // Convert from odometry frame (typically base_link/center) to rear axle
-    double cos_theta = std::cos(odom_pose[2]);
-    double sin_theta = std::sin(odom_pose[2]);
-    
-    // Rear axle is WHEELBASE/2 behind the center
-    double offset = WHEELBASE / 2.0;
-    
-    Eigen::Vector3d rear_axle_pose;
-    rear_axle_pose[0] = odom_pose[0] - offset * cos_theta;
-    rear_axle_pose[1] = odom_pose[1] - offset * sin_theta;
-    rear_axle_pose[2] = odom_pose[2];
-    
-    return rear_axle_pose;
+    return utils::coordinates::odom_to_rear_axle(odom_pose, WHEELBASE);
 }
 
 Eigen::Vector3d ParticleFilter::rear_axle_to_odom(const Eigen::Vector3d& rear_axle_pose)
 {
-    // Convert from rear axle to odometry frame (typically base_link/center)
-    double cos_theta = std::cos(rear_axle_pose[2]);
-    double sin_theta = std::sin(rear_axle_pose[2]);
-    
-    // Center is WHEELBASE/2 in front of rear axle
-    double offset = WHEELBASE / 2.0;
-    
-    Eigen::Vector3d odom_pose;
-    odom_pose[0] = rear_axle_pose[0] + offset * cos_theta;
-    odom_pose[1] = rear_axle_pose[1] + offset * sin_theta;
-    odom_pose[2] = rear_axle_pose[2];
-    
-    return odom_pose;
+    return utils::coordinates::rear_axle_to_odom(rear_axle_pose, WHEELBASE);
 }
 
 } // namespace particle_filter_cpp

@@ -25,6 +25,8 @@
 #include <random>
 #include <vector>
 
+#include "particle_filter_cpp/utils.hpp"
+
 namespace particle_filter_cpp
 {
 
@@ -183,15 +185,7 @@ class ParticleFilter : public rclcpp::Node
     rclcpp::Time last_odom_time_;
     
     // Performance profiling
-    struct TimingStats {
-        double total_mcl_time = 0.0;
-        double ray_casting_time = 0.0;
-        double sensor_model_time = 0.0;
-        double motion_model_time = 0.0;
-        double resampling_time = 0.0;
-        double query_prep_time = 0.0;
-        int measurement_count = 0;
-    } timing_stats_;
+    utils::performance::TimingStats timing_stats_;
     
 
     // --------------------------------- ALGORITHM INTERNALS ---------------------------------
