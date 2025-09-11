@@ -39,6 +39,7 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
     void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation);
     void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);
+    void bicycle_motion_model(Eigen::MatrixXd &proposal_dist, double velocity, double angular_velocity, double dt);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
     Eigen::Vector3d expected_pose();
@@ -183,6 +184,12 @@ class ParticleFilter : public rclcpp::Node
     double current_speed_;
     double current_angular_velocity_;
     rclcpp::Time last_odom_time_;
+    
+    // --------------------------------- VELOCITY-BASED MCL ---------------------------------
+    double current_velocity_;          // Current linear velocity (m/s)
+    double current_angular_vel_;       // Current angular velocity (rad/s)
+    bool new_lidar_available_;         // Flag for new lidar data
+    rclcpp::Time last_mcl_update_time_; // Last MCL update timestamp
     
     // Performance profiling
     utils::performance::TimingStats timing_stats_;
