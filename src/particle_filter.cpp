@@ -21,7 +21,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 {
     // ROS2 parameter declarations
     this->declare_parameter("angle_step", 18);
-    this->declare_parameter("max_particles", 4000);
+    this->declare_parameter("max_particles", 2000);
     this->declare_parameter("max_viz_particles", 60);
     this->declare_parameter("squash_factor", 2.2);
     this->declare_parameter("max_range", 12.0);
@@ -462,35 +462,36 @@ void ParticleFilter::initialize_global()
 // --------------------------------- MCL ALGORITHM CORE ---------------------------------
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
-    // Apply motion transformation: local → global coordinates
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        double cos_theta = std::cos(proposal_dist(i, 2));
-        double sin_theta = std::sin(proposal_dist(i, 2));
-
-        local_deltas_(i, 0) = cos_theta * action[0] - sin_theta * action[1];
-        local_deltas_(i, 1) = sin_theta * action[0] + cos_theta * action[1];
-        local_deltas_(i, 2) = action[2];
+    // Extract velocity and time info from action vector
+    // action[0] = velocity * dt (forward displacement)
+    // action[1] = lateral displacement (unused for bicycle model)  
+    // action[2] = angular_velocity * dt (angular displacement)
+    
+    // Estimate dt and velocities (assuming reasonable dt)
+    double dt = 0.01;  // Default dt, will be overridden if action norm suggests different
+    double velocity = 0.0;
+    double angular_velocity = 0.0;
+    
+    // Try to extract meaningful dt from action magnitude
+    double forward_displacement = action[0];
+    double angular_displacement = action[2];
+    
+    if (std::abs(forward_displacement) > 0.001) {
+        // Assume reasonable velocity range (0.1 to 10 m/s) to estimate dt
+        if (std::abs(forward_displacement) < 0.1) {
+            dt = std::abs(forward_displacement) / 1.0;  // Assume 1 m/s max for small displacements
+        } else {
+            dt = std::abs(forward_displacement) / 5.0;  // Assume 5 m/s for larger displacements
+        }
+        dt = std::max(0.001, std::min(dt, 0.1));  // Clamp dt between 1ms and 100ms
+        velocity = forward_displacement / dt;
+    }
+    
+    if (std::abs(angular_displacement) > 0.001) {
+        angular_velocity = angular_displacement / dt;
     }
 
-    proposal_dist += local_deltas_;
-
-    // Add Gaussian process noise
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
-        
-        // Normalize angle to [-π, π] range
-        while (proposal_dist(i, 2) > M_PI) proposal_dist(i, 2) -= 2.0 * M_PI;
-        while (proposal_dist(i, 2) < -M_PI) proposal_dist(i, 2) += 2.0 * M_PI;
-    }
-}
-
-void ParticleFilter::bicycle_motion_model(Eigen::MatrixXd &proposal_dist, double velocity, double angular_velocity, double dt)
-{
-    // Bicycle model kinematics for car-like vehicles
+    // Apply bicycle model kinematics for each particle
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         double x = proposal_dist(i, 0);
@@ -514,7 +515,7 @@ void ParticleFilter::bicycle_motion_model(Eigen::MatrixXd &proposal_dist, double
             proposal_dist(i, 2) = theta + delta_theta;
         }
         
-        // Add motion noise
+        // Add Gaussian process noise
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
         proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
@@ -524,6 +525,7 @@ void ParticleFilter::bicycle_motion_model(Eigen::MatrixXd &proposal_dist, double
         while (proposal_dist(i, 2) < -M_PI) proposal_dist(i, 2) += 2.0 * M_PI;
     }
 }
+
 
 void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                                   std::vector<double> &weights)
@@ -792,8 +794,8 @@ void ParticleFilter::timer_update()
         return;
     }
     
-    // For very small dt, don't apply motion model but allow sensor update
-    bool apply_motion = (dt >= 0.001);
+    // Apply motion model more aggressively for better tracking
+    bool apply_motion = (dt >= 0.0001);  // Reduced threshold for high-frequency updates
     
     static int lock_attempts = 0;
     static int successful_locks = 0;
@@ -807,89 +809,31 @@ void ParticleFilter::timer_update()
                         successful_locks, lock_attempts, downsampled_ranges_.size());
         }
         
-        // Apply motion model only if odometry is available and there's motion
-        if (has_odometry_for_motion && apply_motion && (std::abs(current_velocity_) > 0.005 || std::abs(current_angular_vel_) > 0.005)) {
-            bicycle_motion_model(particles_, current_velocity_, current_angular_vel_, dt);
-        }
-        
-        // Apply sensor update at higher frequency for better tracking
-        static int sensor_update_counter = 0;
-        sensor_update_counter++;
-        int sensor_update_divisor = 2;  // Update sensor every 2nd timer call (200Hz -> 100Hz)
-        
-        if (lidar_initialized_ && !downsampled_ranges_.empty() && (sensor_update_counter % sensor_update_divisor == 0)) {
+        // Execute complete MCL cycle (with or without odometry)
+        if (lidar_initialized_ && !downsampled_ranges_.empty()) {
             ++iters_;
+            
+            // Convert velocity to action vector for traditional MCL
+            Eigen::Vector3d action = Eigen::Vector3d::Zero();
+            if (has_odometry_for_motion && apply_motion && (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
+                // Local coordinate motion: [forward, lateral, angular]
+                action[0] = current_velocity_ * dt;        // Forward displacement
+                action[1] = 0.0;                          // No lateral motion for bicycle model
+                action[2] = current_angular_vel_ * dt;    // Angular displacement
+            } else if (!has_odometry_for_motion && !pose_initialized_from_rviz_ && iters_ < 15) {
+                // Add small random motion during global initialization to help convergence
+                double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
+                action[0] = normal_dist_(rng_) * 0.02 * noise_factor;  // Small forward motion
+                action[1] = normal_dist_(rng_) * 0.01 * noise_factor;  // Small lateral motion  
+                action[2] = normal_dist_(rng_) * 0.05 * noise_factor;  // Small angular motion
+            }
             
             auto observation = downsampled_ranges_;
             
-            // Execute sensor model and resampling
-            sensor_model(particles_, observation, weights_);
+            // Execute COMPLETE MCL pipeline with bicycle kinematics: Resample → Motion → Sensor → Normalize
+            MCL(action, observation);
             
-            // Weight normalization
-            double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
-            if (sum_weights > 0) {
-                for (double &w : weights_) {
-                    w /= sum_weights;
-                }
-            }
-            
-            // Add adaptive small random motion to particles during early global initialization
-            // to help with convergence when there's no odometry
-            if (!pose_initialized_from_rviz_ && !has_odometry_for_motion && iters_ < 15) {
-                // Reduce noise as iterations progress to prevent excessive spreading
-                double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
-                double pos_noise = 0.05 * noise_factor;  // Reduced from 0.1 to 0.05
-                double angle_noise = 0.02 * noise_factor;  // Reduced from 0.05 to 0.02
-                
-                for (int i = 0; i < MAX_PARTICLES; ++i) {
-                    particles_(i, 0) += normal_dist_(rng_) * pos_noise;
-                    particles_(i, 1) += normal_dist_(rng_) * pos_noise;
-                    particles_(i, 2) += normal_dist_(rng_) * angle_noise;
-                    
-                    // Normalize angle to [-π, π] range
-                    while (particles_(i, 2) > M_PI) particles_(i, 2) -= 2.0 * M_PI;
-                    while (particles_(i, 2) < -M_PI) particles_(i, 2) += 2.0 * M_PI;
-                }
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000, 
-                                    "Adding adaptive random motion for convergence (iter: %d, noise: %.3f)", 
-                                    iters_, noise_factor);
-            }
-            
-            // Effective sample size based resampling (more efficient)
-            double sum_weights_sq = 0.0;
-            for (const auto& w : weights_) {
-                sum_weights_sq += w * w;
-            }
-            double n_eff = 1.0 / sum_weights_sq;
-            // Adaptive resampling threshold based on convergence state
-            double resample_threshold;
-            if (pose_initialized_from_rviz_) {
-                resample_threshold = MAX_PARTICLES * 0.25;  // More frequent resampling when initialized from RViz
-            } else {
-                // During global initialization, allow more iterations before resampling
-                resample_threshold = MAX_PARTICLES * 0.1;   // Less frequent resampling for better convergence
-            }
-            
-            if (n_eff < resample_threshold) {
-                // Multinomial resampling
-                std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
-                Eigen::MatrixXd resampled_particles(MAX_PARTICLES, 3);
-                
-                for (int i = 0; i < MAX_PARTICLES; ++i) {
-                    int idx = particle_dist(rng_);
-                    resampled_particles.row(i) = particles_.row(idx);
-                }
-                
-                particles_ = resampled_particles;
-                std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
-                
-                const char* init_state = pose_initialized_from_rviz_ ? "RViz-init" : "Global-init";
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, 
-                                    "Resampled particles [%s] - Neff: %.1f (threshold: %.1f)", 
-                                    init_state, n_eff, resample_threshold);
-            }
-            
-            // Update pose estimate
+            // Update pose estimate immediately after MCL
             inferred_pose_ = expected_pose();
             
             // Update odometry tracking reference if active and odometry is available

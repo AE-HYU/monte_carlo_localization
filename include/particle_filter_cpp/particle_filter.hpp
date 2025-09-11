@@ -37,8 +37,7 @@ class ParticleFilter : public rclcpp::Node
   private:
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
     void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation);
-    void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);
-    void bicycle_motion_model(Eigen::MatrixXd &proposal_dist, double velocity, double angular_velocity, double dt);
+    void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);  // Now uses bicycle kinematics
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
     Eigen::Vector3d expected_pose();

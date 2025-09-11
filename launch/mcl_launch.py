@@ -51,16 +51,8 @@ def generate_launch_description():
         ]),
         'odom_topic': PythonExpression([
             "'/odom' if '", LaunchConfiguration('sim_mode'), "' == 'false' else '/ego_racecar/odom'"
-        ]),
-        'lidar_offset_x': PythonExpression([
-            "0.288 if '", LaunchConfiguration('sim_mode'), "' == 'false' else 0.25"
-        ]),
-        'wheelbase': PythonExpression([
-            "0.325 if '", LaunchConfiguration('sim_mode'), "' == 'false' else 0.324"
-        ]),
-        'timer_frequency': PythonExpression([
-            "100.0 if '", LaunchConfiguration('sim_mode'), "' == 'false' else 200.0"
         ])
+        # Removed hardcoded parameters - use config file values instead
     }
     
     # === COMMON PARAMETERS ===
@@ -115,12 +107,13 @@ def generate_launch_description():
     )
     
     # === STATIC TRANSFORM PUBLISHER ===
+    # Note: TF values should match lidar_offset_x in config file
     static_tf_node = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='particle_filter_static_tf_publisher',
         arguments=[
-            PythonExpression(["'0.288' if '", LaunchConfiguration('sim_mode'), "' == 'false' else '0.25'"]),
+            '0.288',  # Use config file value: lidar_offset_x
             '0.0', '0.0', '0.0', '0.0', '0.0', 'base_link', 'laser'
         ],
         output='screen',
