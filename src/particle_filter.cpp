@@ -787,15 +787,18 @@ void ParticleFilter::timer_update()
                     RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized");
                 }
                 
-                // Apply delay compensation for longitudinal motion during MCL processing
+                // Apply delay compensation for motion during MCL processing
                 Eigen::Vector3d compensated_pose = inferred_pose_;
                 if (timing_stats_.measurement_count > 0) {
                     double mcl_delay_sec = timing_stats_.total_mcl_time / timing_stats_.measurement_count / 1000.0;
                     double longitudinal_displacement = current_velocity_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
+                    double angular_displacement = current_angular_vel_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
                     
                     // Apply compensation in vehicle's forward direction
                     compensated_pose[0] += longitudinal_displacement * std::cos(inferred_pose_[2]);
                     compensated_pose[1] += longitudinal_displacement * std::sin(inferred_pose_[2]);
+                    // Apply heading compensation
+                    compensated_pose[2] += angular_displacement;
                 }
                 
                 odom_reference_pose_ = compensated_pose;
