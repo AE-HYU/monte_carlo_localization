@@ -44,6 +44,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
     this->declare_parameter("max_pose_range", 10000.0); // Maximum valid pose coordinate range
+    this->declare_parameter("delay_compensation_factor", 1.5); // Factor for MCL delay compensation
 
     // Retrieve parameter values
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -57,6 +58,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
     NUM_THREADS = this->get_parameter("num_threads").as_int();
     MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
+    DELAY_COMPENSATION_FACTOR = this->get_parameter("delay_compensation_factor").as_double();
 
     // 4-component sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -785,9 +787,20 @@ void ParticleFilter::timer_update()
                     RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized");
                 }
                 
-                odom_reference_pose_ = inferred_pose_;
+                // Apply delay compensation for longitudinal motion during MCL processing
+                Eigen::Vector3d compensated_pose = inferred_pose_;
+                if (timing_stats_.measurement_count > 0) {
+                    double mcl_delay_sec = timing_stats_.total_mcl_time / timing_stats_.measurement_count / 1000.0;
+                    double longitudinal_displacement = current_velocity_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
+                    
+                    // Apply compensation in vehicle's forward direction
+                    compensated_pose[0] += longitudinal_displacement * std::cos(inferred_pose_[2]);
+                    compensated_pose[1] += longitudinal_displacement * std::sin(inferred_pose_[2]);
+                }
+                
+                odom_reference_pose_ = compensated_pose;
                 odom_reference_odom_ = last_pose_;
-                odom_pose_ = inferred_pose_;
+                odom_pose_ = compensated_pose;
             }
             
             if (iters_ % 100 == 0) {
