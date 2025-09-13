@@ -185,8 +185,6 @@ class ParticleFilter : public rclcpp::Node
     void publish_map_periodically();
     
     // Performance profiling methods
-    void print_performance_stats();
-    void reset_performance_stats();
 };
 
 } // namespace particle_filter_cpp

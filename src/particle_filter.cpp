@@ -392,8 +392,7 @@ void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
         particles_(i, 2) = pose[2] + normal_dist_(rng_) * 0.4;
         
         // Normalize angle
-        while (particles_(i, 2) > M_PI) particles_(i, 2) -= 2.0 * M_PI;
-        while (particles_(i, 2) < -M_PI) particles_(i, 2) += 2.0 * M_PI;
+        particles_(i, 2) = utils::geometry::normalize_angle(particles_(i, 2));
     }
 }
 
@@ -497,8 +496,7 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
         proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
         
         // Normalize angle
-        while (proposal_dist(i, 2) > M_PI) proposal_dist(i, 2) -= 2.0 * M_PI;
-        while (proposal_dist(i, 2) < -M_PI) proposal_dist(i, 2) += 2.0 * M_PI;
+        proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
     }
 }
 
@@ -798,7 +796,18 @@ void ParticleFilter::timer_update()
             }
             
             if (iters_ % 200 == 0) {
-                print_performance_stats();
+                // Print performance stats
+                auto logger_func = [this](const std::string& msg) {
+                    RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+                };
+                timing_stats_.print_stats(logger_func);
+                
+                if (timing_stats_.measurement_count > 0) {
+                    RCLCPP_INFO(this->get_logger(), 
+                        "Particles: %d, Rays/particle: %zu, Total rays: %d", 
+                        MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
+                }
+                timing_stats_.reset();
             }
             
             visualize();
@@ -831,14 +840,10 @@ void ParticleFilter::publish_map_periodically()
 // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
 void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
 {
-    // Apply offset in vehicle coordinate frame (forward direction)
-    double forward_offset = LIDAR_OFFSET_X;  // Use configured lidar offset
-    double cos_theta = std::cos(pose[2]);
-    double sin_theta = std::sin(pose[2]);
-    
-    // Transform to base_link position (lidar position - forward offset)
-    double base_link_x = pose[0] - forward_offset * cos_theta;
-    double base_link_y = pose[1] - forward_offset * sin_theta;
+    // Apply vehicle frame offset (lidar -> base_link)
+    Eigen::Vector3d base_link_pose = utils::geometry::apply_vehicle_offset(pose, LIDAR_OFFSET_X);
+    double base_link_x = base_link_pose[0];
+    double base_link_y = base_link_pose[1];
     
     // Publish map → base_link transform
     geometry_msgs::msg::TransformStamped t;
@@ -907,16 +912,14 @@ void ParticleFilter::visualize()
     // RViz pose visualization (with vehicle frame offset)
     if (pose_pub_ && pose_pub_->get_subscription_count() > 0)
     {
-        // Apply same vehicle frame offset as TF
-        double forward_offset = LIDAR_OFFSET_X;
-        double cos_theta = std::cos(inferred_pose_[2]);
-        double sin_theta = std::sin(inferred_pose_[2]);
+        // Apply vehicle frame offset
+        Eigen::Vector3d offset_pose = utils::geometry::apply_vehicle_offset(inferred_pose_, LIDAR_OFFSET_X);
         
         geometry_msgs::msg::PoseStamped ps;
         ps.header.stamp = this->get_clock()->now();
         ps.header.frame_id = "map";
-        ps.pose.position.x = inferred_pose_[0] - forward_offset * cos_theta;
-        ps.pose.position.y = inferred_pose_[1] - forward_offset * sin_theta;
+        ps.pose.position.x = offset_pose[0];
+        ps.pose.position.y = offset_pose[1];
         ps.pose.orientation = utils::geometry::yaw_to_quaternion(inferred_pose_[2]);
         pose_pub_->publish(ps);
     }
@@ -949,13 +952,12 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
 {
     // Apply vehicle frame offset to all particles
     Eigen::MatrixXd offset_particles = particles_to_pub;
-    double forward_offset = LIDAR_OFFSET_X;
     
     for (int i = 0; i < offset_particles.rows(); ++i) {
-        double cos_theta = std::cos(offset_particles(i, 2));
-        double sin_theta = std::sin(offset_particles(i, 2));
-        offset_particles(i, 0) -= forward_offset * cos_theta;
-        offset_particles(i, 1) -= forward_offset * sin_theta;
+        Eigen::Vector3d particle_pose(offset_particles(i, 0), offset_particles(i, 1), offset_particles(i, 2));
+        Eigen::Vector3d offset_pose = utils::geometry::apply_vehicle_offset(particle_pose, LIDAR_OFFSET_X);
+        offset_particles(i, 0) = offset_pose[0];
+        offset_particles(i, 1) = offset_pose[1];
     }
     
     auto pa = utils::particles_to_pose_array(offset_particles);
@@ -965,32 +967,6 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
 }
 
 
-// --------------------------------- PERFORMANCE PROFILING ---------------------------------
-void ParticleFilter::print_performance_stats()
-{
-    // Create a lambda that captures the logger
-    auto logger_func = [this](const std::string& msg) {
-        RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
-    };
-    
-    // Print performance stats using utils
-    timing_stats_.print_stats(logger_func);
-    
-    // Print additional particle filter specific info
-    if (timing_stats_.measurement_count > 0) {
-        RCLCPP_INFO(this->get_logger(), 
-            "Particles: %d, Rays/particle: %zu, Total rays: %d", 
-            MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
-        RCLCPP_INFO(this->get_logger(), "=====================================");
-    }
-    
-    reset_performance_stats();
-}
-
-void ParticleFilter::reset_performance_stats()
-{
-    timing_stats_.reset();
-}
 
 // --------------------------------- ODOMETRY-BASED TRACKING IMPLEMENTATION ---------------------------------
 void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz)

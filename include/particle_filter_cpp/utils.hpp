@@ -29,6 +29,9 @@ namespace geometry
   
   // 2D rotation matrix
   Eigen::Matrix2d rotation_matrix(double angle);                          // Generate R(θ)
+  
+  // Vehicle frame transformations
+  Eigen::Vector3d apply_vehicle_offset(const Eigen::Vector3d& pose, double forward_offset);  // Apply lidar->base_link offset
 } // namespace geometry
 
 
