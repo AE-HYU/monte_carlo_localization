@@ -77,25 +77,22 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // System state initialization
     MAX_RANGE_PX = 0;
-    odometry_data_ = Eigen::Vector3d::Zero();
     iters_ = 0;
     map_initialized_ = false;
     lidar_initialized_ = false;
     odom_initialized_ = false;
     first_sensor_update_ = true;
-    // Velocity tracking
     current_velocity_ = 0.0;
     current_angular_vel_ = 0.0;
     
-    // Odometry-based tracking initialization
+    // Odometry tracking initialization
     odom_pose_ = Eigen::Vector3d::Zero();
     odom_reference_pose_ = Eigen::Vector3d::Zero();
     odom_reference_odom_ = Eigen::Vector3d::Zero();
     pose_initialized_from_rviz_ = false;
     odom_tracking_active_ = false;
     
-    // --------------------------------- THREADING SETUP ---------------------------------
-    // Setup OpenMP for parallel ray casting
+    // Setup OpenMP threading
     if (USE_PARALLEL_RAYCASTING) {
         if (NUM_THREADS == 0) {
             NUM_THREADS = omp_get_max_threads();
@@ -165,10 +162,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::bind(&ParticleFilter::publish_map_periodically, this)
     );
 
-    RCLCPP_INFO(this->get_logger(), "Particle filter initialized with %.1fHz odometry publishing", TIMER_FREQUENCY);
-    RCLCPP_INFO(this->get_logger(), "Ray casting method: TRADITIONAL");
-    RCLCPP_INFO(this->get_logger(), "Parallel ray casting: %s (%d threads)", 
-        USE_PARALLEL_RAYCASTING ? "ENABLED" : "DISABLED", USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)", 
+        TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential", 
+        USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
 }
 
 // --------------------------------- MAP LOADING & PREPROCESSING ---------------------------------
@@ -192,11 +188,10 @@ void ParticleFilter::get_omap()
         map_msg_ = std::make_shared<nav_msgs::msg::OccupancyGrid>(future.get()->map);
         map_resolution_ = map_msg_->info.resolution;
         map_origin_ = Eigen::Vector3d(map_msg_->info.origin.position.x, map_msg_->info.origin.position.y,
-                                      quaternion_to_angle(map_msg_->info.origin.orientation));
+                                      utils::geometry::quaternion_to_yaw(map_msg_->info.origin.orientation));
 
         MAX_RANGE_PX = static_cast<int>(MAX_RANGE_METERS / map_resolution_);
 
-        RCLCPP_INFO(this->get_logger(), "Initializing traditional ray casting");
 
         // Extract free space (occupancy = 0) for particle initialization
         int height = map_msg_->info.height;
@@ -216,12 +211,11 @@ void ParticleFilter::get_omap()
         }
 
         map_initialized_ = true;
-        RCLCPP_INFO(this->get_logger(), "Done loading map");
+        RCLCPP_INFO(this->get_logger(), "Map loaded and published");
 
-        // Publish map immediately after loading
+        // Publish map immediately
         if (map_pub_) {
             map_pub_->publish(*map_msg_);
-            RCLCPP_INFO(this->get_logger(), "Map published to /map topic");
         }
 
         // Generate lookup table for fast sensor model evaluation
@@ -236,7 +230,6 @@ void ParticleFilter::get_omap()
 // --------------------------------- SENSOR MODEL PRECOMPUTATION ---------------------------------
 void ParticleFilter::precompute_sensor_model()
 {
-    RCLCPP_INFO(this->get_logger(), "Precomputing sensor model");
 
     if (map_resolution_ <= 0.0)
     {
@@ -293,7 +286,7 @@ void ParticleFilter::precompute_sensor_model()
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    RCLCPP_INFO(this->get_logger(), "Sensor model precomputed in %ld ms", duration.count());
+    RCLCPP_INFO(this->get_logger(), "Sensor model ready (%ld ms)", duration.count());
 }
 
 // --------------------------------- SENSOR CALLBACKS ---------------------------------
@@ -301,8 +294,6 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
     if (laser_angles_.empty())
     {
-        RCLCPP_INFO(this->get_logger(), "...Received first LiDAR message");
-
         // Extract scan parameters and downsample
         laser_angles_.resize(msg->ranges.size());
         for (size_t i = 0; i < msg->ranges.size(); ++i)
@@ -316,10 +307,10 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
             downsampled_angles_.push_back(laser_angles_[i]);
         }
 
-        RCLCPP_INFO(this->get_logger(), "Downsampled to %zu angles", downsampled_angles_.size());
+        RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
     }
 
-    // Extract every ANGLE_STEP-th measurement
+    // Extract downsampled measurements
     downsampled_ranges_.clear();
     for (size_t i = 0; i < msg->ranges.size(); i += ANGLE_STEP)
     {
@@ -331,13 +322,11 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 
 void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    
     // Store velocity information
-    current_velocity_ = msg->twist.twist.linear.x;  // Linear velocity (m/s)
-    current_angular_vel_ = msg->twist.twist.angular.z;  // Angular velocity (rad/s)
+    current_velocity_ = msg->twist.twist.linear.x;
+    current_angular_vel_ = msg->twist.twist.angular.z;
 
-    // Update odometry-based pose tracking (high frequency)
-    // Enable when: 1) pose initialized from RViz, OR 2) global initialization done with valid MCL estimate
+    // Update odometry tracking if active
     bool can_use_odom_tracking = pose_initialized_from_rviz_ || 
                                (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_));
     
@@ -345,13 +334,13 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         update_odom_pose(msg);
     }
 
-    // Store position data for MCL
+    // Store pose data
     Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                             quaternion_to_angle(msg->pose.pose.orientation));
+                             utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
 
     if (last_pose_.norm() <= 0)
     {
-        RCLCPP_INFO(this->get_logger(), "...Received first Odometry message");
+        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
         last_pose_ = position;
     }
     
@@ -364,7 +353,7 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
     Eigen::Vector3d pose(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                         quaternion_to_angle(msg->pose.pose.orientation));
+                         utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
     
     // Initialize particle filter around clicked pose
     initialize_particles_pose(pose);
@@ -390,21 +379,19 @@ void ParticleFilter::clicked_point(const geometry_msgs::msg::PointStamped::Share
 // --------------------------------- PARTICLE INITIALIZATION ---------------------------------
 void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
 {
-    RCLCPP_INFO(this->get_logger(), "SETTING POSE");
-    RCLCPP_INFO(this->get_logger(), "Position: [%.3f, %.3f]", pose[0], pose[1]);
+    RCLCPP_INFO(this->get_logger(), "Initializing particles at [%.3f, %.3f, %.3f]", 
+                pose[0], pose[1], pose[2]);
 
     std::lock_guard<std::mutex> lock(state_lock_);
-
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
 
-    // Use clicked pose directly - simple approach
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        particles_(i, 0) = pose[0] + normal_dist_(rng_) * 0.5;  // σ_x = 0.5m
-        particles_(i, 1) = pose[1] + normal_dist_(rng_) * 0.5;  // σ_y = 0.5m
-        particles_(i, 2) = pose[2] + normal_dist_(rng_) * 0.4;  // σ_θ = 0.4rad
+        particles_(i, 0) = pose[0] + normal_dist_(rng_) * 0.5;
+        particles_(i, 1) = pose[1] + normal_dist_(rng_) * 0.5;
+        particles_(i, 2) = pose[2] + normal_dist_(rng_) * 0.4;
         
-        // Normalize angle to [-π, π] range
+        // Normalize angle
         while (particles_(i, 2) > M_PI) particles_(i, 2) -= 2.0 * M_PI;
         while (particles_(i, 2) < -M_PI) particles_(i, 2) += 2.0 * M_PI;
     }
@@ -415,11 +402,11 @@ void ParticleFilter::initialize_global()
     if (!map_initialized_)
         return;
 
-    RCLCPP_INFO(this->get_logger(), "GLOBAL INITIALIZATION");
+    RCLCPP_INFO(this->get_logger(), "Global initialization started");
 
     std::lock_guard<std::mutex> lock(state_lock_);
 
-    // Extract all free space cells
+    // Extract free space cells
     std::vector<std::pair<int, int>> permissible_positions;
     for (int i = 0; i < permissible_region_.rows(); ++i)
     {
@@ -434,11 +421,11 @@ void ParticleFilter::initialize_global()
 
     if (permissible_positions.empty())
     {
-        RCLCPP_ERROR(this->get_logger(), "No permissible positions found in map!");
+        RCLCPP_ERROR(this->get_logger(), "No free space found in map!");
         return;
     }
 
-    // Uniform sampling over free space
+    // Sample particles uniformly over free space
     std::uniform_int_distribution<int> pos_dist(0, permissible_positions.size() - 1);
     std::uniform_real_distribution<double> angle_dist(0.0, 2.0 * M_PI);
 
@@ -447,7 +434,6 @@ void ParticleFilter::initialize_global()
         int idx = pos_dist(rng_);
         auto pos = permissible_positions[idx];
 
-        // Grid to world coordinate transformation
         particles_(i, 0) = pos.second * map_resolution_ + map_origin_[0];
         particles_(i, 1) = pos.first * map_resolution_ + map_origin_[1];
         particles_(i, 2) = angle_dist(rng_);
@@ -455,35 +441,27 @@ void ParticleFilter::initialize_global()
 
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
 
-    RCLCPP_INFO(this->get_logger(), "Initialized %d particles from %zu permissible positions", MAX_PARTICLES,
-                permissible_positions.size());
+    RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally", MAX_PARTICLES);
 }
 
 // --------------------------------- MCL ALGORITHM CORE ---------------------------------
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
-    // Extract velocity and time info from action vector
-    // action[0] = velocity * dt (forward displacement)
-    // action[1] = lateral displacement (unused for bicycle model)  
-    // action[2] = angular_velocity * dt (angular displacement)
-    
-    // Estimate dt and velocities (assuming reasonable dt)
-    double dt = 0.01;  // Default dt, will be overridden if action norm suggests different
+    // action[0] = forward displacement, action[2] = angular displacement
+    double dt = 0.01;
     double velocity = 0.0;
     double angular_velocity = 0.0;
     
-    // Try to extract meaningful dt from action magnitude
     double forward_displacement = action[0];
     double angular_displacement = action[2];
     
     if (std::abs(forward_displacement) > 0.001) {
-        // Assume reasonable velocity range (0.1 to 10 m/s) to estimate dt
         if (std::abs(forward_displacement) < 0.1) {
-            dt = std::abs(forward_displacement) / 1.0;  // Assume 1 m/s max for small displacements
+            dt = std::abs(forward_displacement) / 1.0;
         } else {
-            dt = std::abs(forward_displacement) / 5.0;  // Assume 5 m/s for larger displacements
+            dt = std::abs(forward_displacement) / 5.0;
         }
-        dt = std::max(0.001, std::min(dt, 0.1));  // Clamp dt between 1ms and 100ms
+        dt = std::max(0.001, std::min(dt, 0.1));
         velocity = forward_displacement / dt;
     }
     
@@ -491,36 +469,34 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
         angular_velocity = angular_displacement / dt;
     }
 
-    // Apply bicycle model kinematics for each particle
+    // Apply bicycle model kinematics
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         double x = proposal_dist(i, 0);
         double y = proposal_dist(i, 1);
         double theta = proposal_dist(i, 2);
         
-        // Apply bicycle model kinematics
         if (std::abs(angular_velocity) < 1e-6) {
             // Straight line motion
             proposal_dist(i, 0) = x + velocity * dt * std::cos(theta);
             proposal_dist(i, 1) = y + velocity * dt * std::sin(theta);
-            proposal_dist(i, 2) = theta; // No change in orientation
+            proposal_dist(i, 2) = theta;
         } else {
-            // Curved motion with instantaneous center of rotation
+            // Curved motion
             double radius = velocity / angular_velocity;
             double delta_theta = angular_velocity * dt;
             
-            // Calculate new position using arc motion
             proposal_dist(i, 0) = x + radius * (std::sin(theta + delta_theta) - std::sin(theta));
             proposal_dist(i, 1) = y - radius * (std::cos(theta + delta_theta) - std::cos(theta));
             proposal_dist(i, 2) = theta + delta_theta;
         }
         
-        // Add Gaussian process noise
+        // Add noise
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
         proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
         
-        // Normalize angle to [-π, π] range
+        // Normalize angle
         while (proposal_dist(i, 2) > M_PI) proposal_dist(i, 2) -= 2.0 * M_PI;
         while (proposal_dist(i, 2) < -M_PI) proposal_dist(i, 2) += 2.0 * M_PI;
     }
@@ -613,16 +589,13 @@ std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &querie
     
     std::vector<float> results(queries.rows());
 
-    // --------------------------------- PARALLEL PROCESSING ---------------------------------
     if (USE_PARALLEL_RAYCASTING) {
-        // Parallel ray casting with OpenMP
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < queries.rows(); ++i)
         {
             results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
         }
     } else {
-        // Sequential ray casting
         for (int i = 0; i < queries.rows(); ++i)
         {
             results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
@@ -662,7 +635,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
             return step * map_resolution_;
         }
 
-        // Obstacle collision detection
+        // Check for obstacles
         int map_idx = grid_y * map_msg_->info.width + grid_x;
         if (map_idx >= 0 && map_idx < static_cast<int>(map_msg_->data.size()))
         {
@@ -746,28 +719,14 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 // --------------------------------- CONFIGURABLE TIMER UPDATE ---------------------------------
 void ParticleFilter::timer_update()
 {
-    static int timer_call_count = 0;
-    timer_call_count++;
-    
-    // Log first few calls and then every 100 calls
-    if (timer_call_count <= 5 || timer_call_count % 100 == 0) {
-        RCLCPP_INFO(this->get_logger(), "Timer update #%d - map_init: %s, odom_init: %s, lidar_init: %s", 
-                    timer_call_count, 
-                    map_initialized_ ? "true" : "false",
-                    odom_initialized_ ? "true" : "false", 
-                    lidar_initialized_ ? "true" : "false");
-    }
-    
-    // Check if all required data is available
     if (!map_initialized_) {
         return;
     }
     
-    // Allow timer to run even without odom for initial convergence
     bool has_odometry_for_motion = odom_initialized_;
     if (!has_odometry_for_motion) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
-                            "Running MCL without odometry - sensor-only updates for initial convergence");
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000, 
+                            "Running MCL without odometry");
     }
     
     rclcpp::Time current_time = this->get_clock()->now();
@@ -787,79 +746,54 @@ void ParticleFilter::timer_update()
         return;
     }
     
-    // Skip if time step is too large (allow very small dt for debugging)
+    // Skip if time step is too large
     if (dt > 1.0) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
-                            "Skipping timer update - dt: %.6f", dt);
         return;
     }
     
-    // Apply motion model more aggressively for better tracking
-    bool apply_motion = (dt >= 0.0001);  // Reduced threshold for high-frequency updates
-    
-    static int lock_attempts = 0;
-    static int successful_locks = 0;
-    lock_attempts++;
+    bool apply_motion = (dt >= 0.0001);
     
     if (state_lock_.try_lock()) {
-        successful_locks++;
         
-        if (lock_attempts % 1000 == 0) {  // Every ~5 seconds
-            RCLCPP_INFO(this->get_logger(), "Lock stats: %d/%d successful, ranges size: %zu", 
-                        successful_locks, lock_attempts, downsampled_ranges_.size());
-        }
-        
-        // Execute complete MCL cycle (with or without odometry)
         if (lidar_initialized_ && !downsampled_ranges_.empty()) {
             ++iters_;
             
-            // Convert velocity to action vector for traditional MCL
             Eigen::Vector3d action = Eigen::Vector3d::Zero();
-            if (has_odometry_for_motion && apply_motion && (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
-                // Local coordinate motion: [forward, lateral, angular]
-                action[0] = current_velocity_ * dt;        // Forward displacement
-                action[1] = 0.0;                          // No lateral motion for bicycle model
-                action[2] = current_angular_vel_ * dt;    // Angular displacement
+            if (has_odometry_for_motion && apply_motion && 
+                (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
+                action[0] = current_velocity_ * dt;
+                action[1] = 0.0;
+                action[2] = current_angular_vel_ * dt;
             } else if (!has_odometry_for_motion && !pose_initialized_from_rviz_ && iters_ < 15) {
-                // Add small random motion during global initialization to help convergence
                 double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
-                action[0] = normal_dist_(rng_) * 0.02 * noise_factor;  // Small forward motion
-                action[1] = normal_dist_(rng_) * 0.01 * noise_factor;  // Small lateral motion  
-                action[2] = normal_dist_(rng_) * 0.05 * noise_factor;  // Small angular motion
+                action[0] = normal_dist_(rng_) * 0.02 * noise_factor;
+                action[1] = normal_dist_(rng_) * 0.01 * noise_factor;
+                action[2] = normal_dist_(rng_) * 0.05 * noise_factor;
             }
             
             auto observation = downsampled_ranges_;
             
-            // Execute COMPLETE MCL pipeline with bicycle kinematics: Resample → Motion → Sensor → Normalize
+            // Execute MCL pipeline
             MCL(action, observation);
-            
-            // Update pose estimate immediately after MCL
             inferred_pose_ = expected_pose();
             
-            // Update odometry tracking reference if active and odometry is available
-            bool can_use_odom_tracking = has_odometry_for_motion && (pose_initialized_from_rviz_ || 
-                                       (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
+            // Update odometry tracking
+            bool can_use_odom_tracking = has_odometry_for_motion && 
+                (pose_initialized_from_rviz_ || (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
             
             if (can_use_odom_tracking) {
                 if (!odom_tracking_active_ && is_pose_valid(inferred_pose_)) {
                     initialize_odom_tracking(inferred_pose_, false);
-                    RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized from MCL estimate");
+                    RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized");
                 }
                 
-                Eigen::Vector3d correction = inferred_pose_ - odom_pose_;
                 odom_reference_pose_ = inferred_pose_;
                 odom_reference_odom_ = last_pose_;
                 odom_pose_ = inferred_pose_;
-                
-                if (iters_ % 50 == 0) {
-                    const char* init_source = pose_initialized_from_rviz_ ? "RViz" : "Global";
-                    RCLCPP_INFO(this->get_logger(), "MCL correction [%s]: [%.3f, %.3f, %.3f]", 
-                               init_source, correction[0], correction[1], correction[2]);
-                }
             }
             
-            if (iters_ % 50 == 0) {
-                RCLCPP_INFO(this->get_logger(), "MCL iter %d: (%.3f, %.3f, %.3f)", iters_, 
+            if (iters_ % 100 == 0) {
+                RCLCPP_INFO(this->get_logger(), "MCL iter %d: [%.2f, %.2f, %.2f]", iters_, 
                            inferred_pose_[0], inferred_pose_[1], inferred_pose_[2]);
             }
             
@@ -868,9 +802,6 @@ void ParticleFilter::timer_update()
             }
             
             visualize();
-            
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000, 
-                                "MCL update completed - iter: %d", iters_);
         }
         
         state_lock_.unlock();
@@ -879,27 +810,13 @@ void ParticleFilter::timer_update()
     // Always update steady time for next calculation
     last_steady_time = current_steady_time;
     
-    // Always publish TF and odom at timer frequency if we have a valid pose
+    // Publish TF and odometry
     if (map_initialized_) {
         Eigen::Vector3d current_pose = get_current_pose();
-        rclcpp::Time timestamp = current_time;
+        rclcpp::Time timestamp = (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) ? 
+                                last_stamp_ : current_time;
         
-        // Use odometry timestamp if available, otherwise use current time
-        if (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) {
-            timestamp = last_stamp_;
-        }
-        
-        // Always publish, even if pose is at origin during initialization
         publish_tf(current_pose, timestamp);
-        
-        // Debug logging for pose publishing
-        static int publish_count = 0;
-        publish_count++;
-        if (publish_count <= 10 || publish_count % 100 == 0) {
-            RCLCPP_INFO(this->get_logger(), "Publishing pose #%d: [%.3f, %.3f, %.3f] (odom_active: %s)", 
-                        publish_count, current_pose[0], current_pose[1], current_pose[2],
-                        odom_tracking_active_ ? "true" : "false");
-        }
     }
 }
 
@@ -931,7 +848,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     t.transform.translation.x = base_link_x;
     t.transform.translation.y = base_link_y;
     t.transform.translation.z = 0.0;
-    t.transform.rotation = angle_to_quaternion(pose[2]);
+    t.transform.rotation = utils::geometry::yaw_to_quaternion(pose[2]);
 
     pub_tf_->sendTransform(t);
 
@@ -944,7 +861,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         odom.child_frame_id = "base_link";
         odom.pose.pose.position.x = base_link_x;
         odom.pose.pose.position.y = base_link_y;
-        odom.pose.pose.orientation = angle_to_quaternion(pose[2]);
+        odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(pose[2]);
         odom.twist.twist.linear.x = current_velocity_;
         odom_pub_->publish(odom);
     }
@@ -1000,7 +917,7 @@ void ParticleFilter::visualize()
         ps.header.frame_id = "map";
         ps.pose.position.x = inferred_pose_[0] - forward_offset * cos_theta;
         ps.pose.position.y = inferred_pose_[1] - forward_offset * sin_theta;
-        ps.pose.orientation = angle_to_quaternion(inferred_pose_[2]);
+        ps.pose.orientation = utils::geometry::yaw_to_quaternion(inferred_pose_[2]);
         pose_pub_->publish(ps);
     }
 
@@ -1047,21 +964,6 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
     particle_pub_->publish(pa);
 }
 
-// --------------------------------- UTILITY FUNCTIONS ---------------------------------
-double ParticleFilter::quaternion_to_angle(const geometry_msgs::msg::Quaternion &q)
-{
-    return utils::geometry::quaternion_to_yaw(q);
-}
-
-geometry_msgs::msg::Quaternion ParticleFilter::angle_to_quaternion(double angle)
-{
-    return utils::geometry::yaw_to_quaternion(angle);
-}
-
-Eigen::Matrix2d ParticleFilter::rotation_matrix(double angle)
-{
-    return utils::geometry::rotation_matrix(angle);
-}
 
 // --------------------------------- PERFORMANCE PROFILING ---------------------------------
 void ParticleFilter::print_performance_stats()
@@ -1093,35 +995,28 @@ void ParticleFilter::reset_performance_stats()
 // --------------------------------- ODOMETRY-BASED TRACKING IMPLEMENTATION ---------------------------------
 void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz)
 {
-    RCLCPP_INFO(this->get_logger(), "Initializing odometry tracking from pose: [%.3f, %.3f, %.3f]", 
+    RCLCPP_INFO(this->get_logger(), "Odometry tracking init: [%.3f, %.3f, %.3f]", 
                 initial_pose[0], initial_pose[1], initial_pose[2]);
     
-    // Use initial pose directly - no coordinate conversion
     odom_pose_ = initial_pose;
     odom_reference_pose_ = initial_pose;
     
-    // Store current odometry reading as reference
     if (last_pose_.norm() > 0) {
         odom_reference_odom_ = last_pose_;
     }
     
     pose_initialized_from_rviz_ = from_rviz;
     odom_tracking_active_ = true;
-    RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized successfully");
 }
 
 void ParticleFilter::update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg)
 {
     if (!odom_tracking_active_) return;
     
-    // Current odometry reading
     Eigen::Vector3d current_odom(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                                 quaternion_to_angle(msg->pose.pose.orientation));
+                                 utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
     
-    // Calculate odometry displacement since reference
     Eigen::Vector3d odom_delta = current_odom - odom_reference_odom_;
-    
-    // Apply displacement directly - no coordinate conversion
     odom_pose_ = odom_reference_pose_ + odom_delta;
 }
 

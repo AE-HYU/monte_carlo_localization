@@ -69,10 +69,6 @@ class ParticleFilter : public rclcpp::Node
     void initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz = true);
     void update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg);
 
-    // --------------------------------- UTILITY FUNCTIONS ---------------------------------
-    double quaternion_to_angle(const geometry_msgs::msg::Quaternion &q);
-    geometry_msgs::msg::Quaternion angle_to_quaternion(double angle);
-    Eigen::Matrix2d rotation_matrix(double angle);
 
     // --------------------------------- RAY CASTING ---------------------------------
     std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);
