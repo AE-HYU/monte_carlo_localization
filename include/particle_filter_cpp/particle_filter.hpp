@@ -184,6 +184,11 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void timer_update();
     void publish_map_periodically();
+
+    rclcpp::Time initial_sim_time_;
+    std::chrono::steady_clock::time_point initial_wall_time_;
+    rclcpp::Time last_update_time_;
+    bool timer_initialized_ = false;
     
     // Performance profiling methods
 };

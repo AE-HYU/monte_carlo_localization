@@ -153,16 +153,16 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Setup configurable frequency update timer for motion interpolation
     int timer_interval_ms = static_cast<int>(1000.0 / TIMER_FREQUENCY);
-    update_timer_ = this->create_wall_timer(
+
+    // Create the timer from the interface
+    update_timer_ = this->create_timer(
         std::chrono::milliseconds(timer_interval_ms),
-        std::bind(&ParticleFilter::timer_update, this)
-    );
+        std::bind(&ParticleFilter::timer_update, this));
 
     // Setup periodic map publisher timer (5 Hz for persistent display)
-    map_timer_ = this->create_wall_timer(
+    map_timer_ = this->create_timer(
         std::chrono::milliseconds(200),
-        std::bind(&ParticleFilter::publish_map_periodically, this)
-    );
+        std::bind(&ParticleFilter::publish_map_periodically, this));
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)", 
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential", 
@@ -719,7 +719,44 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 // --------------------------------- CONFIGURABLE TIMER UPDATE ---------------------------------
 void ParticleFilter::timer_update()
 {
+    // --- 통합된 초기화 및 시간 계산 로직 ---
+    rclcpp::Time current_time = this->get_clock()->now();
+    double dt = 0.0;
+
+    if (!timer_initialized_) {
+        // 1. 로그를 위한 시작 시간 기록
+        initial_sim_time_ = current_time;
+        initial_wall_time_ = std::chrono::steady_clock::now();
+
+        // 2. dt 계산을 위한 이전 시간 기록
+        last_update_time_ = current_time;
+        
+        // 3. 플래그 설정 및 첫 실행 종료
+        timer_initialized_ = true;
+        return;
+    }
+
+    // --- 이후 실행부터는 아래 로직 수행 ---
+    // dt 계산
+    dt = (current_time - last_update_time_).seconds();
+    last_update_time_ = current_time;
+
+    // 로그 출력
+    double elapsed_sim_time = (current_time - initial_sim_time_).seconds();
+    auto current_wall_time = std::chrono::steady_clock::now();
+    double elapsed_wall_time = std::chrono::duration<double>(current_wall_time - initial_wall_time_).count();
+    RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 1000,
+        "Elapsed Time --- Wall Clock: %.3f s | Sim Clock: %.3f s | Difference: %.3f s",
+        elapsed_wall_time, elapsed_sim_time, elapsed_wall_time - elapsed_sim_time);
+    // --- 통합된 초기화 및 시간 계산 로직 끝 ---
+
     if (!map_initialized_) {
+        return;
+    }
+
+    if (dt > 1.0) { // dt 계산을 위로 옮겼으므로, 여기서 체크
+        RCLCPP_WARN(this->get_logger(), "Large time step detected: %.3f s. Skipping update.", dt);
         return;
     }
     
@@ -727,28 +764,6 @@ void ParticleFilter::timer_update()
     if (!has_odometry_for_motion) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000, 
                             "Running MCL without odometry");
-    }
-    
-    rclcpp::Time current_time = this->get_clock()->now();
-    
-    // Handle simulation time that starts at 0 - use steady clock instead
-    static auto steady_start_time = std::chrono::steady_clock::now();
-    static auto last_steady_time = steady_start_time;
-    
-    auto current_steady_time = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(current_steady_time - last_steady_time).count();
-    
-    // Initialize time on first call
-    static bool timer_initialized = false;
-    if (!timer_initialized) {
-        timer_initialized = true;
-        last_steady_time = current_steady_time;
-        return;
-    }
-    
-    // Skip if time step is too large
-    if (dt > 1.0) {
-        return;
     }
     
     bool apply_motion = (dt >= 0.0001);
@@ -831,9 +846,6 @@ void ParticleFilter::timer_update()
         
         state_lock_.unlock();
     }
-    
-    // Always update steady time for next calculation
-    last_steady_time = current_steady_time;
     
     // Publish TF and odometry
     if (map_initialized_) {
