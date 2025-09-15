@@ -6,6 +6,9 @@ Supports both real hardware and simulation modes via sim_mode argument
 Usage:
   Real hardware: ros2 launch particle_filter_cpp mcl_launch.py
   Simulation:    ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
+  
+  # To change map, launch with map_name:='your_map'
+  Example:       ros2 launch particle_filter_cpp mcl_launch.py map_name:='my_custom_map'
 """
 
 from launch import LaunchDescription

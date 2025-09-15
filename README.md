@@ -14,6 +14,8 @@ ros2 launch particle_filter_cpp mcl_launch.py
 
 # Simulation
 ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
+
+# To change map, launch with map_name:='your_map'
 ```
 
 ## Launch Parameters

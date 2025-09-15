@@ -60,5 +60,6 @@ particle_filter:
 # Map server configuration
 map_server:
   ros__parameters:
-    # Default map (can be overridden via launch argument)
+    # Default map (can be overridden via launch argument) 
+    # To change map, launch with map_name:='your_map' 
     map: 'sibal1'                      # Map name without .yaml extension
