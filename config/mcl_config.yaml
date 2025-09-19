@@ -47,7 +47,7 @@ particle_filter:
     # === PUBLISHING OPTIONS ===
     publish_odom: true                 # Publish pose as odometry
     viz: true                          # Enable visualization
-    timer_frequency: 200.0             # Update frequency (Hz)
+    timer_frequency: 100.0             # Update frequency (Hz)
     
     # === PERFORMANCE ===
     fine_timing: 0                     # Debug timing (0=off, 1=on)
