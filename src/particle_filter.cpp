@@ -861,11 +861,11 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     double base_link_x = base_link_pose[0];
     double base_link_y = base_link_pose[1];
     
-    // Publish map → base_link transform
+    // Publish map → odom transform
     geometry_msgs::msg::TransformStamped t;
     t.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
     t.header.frame_id = "map";
-    t.child_frame_id = "base_link";
+    t.child_frame_id = "odom";
     t.transform.translation.x = base_link_x;
     t.transform.translation.y = base_link_y;
     t.transform.translation.z = 0.0;
