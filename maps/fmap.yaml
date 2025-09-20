@@ -1,0 +1,9 @@
+free_thresh: 0.3
+image: fmap.png
+negate: 0
+occupied_thresh: 0.65
+origin:
+- -3.0040159225463867
+- -1.4682308197021485
+- 0
+resolution: 0.05000000074505806
