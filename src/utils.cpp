@@ -61,10 +61,12 @@ Eigen::Vector3d apply_vehicle_offset(const Eigen::Vector3d& pose, double forward
 {
     double cos_theta = std::cos(pose[2]);
     double sin_theta = std::sin(pose[2]);
-    
+
     Eigen::Vector3d offset_pose;
+    // Convert from lidar frame to base_link frame
+    // lidar is forward_offset ahead of base_link, so subtract to get base_link position
     offset_pose[0] = pose[0] - forward_offset * cos_theta;  // x with offset
-    offset_pose[1] = pose[1] - forward_offset * sin_theta;  // y with offset  
+    offset_pose[1] = pose[1] - forward_offset * sin_theta;  // y with offset
     offset_pose[2] = pose[2];                               // theta unchanged
     return offset_pose;
 }

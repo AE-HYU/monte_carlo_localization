@@ -41,6 +41,12 @@ def generate_launch_description():
         default_value='true',
         description='Launch RViz visualization'
     )
+
+    sim_odom_arg = DeclareLaunchArgument(
+        'sim_odom',
+        default_value='true',
+        description='Use simulation odometry topic (/ego_racecar/odom) when true, real odometry (/odom) when false'
+    )
     
     # === CONFIGURATION ===
     config_file = PathJoinSubstitution([pkg_share, 'config', 'mcl_config.yaml'])
@@ -53,7 +59,7 @@ def generate_launch_description():
             "'/scan' if '", LaunchConfiguration('sim_mode'), "' == 'false' else '/scan'"
         ]),
         'odom_topic': PythonExpression([
-            "'/odom' if '", LaunchConfiguration('sim_mode'), "' == 'false' else '/ego_racecar/odom'"
+            "'/odom' if '", LaunchConfiguration('sim_odom'), "' == 'false' else '/ego_racecar/odom'"
         ])
         # Removed hardcoded parameters - use config file values instead
     }
@@ -123,18 +129,8 @@ def generate_launch_description():
         parameters=[common_params]
     )
 
-    # Map to odom transform (identity transform for MCL initialization)
-    # MCL will override this with proper localization
-    map_to_odom_tf_node = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='map_to_odom_static_tf_publisher',
-        arguments=[
-            '0.0', '0.0', '0.0', '0.0', '0.0', '0.0', 'map', 'odom'
-        ],
-        output='screen',
-        parameters=[common_params]
-    )
+    # MCL will publish both map->odom and odom->base_link transforms
+    # No static transform needed
     
     # === RVIZ NODE ===
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
@@ -161,12 +157,12 @@ def generate_launch_description():
         sim_mode_arg,
         map_name_arg,
         use_rviz_arg,
+        sim_odom_arg,
         
         # Nodes
         map_server_node,
         lifecycle_manager_node,
         static_tf_node,
-        map_to_odom_tf_node,
         particle_filter_node,
         rviz_node,
     ])

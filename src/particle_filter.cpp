@@ -359,10 +359,10 @@ void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceSt
     
     // Initialize particle filter around clicked pose
     initialize_particles_pose(pose);
-    
+
     // Initialize odometry-based tracking from this pose
     initialize_odom_tracking(pose);
-    
+
     // Set inferred pose immediately for visualization
     inferred_pose_ = pose;
     
@@ -778,29 +778,29 @@ void ParticleFilter::timer_update()
             inferred_pose_ = expected_pose();
             
             // Update odometry tracking
-            bool can_use_odom_tracking = has_odometry_for_motion && 
+            bool can_use_odom_tracking = has_odometry_for_motion &&
                 (pose_initialized_from_rviz_ || (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
-            
+
             if (can_use_odom_tracking) {
                 if (!odom_tracking_active_ && is_pose_valid(inferred_pose_)) {
                     initialize_odom_tracking(inferred_pose_, false);
                     RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized");
                 }
-                
+
                 // Apply delay compensation for motion during MCL processing
                 Eigen::Vector3d compensated_pose = inferred_pose_;
                 if (timing_stats_.measurement_count > 0) {
                     double mcl_delay_sec = timing_stats_.total_mcl_time / timing_stats_.measurement_count / 1000.0;
                     double longitudinal_displacement = current_velocity_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
                     double angular_displacement = current_angular_vel_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
-                    
+
                     // Apply compensation in vehicle's forward direction
                     compensated_pose[0] += longitudinal_displacement * std::cos(inferred_pose_[2]);
                     compensated_pose[1] += longitudinal_displacement * std::sin(inferred_pose_[2]);
                     // Apply heading compensation
                     compensated_pose[2] += angular_displacement;
                 }
-                
+
                 odom_reference_pose_ = compensated_pose;
                 odom_reference_odom_ = last_pose_;
                 odom_pose_ = compensated_pose;
@@ -858,20 +858,68 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
 {
     // Apply vehicle frame offset (lidar -> base_link)
     Eigen::Vector3d base_link_pose = utils::geometry::apply_vehicle_offset(pose, LIDAR_OFFSET_X);
-    double base_link_x = base_link_pose[0];
-    double base_link_y = base_link_pose[1];
-    
+
     // Publish map → odom transform
+    // This should be: map_pose - current_odom_pose
     geometry_msgs::msg::TransformStamped t;
     t.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
     t.header.frame_id = "map";
     t.child_frame_id = "odom";
-    t.transform.translation.x = base_link_x;
-    t.transform.translation.y = base_link_y;
-    t.transform.translation.z = 0.0;
-    t.transform.rotation = utils::geometry::yaw_to_quaternion(pose[2]);
+
+    if (odom_initialized_ && last_pose_.norm() > 0) {
+        // Calculate map -> odom transform properly using inverse transform
+        // We want: map_pose = map_to_odom * odom_pose
+        // So: map_to_odom = map_pose * odom_pose^(-1)
+
+        double mcl_x = base_link_pose[0];
+        double mcl_y = base_link_pose[1];
+        double mcl_yaw = pose[2];
+
+        double odom_x = last_pose_[0];
+        double odom_y = last_pose_[1];
+        double odom_yaw = last_pose_[2];
+
+        // Calculate odom_pose^(-1) (inverse of odom pose)
+        double cos_odom = std::cos(-odom_yaw);
+        double sin_odom = std::sin(-odom_yaw);
+        double inv_odom_x = -odom_x * cos_odom + odom_y * sin_odom;
+        double inv_odom_y = -odom_x * sin_odom - odom_y * cos_odom;
+        double inv_odom_yaw = -odom_yaw;
+
+        // Calculate map_to_odom = mcl_pose * odom_pose^(-1)
+        double cos_mcl = std::cos(mcl_yaw);
+        double sin_mcl = std::sin(mcl_yaw);
+
+        double map_to_odom_x = mcl_x + inv_odom_x * cos_mcl - inv_odom_y * sin_mcl;
+        double map_to_odom_y = mcl_y + inv_odom_x * sin_mcl + inv_odom_y * cos_mcl;
+        double map_to_odom_yaw = utils::geometry::normalize_angle(mcl_yaw + inv_odom_yaw);
+
+        t.transform.translation.x = map_to_odom_x;
+        t.transform.translation.y = map_to_odom_y;
+        t.transform.translation.z = 0.0;
+        t.transform.rotation = utils::geometry::yaw_to_quaternion(map_to_odom_yaw);
+    } else {
+        // Fallback: if no odometry, publish identity transform
+        t.transform.translation.x = 0.0;
+        t.transform.translation.y = 0.0;
+        t.transform.translation.z = 0.0;
+        t.transform.rotation = utils::geometry::yaw_to_quaternion(0.0);
+    }
 
     pub_tf_->sendTransform(t);
+
+    // Also publish odom -> base_link transform with same timestamp
+    if (odom_initialized_ && last_pose_.norm() > 0) {
+        geometry_msgs::msg::TransformStamped odom_tf;
+        odom_tf.header.stamp = stamp;
+        odom_tf.header.frame_id = "odom";
+        odom_tf.child_frame_id = "base_link";
+        odom_tf.transform.translation.x = last_pose_[0];
+        odom_tf.transform.translation.y = last_pose_[1];
+        odom_tf.transform.translation.z = 0.0;
+        odom_tf.transform.rotation = utils::geometry::yaw_to_quaternion(last_pose_[2]);
+        pub_tf_->sendTransform(odom_tf);
+    }
 
     // Optional odometry output
     if (PUBLISH_ODOM && odom_pub_)
@@ -880,8 +928,8 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         odom.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
         odom.header.frame_id = "map";
         odom.child_frame_id = "base_link";
-        odom.pose.pose.position.x = base_link_x;
-        odom.pose.pose.position.y = base_link_y;
+        odom.pose.pose.position.x = base_link_pose[0];
+        odom.pose.pose.position.y = base_link_pose[1];
         odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(pose[2]);
         odom.twist.twist.linear.x = current_velocity_;
         odom_pub_->publish(odom);

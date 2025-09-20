@@ -45,7 +45,8 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input
     
     # === PUBLISHING OPTIONS ===
-    publish_odom: true                 # Publish pose as odometry
+    publish_odom: true                 # Publish pose as odometry message
+    publish_tf: true                   # Legacy parameter (not used - TF always published)
     viz: true                          # Enable visualization
     timer_frequency: 100.0             # Update frequency (Hz)
     
