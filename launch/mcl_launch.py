@@ -109,7 +109,7 @@ def generate_launch_description():
         ]
     )
     
-    # === STATIC TRANSFORM PUBLISHER ===
+    # === STATIC TRANSFORM PUBLISHERS ===
     # Note: TF values should match lidar_offset_x in config file
     static_tf_node = Node(
         package='tf2_ros',
@@ -118,6 +118,19 @@ def generate_launch_description():
         arguments=[
             '0.288',  # Use config file value: lidar_offset_x
             '0.0', '0.0', '0.0', '0.0', '0.0', 'base_link', 'laser'
+        ],
+        output='screen',
+        parameters=[common_params]
+    )
+
+    # Map to odom transform (identity transform for MCL initialization)
+    # MCL will override this with proper localization
+    map_to_odom_tf_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='map_to_odom_static_tf_publisher',
+        arguments=[
+            '0.0', '0.0', '0.0', '0.0', '0.0', '0.0', 'map', 'odom'
         ],
         output='screen',
         parameters=[common_params]
@@ -132,7 +145,15 @@ def generate_launch_description():
         arguments=['-d', rviz_config],
         condition=IfCondition(LaunchConfiguration('use_rviz')),
         output='screen',
-        parameters=[common_params]
+        parameters=[
+            common_params,
+            {
+                'transform_timeout': 300.0,
+                'message_filter_queue_size': 100,
+                'tf_buffer_cache_time_s': 300.0,
+                'tf_tolerance': 300.0
+            }
+        ]
     )
     
     return LaunchDescription([
@@ -145,6 +166,7 @@ def generate_launch_description():
         map_server_node,
         lifecycle_manager_node,
         static_tf_node,
+        map_to_odom_tf_node,
         particle_filter_node,
         rviz_node,
     ])
