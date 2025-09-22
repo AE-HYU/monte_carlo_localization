@@ -48,6 +48,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
     this->declare_parameter("max_pose_range", 10000.0); // Maximum valid pose coordinate range
     this->declare_parameter("delay_compensation_factor", 1.5); // Factor for MCL delay compensation
+    this->declare_parameter("smoothing_alpha", 0.3); // Pose smoothing alpha factor
 
     // Parameter retrieval
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
@@ -62,6 +63,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     NUM_THREADS = this->get_parameter("num_threads").as_int();
     MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
     DELAY_COMPENSATION_FACTOR = this->get_parameter("delay_compensation_factor").as_double();
+    SMOOTHING_ALPHA = this->get_parameter("smoothing_alpha").as_double();
 
     // Sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -96,6 +98,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_reference_odom_ = Eigen::Vector3d::Zero();
     pose_initialized_from_rviz_ = false;
     odom_tracking_active_ = false;
+    smoothed_pose_ = Eigen::Vector3d::Zero();
+    pose_smoothing_initialized_ = false;
     
     // Threading setup
     if (USE_PARALLEL_RAYCASTING) {
@@ -518,11 +522,16 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
         
         // Add adaptive noise based on velocity
         double speed = std::abs(velocity);
-        double speed_factor = std::max(1.0, speed / 2.0);  // Scale noise with speed (min factor = 1.0)
+        double speed_factor = std::max(1.0, speed / 1.5);  // More aggressive scaling (min factor = 1.0)
+        
+        // Additional boost for very high speeds
+        if (speed > 4.0) {
+            speed_factor = std::max(speed_factor, 2.5);  // Minimum 2.5x for speeds > 4 m/s
+        }
         
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * speed_factor;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * std::min(speed_factor, 2.0);  // Cap theta noise
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * std::min(speed_factor, 3.0);  // Cap theta noise at 3x
         
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
@@ -744,6 +753,34 @@ Eigen::Vector3d ParticleFilter::expected_pose()
     return pose;
 }
 
+// ================================================================================================
+// POSE SMOOTHING
+// ================================================================================================
+Eigen::Vector3d ParticleFilter::smooth_pose(const Eigen::Vector3d &raw_pose)
+{
+    if (!pose_smoothing_initialized_) {
+        smoothed_pose_ = raw_pose;
+        pose_smoothing_initialized_ = true;
+        return smoothed_pose_;
+    }
+    
+    // EMA filter with adaptive alpha based on velocity
+    double base_alpha = SMOOTHING_ALPHA;  // Base smoothing factor from config
+    double velocity_factor = std::min(1.0, std::abs(current_velocity_) / 2.0);  // Scale with velocity
+    double alpha = base_alpha + velocity_factor * 0.4;  // base_alpha to (base_alpha + 0.4) range
+    alpha = std::min(0.8, alpha);  // Cap at 0.8
+    
+    // Smooth x, y
+    smoothed_pose_[0] = alpha * raw_pose[0] + (1.0 - alpha) * smoothed_pose_[0];
+    smoothed_pose_[1] = alpha * raw_pose[1] + (1.0 - alpha) * smoothed_pose_[1];
+    
+    // Smooth angle with circular interpolation
+    double angle_diff = utils::geometry::normalize_angle(raw_pose[2] - smoothed_pose_[2]);
+    smoothed_pose_[2] = utils::geometry::normalize_angle(smoothed_pose_[2] + alpha * angle_diff);
+    
+    return smoothed_pose_;
+}
+
 
 // ================================================================================================
 // TIMER UPDATE
@@ -806,7 +843,8 @@ void ParticleFilter::timer_update()
             
             // Execute MCL pipeline
             MCL(action, observation, dt);
-            inferred_pose_ = expected_pose();
+            Eigen::Vector3d raw_pose = expected_pose();
+            inferred_pose_ = smooth_pose(raw_pose);
             
             // Update odometry tracking
             bool can_use_odom_tracking = has_odometry_for_motion &&

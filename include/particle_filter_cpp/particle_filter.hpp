@@ -41,6 +41,7 @@ class ParticleFilter : public rclcpp::Node
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
     Eigen::Vector3d expected_pose();
+    Eigen::Vector3d smooth_pose(const Eigen::Vector3d &raw_pose);
 
     // --------------------------------- INITIALIZATION ---------------------------------
     void initialize_global();
@@ -87,6 +88,7 @@ class ParticleFilter : public rclcpp::Node
     int NUM_THREADS;
     double MAX_POSE_RANGE;
     double DELAY_COMPENSATION_FACTOR;
+    double SMOOTHING_ALPHA;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
@@ -102,8 +104,10 @@ class ParticleFilter : public rclcpp::Node
     Eigen::MatrixXd particles_;
     std::vector<double> weights_;
     Eigen::Vector3d inferred_pose_;
+    Eigen::Vector3d smoothed_pose_;          // Smoothed pose for output
     Eigen::Vector3d odometry_data_;
     Eigen::Vector3d last_pose_;
+    bool pose_smoothing_initialized_;
     
     // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
     Eigen::Vector3d odom_pose_;              // Current odometry-based pose estimate (rear axle)

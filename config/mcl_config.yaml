@@ -7,15 +7,18 @@ particle_filter:
     max_viz_particles: 60              # Particles shown in RViz
     max_range: 12.0                    # Maximum laser range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 1.0     # Factor for MCL delay compensation
+    delay_compensation_factor: 3.5     # Factor for MCL delay compensation
     
     # === MODE CONFIGURATION ===
     sim_mode: false                    # Set to true for simulation
     
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.10          # Forward motion noise (m)
-    motion_dispersion_y: 0.05          # Lateral motion noise (m)
-    motion_dispersion_theta: 0.4       # Rotation noise (rad)
+    motion_dispersion_x: 0.1          # Forward motion noise (m) - balanced for accuracy + tracking
+    motion_dispersion_y: 0.015          # Lateral motion noise (m) - balanced for accuracy + tracking  
+    motion_dispersion_theta: 0.23      # Rotation noise (rad) - balanced for accuracy + tracking
+    
+    # === POSE SMOOTHING ===
+    smoothing_alpha: 0.35               # Pose smoothing factor (0.0=max smooth, 1.0=no smooth)
     
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
@@ -24,11 +27,11 @@ particle_filter:
     wheelbase: 0.325                   # Distance between axles (m)
     
     # === SENSOR MODEL (4-component beam model) ===
-    z_hit: 0.70                        # Weight for correct measurements
+    z_hit: 0.71                        # Weight for correct measurements - balanced
     z_short: 0.01                      # Weight for unexpected obstacles
-    z_max: 0.07                        # Weight for max range readings
-    z_rand: 0.20                       # Weight for random noise
-    sigma_hit: 8.0                     # Measurement noise std dev
+    z_max: 0.07                        # Weight for max range readings  
+    z_rand: 0.19                       # Weight for random noise - balanced
+    sigma_hit: 7.0                     # Measurement noise std dev - balanced
     
     # === RAY CASTING ===
     range_method: "cddt"               # Distance transform method
