@@ -461,24 +461,33 @@ void ParticleFilter::initialize_global()
 // ================================================================================================
 // MCL ALGORITHM CORE
 // ================================================================================================
-void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
+void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double real_dt)
 {
     // action[0] = forward displacement, action[2] = angular displacement
-    double dt = 0.01;
+    double dt = real_dt;  // Start with real time
     double velocity = 0.0;
     double angular_velocity = 0.0;
     
     double forward_displacement = action[0];
     double angular_displacement = action[2];
     
+    
+    // Use real time interval with bounds
+    dt = std::max(0.001, std::min(real_dt, 0.5));  // Bounds: 1ms to 500ms
+    
     if (std::abs(forward_displacement) > 0.001) {
-        if (std::abs(forward_displacement) < 0.1) {
-            dt = std::abs(forward_displacement) / 1.0;
-        } else {
-            dt = std::abs(forward_displacement) / 5.0;
-        }
-        dt = std::max(0.001, std::min(dt, 0.1));
         velocity = forward_displacement / dt;
+        
+        
+        // Cap velocity to reasonable limits (prevent unrealistic speeds)
+        double max_velocity = 15.0;  // 15 m/s max
+        if (std::abs(velocity) > max_velocity) {
+            velocity = std::copysign(max_velocity, velocity);
+            // Recalculate dt based on capped velocity
+            dt = std::abs(forward_displacement) / max_velocity;
+            dt = std::max(0.001, std::min(dt, 0.5));
+            
+        }
     }
     
     if (std::abs(angular_displacement) > 0.001) {
@@ -507,10 +516,13 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
             proposal_dist(i, 2) = theta + delta_theta;
         }
         
-        // Add noise
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
+        // Add adaptive noise based on velocity
+        double speed = std::abs(velocity);
+        double speed_factor = std::max(1.0, speed / 2.0);  // Scale noise with speed (min factor = 1.0)
+        
+        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
+        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * speed_factor;
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * std::min(speed_factor, 2.0);  // Cap theta noise
         
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
@@ -666,7 +678,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
     return MAX_RANGE_METERS;
 }
 
-void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
+void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -685,7 +697,7 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 
     // 2. Motion prediction
     auto motion_start = std::chrono::high_resolution_clock::now();
-    motion_model(proposal_distribution, action);
+    motion_model(proposal_distribution, action, dt);
     auto motion_end = std::chrono::high_resolution_clock::now();
     timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
@@ -793,7 +805,7 @@ void ParticleFilter::timer_update()
             auto observation = downsampled_ranges_;
             
             // Execute MCL pipeline
-            MCL(action, observation);
+            MCL(action, observation, dt);
             inferred_pose_ = expected_pose();
             
             // Update odometry tracking
