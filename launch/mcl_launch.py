@@ -44,7 +44,7 @@ def generate_launch_description():
 
     sim_odom_arg = DeclareLaunchArgument(
         'sim_odom',
-        default_value='true',
+        default_value='false',
         description='Use simulation odometry topic (/ego_racecar/odom) when true, real odometry (/odom) when false'
     )
     

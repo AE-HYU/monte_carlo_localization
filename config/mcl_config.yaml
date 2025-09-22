@@ -3,11 +3,11 @@
 particle_filter:
   ros__parameters:
     # === CORE PARAMETERS ===
-    max_particles: 2000                # Number of particles
+    max_particles: 1000                # Number of particles
     max_viz_particles: 60              # Particles shown in RViz
     max_range: 12.0                    # Maximum laser range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 3.5     # Factor for MCL delay compensation
+    delay_compensation_factor: 1.0     # Factor for MCL delay compensation
     
     # === MODE CONFIGURATION ===
     sim_mode: false                    # Set to true for simulation
@@ -37,7 +37,7 @@ particle_filter:
     angle_step: 18                     # Laser downsampling factor
     squash_factor: 2.2                 # Weight normalization
     use_parallel_raycasting: true      # Enable parallel processing
-    num_threads: 3                     # Auto-detect threads
+    num_threads: 2                     # Auto-detect threads
     
     # === ROS TOPICS ===
     # Default values (overridden based on sim_mode in launch file)
@@ -48,7 +48,7 @@ particle_filter:
     publish_odom: true                 # Publish pose as odometry message
     publish_tf: true                   # Legacy parameter (not used - TF always published)
     viz: true                          # Enable visualization
-    timer_frequency: 100.0             # Update frequency (Hz)
+    timer_frequency: 25.0             # Update frequency (Hz)
     
     # === PERFORMANCE ===
     fine_timing: 0                     # Debug timing (0=off, 1=on)

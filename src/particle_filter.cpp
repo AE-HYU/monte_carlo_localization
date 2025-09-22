@@ -885,33 +885,37 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     t.child_frame_id = "odom";
 
     if (odom_initialized_ && last_pose_.norm() > 0) {
+        // TF chain: map -> odom -> base_link -> laser
+        // map->odom transform = where MCL thinks base_link is - where odom thinks base_link is
 
-        double mcl_x = base_link_pose[0];
-        double mcl_y = base_link_pose[1];
+        // MCL estimate in map frame (this is where laser should align with map)
+        double mcl_x = pose[0];  // Use lidar frame pose for laser alignment
+        double mcl_y = pose[1];
         double mcl_yaw = pose[2];
 
+        // Current odometry base_link pose in odom frame
         double odom_x = last_pose_[0];
         double odom_y = last_pose_[1];
         double odom_yaw = last_pose_[2];
 
-        // Calculate inverse transform: map_to_odom = mcl_pose * odom_pose^(-1)
-        double cos_odom = std::cos(-odom_yaw);
-        double sin_odom = std::sin(-odom_yaw);
-        double inv_odom_x = -odom_x * cos_odom + odom_y * sin_odom;
-        double inv_odom_y = -odom_x * sin_odom - odom_y * cos_odom;
+        // Calculate map_to_odom: T_map_odom = T_map_base * T_base_odom
+        // T_base_odom = inverse(T_odom_base)
+        double cos_odom_inv = std::cos(-odom_yaw);
+        double sin_odom_inv = std::sin(-odom_yaw);
+
+        // Inverse of odom pose
+        double inv_odom_x = -(odom_x * cos_odom_inv - odom_y * sin_odom_inv);
+        double inv_odom_y = -(odom_x * sin_odom_inv + odom_y * cos_odom_inv);
         double inv_odom_yaw = -odom_yaw;
 
+        // Compose transforms: map_to_odom = mcl_pose * inv_odom_pose
         double cos_mcl = std::cos(mcl_yaw);
         double sin_mcl = std::sin(mcl_yaw);
 
-        double map_to_odom_x = mcl_x + inv_odom_x * cos_mcl - inv_odom_y * sin_mcl;
-        double map_to_odom_y = mcl_y + inv_odom_x * sin_mcl + inv_odom_y * cos_mcl;
-        double map_to_odom_yaw = utils::geometry::normalize_angle(mcl_yaw + inv_odom_yaw);
-
-        t.transform.translation.x = map_to_odom_x;
-        t.transform.translation.y = map_to_odom_y;
+        t.transform.translation.x = mcl_x + inv_odom_x * cos_mcl - inv_odom_y * sin_mcl;
+        t.transform.translation.y = mcl_y + inv_odom_x * sin_mcl + inv_odom_y * cos_mcl;
         t.transform.translation.z = 0.0;
-        t.transform.rotation = utils::geometry::yaw_to_quaternion(map_to_odom_yaw);
+        t.transform.rotation = utils::geometry::yaw_to_quaternion(utils::geometry::normalize_angle(mcl_yaw + inv_odom_yaw));
     } else {
         // Identity transform fallback
         t.transform.translation.x = 0.0;
