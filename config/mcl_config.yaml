@@ -1,16 +1,23 @@
-# Unified MCL Configuration
-# Supports both real hardware and simulation modes
+# ================================================================================================
+# MONTE CARLO LOCALIZATION (MCL) CONFIGURATION
+# ================================================================================================
+# Unified configuration supporting both real hardware and simulation modes
+# Mode-specific parameters are overridden by launch file based on 'mod' argument
+# ================================================================================================
+
 particle_filter:
   ros__parameters:
-    # === CORE PARAMETERS ===
-    max_particles: 1000                # Number of particles
-    max_viz_particles: 60              # Particles shown in RViz
+    # === CORE ALGORITHM PARAMETERS ===
+    max_particles: 1000                # Number of particles in filter
+    max_viz_particles: 60              # Particles displayed in RViz (performance)
     max_range: 12.0                    # Maximum laser range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 1.0     # Factor for MCL delay compensation
+    delay_compensation_factor: 1.0     # MCL timing compensation factor
     
-    # === MODE CONFIGURATION ===
-    sim_mode: false                    # Set to true for simulation
+    # === MODE & TF CONTROL ===
+    sim_mode: false                    # Simulation mode flag (set by launch file)
+    publish_map_odom_tf: true          # Publish map->odom transform (real mode only)
+    publish_odom_base_tf: true         # Publish odom->base_link transform (real mode only)
     
     # === MOTION MODEL NOISE ===
     motion_dispersion_x: 0.1          # Forward motion noise (m)
@@ -42,28 +49,28 @@ particle_filter:
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 2                     # Auto-detect threads
     
-    # === ROS TOPICS ===
-    # Default values (overridden based on sim_mode in launch file)
-    scan_topic: "/scan"                # LaserScan input
-    odom_topic: "/odom"                # Odometry input
-    
-    # === PUBLISHING OPTIONS ===
+    # === ROS INTERFACE ===
+    # Topic names (overridden by launch file based on mode)
+    scan_topic: "/scan"                # LaserScan input topic
+    odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
-    publish_tf: true                   # Legacy parameter (not used - TF always published)
-    viz: true                          # Enable visualization
-    timer_frequency: 40.0              # Update frequency (Hz)
+    viz: true                          # Enable particle visualization
+    timer_frequency: 40.0              # MCL update frequency (Hz)
     
-    # === PERFORMANCE ===
-    fine_timing: 0                     # Debug timing (0=off, 1=on)
-    
-    # === TF FRAMES ===
+    # === TF FRAME NAMES ===
+    # Frame names (overridden by launch file for simulation)
     map_frame: "map"                   # Global reference frame
-    base_frame: "base_link"            # Robot base frame (real car) / ego_racecar/base_link (sim)
-    laser_frame: "laser"               # Laser scanner frame (real car) / ego_racecar/laser (sim)
+    odom_frame: "odom"                 # Odometry frame 
+    base_frame: "base_link"            # Robot base frame
+    laser_frame: "laser"               # Laser scanner frame
+    
+    # === PERFORMANCE & DEBUGGING ===
+    fine_timing: 0                     # Detailed timing output (0=off, 1=on)
 
-# Map server configuration
+# ================================================================================================
+# MAP SERVER CONFIGURATION
+# ================================================================================================
 map_server:
   ros__parameters:
-    # Default map (can be overridden via launch argument) 
-    # To change map, launch with map_name:='your_map' 
+    # Default map file (override with launch argument: map_name:='your_map')
     map: 'sibal1'                      # Map name without .yaml extension

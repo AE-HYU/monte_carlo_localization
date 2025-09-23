@@ -22,45 +22,62 @@ namespace particle_filter_cpp
 ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), uniform_dist_(0.0, 1.0), normal_dist_(0.0, 1.0)
 {
-    // Parameter declarations
+    // === PARAMETER DECLARATIONS ===
+    // Core algorithm parameters
     this->declare_parameter("angle_step", 18);
     this->declare_parameter("max_particles", 2000);
     this->declare_parameter("max_viz_particles", 60);
     this->declare_parameter("squash_factor", 2.2);
     this->declare_parameter("max_range", 12.0);
-    this->declare_parameter("publish_odom", true);
-    this->declare_parameter("viz", true);
+    this->declare_parameter("max_pose_range", 10000.0);
+    this->declare_parameter("delay_compensation_factor", 1.5);
+    this->declare_parameter("smoothing_alpha", 0.3);
+    
+    // Sensor model parameters
     this->declare_parameter("z_short", 0.01);
     this->declare_parameter("z_max", 0.07);
     this->declare_parameter("z_rand", 0.12);
     this->declare_parameter("z_hit", 0.80);
     this->declare_parameter("sigma_hit", 8.0);
+    
+    // Motion model parameters
     this->declare_parameter("motion_dispersion_x", 0.05);
     this->declare_parameter("motion_dispersion_y", 0.025);
     this->declare_parameter("motion_dispersion_theta", 0.25);
+    
+    // Robot geometry
     this->declare_parameter("lidar_offset_x", 0.0);
     this->declare_parameter("lidar_offset_y", 0.0);
     this->declare_parameter("wheelbase", 0.325);
+    
+    // ROS interface
     this->declare_parameter("scan_topic", "/scan");
     this->declare_parameter("odom_topic", "/odom");
+    this->declare_parameter("publish_odom", true);
+    this->declare_parameter("viz", true);
     this->declare_parameter("timer_frequency", 100.0);
+    
+    // Performance
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
-    this->declare_parameter("max_pose_range", 10000.0); // Maximum valid pose coordinate range
-    this->declare_parameter("delay_compensation_factor", 1.5); // Factor for MCL delay compensation
-    this->declare_parameter("smoothing_alpha", 0.3); // Pose smoothing alpha factor
+    
+    // TF frames
+    this->declare_parameter("map_frame", "map");
+    this->declare_parameter("odom_frame", "odom");
+    this->declare_parameter("base_frame", "base_link"); 
+    this->declare_parameter("laser_frame", "laser");
+    
+    // TF publishing control
+    this->declare_parameter("publish_map_odom_tf", true);
+    this->declare_parameter("publish_odom_base_tf", true);
 
-    // Parameter retrieval
+    // === PARAMETER RETRIEVAL ===
+    // Core algorithm parameters
     ANGLE_STEP = this->get_parameter("angle_step").as_int();
     MAX_PARTICLES = this->get_parameter("max_particles").as_int();
     MAX_VIZ_PARTICLES = this->get_parameter("max_viz_particles").as_int();
     INV_SQUASH_FACTOR = 1.0 / this->get_parameter("squash_factor").as_double();
     MAX_RANGE_METERS = this->get_parameter("max_range").as_double();
-    PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
-    DO_VIZ = this->get_parameter("viz").as_bool();
-    TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
-    USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
-    NUM_THREADS = this->get_parameter("num_threads").as_int();
     MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
     DELAY_COMPENSATION_FACTOR = this->get_parameter("delay_compensation_factor").as_double();
     SMOOTHING_ALPHA = this->get_parameter("smoothing_alpha").as_double();
@@ -81,6 +98,25 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     LIDAR_OFFSET_X = this->get_parameter("lidar_offset_x").as_double();
     LIDAR_OFFSET_Y = this->get_parameter("lidar_offset_y").as_double();
     WHEELBASE = this->get_parameter("wheelbase").as_double();
+
+    // ROS interface
+    PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
+    DO_VIZ = this->get_parameter("viz").as_bool();
+    TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
+
+    // Performance
+    USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
+    NUM_THREADS = this->get_parameter("num_threads").as_int();
+
+    // TF frames
+    MAP_FRAME = this->get_parameter("map_frame").as_string();
+    ODOM_FRAME = this->get_parameter("odom_frame").as_string();
+    BASE_FRAME = this->get_parameter("base_frame").as_string();
+    LASER_FRAME = this->get_parameter("laser_frame").as_string();
+
+    // TF publishing control
+    PUBLISH_MAP_ODOM_TF = this->get_parameter("publish_map_odom_tf").as_bool();
+    PUBLISH_ODOM_BASE_TF = this->get_parameter("publish_odom_base_tf").as_bool();
 
     // State initialization
     MAX_RANGE_PX = 0;
@@ -903,64 +939,54 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
 {
     Eigen::Vector3d base_link_pose = utils::geometry::apply_vehicle_offset(pose, LIDAR_OFFSET_X);
 
-    geometry_msgs::msg::TransformStamped t;
-    t.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
-    t.header.frame_id = "map";
-    t.child_frame_id = "odom";
+    // === TF TRANSFORM PUBLISHING ===
+    // Real mode: Publish map->odom and odom->base_link
+    // Sim mode:  Don't publish TF (simulator handles map->base_link directly)
+    
+    if (PUBLISH_MAP_ODOM_TF) {
+        geometry_msgs::msg::TransformStamped map_to_odom;
+        map_to_odom.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
+        map_to_odom.header.frame_id = MAP_FRAME;
+        map_to_odom.child_frame_id = ODOM_FRAME;
 
-    if (odom_initialized_ && last_pose_.norm() > 0) {
-        // TF chain: map -> odom -> base_link -> laser
-        // map->odom transform = where MCL thinks base_link is - where odom thinks base_link is
+        if (odom_initialized_ && last_pose_.norm() > 0) {
+            // Calculate map->odom transform: T_map_odom = T_map_base * T_base_odom^(-1)
+            double mcl_x = pose[0], mcl_y = pose[1], mcl_yaw = pose[2];
+            double odom_x = last_pose_[0], odom_y = last_pose_[1], odom_yaw = last_pose_[2];
 
-        // MCL estimate in map frame (this is where laser should align with map)
-        double mcl_x = pose[0];  // Use lidar frame pose for laser alignment
-        double mcl_y = pose[1];
-        double mcl_yaw = pose[2];
+            // Inverse odom transform
+            double cos_odom_inv = std::cos(-odom_yaw), sin_odom_inv = std::sin(-odom_yaw);
+            double inv_odom_x = -(odom_x * cos_odom_inv - odom_y * sin_odom_inv);
+            double inv_odom_y = -(odom_x * sin_odom_inv + odom_y * cos_odom_inv);
+            double inv_odom_yaw = -odom_yaw;
 
-        // Current odometry base_link pose in odom frame
-        double odom_x = last_pose_[0];
-        double odom_y = last_pose_[1];
-        double odom_yaw = last_pose_[2];
-
-        // Calculate map_to_odom: T_map_odom = T_map_base * T_base_odom
-        // T_base_odom = inverse(T_odom_base)
-        double cos_odom_inv = std::cos(-odom_yaw);
-        double sin_odom_inv = std::sin(-odom_yaw);
-
-        // Inverse of odom pose
-        double inv_odom_x = -(odom_x * cos_odom_inv - odom_y * sin_odom_inv);
-        double inv_odom_y = -(odom_x * sin_odom_inv + odom_y * cos_odom_inv);
-        double inv_odom_yaw = -odom_yaw;
-
-        // Compose transforms: map_to_odom = mcl_pose * inv_odom_pose
-        double cos_mcl = std::cos(mcl_yaw);
-        double sin_mcl = std::sin(mcl_yaw);
-
-        t.transform.translation.x = mcl_x + inv_odom_x * cos_mcl - inv_odom_y * sin_mcl;
-        t.transform.translation.y = mcl_y + inv_odom_x * sin_mcl + inv_odom_y * cos_mcl;
-        t.transform.translation.z = 0.0;
-        t.transform.rotation = utils::geometry::yaw_to_quaternion(utils::geometry::normalize_angle(mcl_yaw + inv_odom_yaw));
-    } else {
-        // Identity transform fallback
-        t.transform.translation.x = 0.0;
-        t.transform.translation.y = 0.0;
-        t.transform.translation.z = 0.0;
-        t.transform.rotation = utils::geometry::yaw_to_quaternion(0.0);
+            // Compose transforms
+            double cos_mcl = std::cos(mcl_yaw), sin_mcl = std::sin(mcl_yaw);
+            map_to_odom.transform.translation.x = mcl_x + inv_odom_x * cos_mcl - inv_odom_y * sin_mcl;
+            map_to_odom.transform.translation.y = mcl_y + inv_odom_x * sin_mcl + inv_odom_y * cos_mcl;
+            map_to_odom.transform.translation.z = 0.0;
+            map_to_odom.transform.rotation = utils::geometry::yaw_to_quaternion(
+                utils::geometry::normalize_angle(mcl_yaw + inv_odom_yaw));
+        } else {
+            // Identity transform fallback
+            map_to_odom.transform.translation.x = 0.0;
+            map_to_odom.transform.translation.y = 0.0;
+            map_to_odom.transform.translation.z = 0.0;
+            map_to_odom.transform.rotation = utils::geometry::yaw_to_quaternion(0.0);
+        }
+        pub_tf_->sendTransform(map_to_odom);
     }
 
-    pub_tf_->sendTransform(t);
-
-    // Synchronized odom -> base_link transform
-    if (odom_initialized_ && last_pose_.norm() > 0) {
-        geometry_msgs::msg::TransformStamped odom_tf;
-        odom_tf.header.stamp = stamp;
-        odom_tf.header.frame_id = "odom";
-        odom_tf.child_frame_id = "base_link";
-        odom_tf.transform.translation.x = last_pose_[0];
-        odom_tf.transform.translation.y = last_pose_[1];
-        odom_tf.transform.translation.z = 0.0;
-        odom_tf.transform.rotation = utils::geometry::yaw_to_quaternion(last_pose_[2]);
-        pub_tf_->sendTransform(odom_tf);
+    if (PUBLISH_ODOM_BASE_TF && odom_initialized_ && last_pose_.norm() > 0) {
+        geometry_msgs::msg::TransformStamped odom_to_base;
+        odom_to_base.header.stamp = stamp;
+        odom_to_base.header.frame_id = ODOM_FRAME;
+        odom_to_base.child_frame_id = BASE_FRAME;
+        odom_to_base.transform.translation.x = last_pose_[0];
+        odom_to_base.transform.translation.y = last_pose_[1];
+        odom_to_base.transform.translation.z = 0.0;
+        odom_to_base.transform.rotation = utils::geometry::yaw_to_quaternion(last_pose_[2]);
+        pub_tf_->sendTransform(odom_to_base);
     }
 
     // Optional odometry message
@@ -968,8 +994,8 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
     {
         nav_msgs::msg::Odometry odom;
         odom.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
-        odom.header.frame_id = "map";
-        odom.child_frame_id = "base_link";
+        odom.header.frame_id = MAP_FRAME;
+        odom.child_frame_id = BASE_FRAME;
         odom.pose.pose.position.x = base_link_pose[0];
         odom.pose.pose.position.y = base_link_pose[1];
         odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(pose[2]);

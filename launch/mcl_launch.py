@@ -49,20 +49,35 @@ def generate_launch_description():
     
     # === DYNAMIC PARAMETERS BASED ON MODE ===
     dynamic_params = {
+        # Mode configuration
         'sim_mode': PythonExpression([
             "'true' if '", LaunchConfiguration('mod'), "' == 'sim' else 'false'"
         ]),
+        
+        # Topic names
         'scan_topic': '/scan',  # All modes use /scan
         'odom_topic': PythonExpression([
             "'/ego_racecar/odom' if '", LaunchConfiguration('mod'), "' == 'sim' else '/odom'"
+        ]),
+        
+        # TF frame names
+        'odom_frame': PythonExpression([
+            "'ego_racecar/odom' if '", LaunchConfiguration('mod'), "' == 'sim' else 'odom'"
         ]),
         'base_frame': PythonExpression([
             "'ego_racecar/base_link' if '", LaunchConfiguration('mod'), "' == 'sim' else 'base_link'"
         ]),
         'laser_frame': PythonExpression([
             "'ego_racecar/laser' if '", LaunchConfiguration('mod'), "' == 'sim' else 'laser'"
+        ]),
+        
+        # TF publishing control
+        'publish_map_odom_tf': PythonExpression([
+            "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
+        ]),
+        'publish_odom_base_tf': PythonExpression([
+            "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
         ])
-        # Removed hardcoded parameters - use config file values instead
     }
     
     # === COMMON PARAMETERS ===
@@ -101,7 +116,7 @@ def generate_launch_description():
     
     # === PARTICLE FILTER NODE ===
     particle_filter_node = TimerAction(
-        period=2.0,  # Allow map server to initialize
+        period=3.0,  # Allow map server and simulator to initialize
         actions=[
             Node(
                 package='particle_filter_cpp',
@@ -120,28 +135,9 @@ def generate_launch_description():
         ]
     )
     
-    # === STATIC TRANSFORM PUBLISHERS ===
-    # Note: TF values should match lidar_offset_x in config file
-    static_tf_node = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='particle_filter_static_tf_publisher',
-        arguments=[
-            '0.288',  # Use config file value: lidar_offset_x
-            '0.0', '0.0', '0.0', '0.0', '0.0', 
-            PythonExpression([
-                "'ego_racecar/base_link' if '", LaunchConfiguration('mod'), "' == 'sim' else 'base_link'"
-            ]),
-            PythonExpression([
-                "'ego_racecar/laser' if '", LaunchConfiguration('mod'), "' == 'sim' else 'laser'"
-            ])
-        ],
-        output='screen',
-        parameters=[common_params]
-    )
-
-    # MCL will publish both map->odom and odom->base_link transforms
-    # No static transform needed
+    # === TF TRANSFORMS RESPONSIBILITY ===
+    # Real mode: F1Tenth stack provides base_link->laser, MCL provides map->odom->base_link
+    # Sim mode:  Simulator provides map->base_link->laser, MCL only does localization
     
     # === RVIZ NODE ===
     rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
@@ -172,7 +168,6 @@ def generate_launch_description():
         # Nodes
         map_server_node,
         lifecycle_manager_node,
-        static_tf_node,
         particle_filter_node,
         rviz_node,
     ])

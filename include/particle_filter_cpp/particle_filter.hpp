@@ -104,6 +104,8 @@ class ParticleFilter : public rclcpp::Node
     double INV_SQUASH_FACTOR;
     double MAX_RANGE_METERS;
     bool PUBLISH_ODOM;
+    bool PUBLISH_MAP_ODOM_TF;
+    bool PUBLISH_ODOM_BASE_TF;
     bool DO_VIZ;
     double TIMER_FREQUENCY;
     bool USE_PARALLEL_RAYCASTING;
@@ -121,6 +123,12 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- SENSOR FRAME PARAMETERS ---------------------------------
     double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;
     double WHEELBASE;
+
+    // --------------------------------- TF FRAME NAMES ---------------------------------
+    std::string MAP_FRAME;
+    std::string ODOM_FRAME;
+    std::string BASE_FRAME;
+    std::string LASER_FRAME;
 
     // --------------------------------- PARTICLE FILTER STATE ---------------------------------
     Eigen::MatrixXd particles_;
