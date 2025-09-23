@@ -8,11 +8,11 @@
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 800                 # Optimized particle count for real-time performance
+    max_particles: 1000                 # Optimized particle count for real-time performance
     max_viz_particles: 40              # Reduced visualization particles for better performance
     max_range: 10.0                    # Set laser max range 
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 1.2     # Improved timing compensation for simulation
+    delay_compensation_factor: 1.0     # Improved timing compensation for simulation
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)

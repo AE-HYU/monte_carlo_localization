@@ -210,9 +210,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::bind(&ParticleFilter::publish_map_periodically, this)
     );
 
-    // Separate visualization timer - run at lower frequency to save CPU
+    // Separate visualization timer - run at higher frequency to reduce lag
     if (DO_VIZ) {
-        int viz_interval_ms = static_cast<int>(1000.0 / 30.0);  // 30 Hz visualization
+        int viz_interval_ms = static_cast<int>(1000.0 / 50.0);  // 50 Hz visualization (closer to MCL frequency)
         viz_timer_ = this->create_wall_timer(
             std::chrono::milliseconds(viz_interval_ms),
             std::bind(&ParticleFilter::viz_timer_callback, this)
