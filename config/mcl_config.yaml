@@ -12,7 +12,7 @@ particle_filter:
     max_viz_particles: 60              # Particles displayed in RViz (performance)
     max_range: 10.0                    # Maximum laser range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 3.5     # MCL timing compensation factor
+    delay_compensation_factor: 1.0     # MCL timing compensation factor
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
@@ -20,12 +20,12 @@ particle_filter:
     publish_odom_base_tf: false        # Let F1Tenth stack handle odom->base_link
     
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.10          # Forward motion noise (m)
-    motion_dispersion_y: 0.015          # Lateral motion noise (m)
-    motion_dispersion_theta: 0.20      # Rotation noise (rad)
+    motion_dispersion_x: 0.25          # Forward motion noise (m) - increased for simulation
+    motion_dispersion_y: 0.05          # Lateral motion noise (m) - increased for simulation  
+    motion_dispersion_theta: 0.35      # Rotation noise (rad) - increased for simulation
     
     # === POSE SMOOTHING ===
-    smoothing_alpha: 0.30              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth)
+    smoothing_alpha: 0.15              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
 
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
@@ -55,7 +55,7 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 40.0              # MCL update frequency (Hz)
+    timer_frequency: 60.0              # MCL update frequency (Hz) - increased for simulation
     
     # === TF FRAME NAMES ===
     # Frame names (overridden by launch file for simulation)
