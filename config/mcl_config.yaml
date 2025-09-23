@@ -10,9 +10,9 @@ particle_filter:
     # === CORE ALGORITHM PARAMETERS ===
     max_particles: 1000                # Number of particles in filter
     max_viz_particles: 60              # Particles displayed in RViz (performance)
-    max_range: 12.0                    # Maximum laser range (m)
+    max_range: 10.0                    # Maximum laser range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 1.0     # MCL timing compensation factor
+    delay_compensation_factor: 3.5     # MCL timing compensation factor
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
@@ -20,24 +20,24 @@ particle_filter:
     publish_odom_base_tf: true         # Publish odom->base_link transform (real mode only)
     
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.1          # Forward motion noise (m)
-    motion_dispersion_y: 0.025         # Lateral motion noise (m)
-    motion_dispersion_theta: 0.25      # Rotation noise (rad)
+    motion_dispersion_x: 0.10          # Forward motion noise (m)
+    motion_dispersion_y: 0.015          # Lateral motion noise (m)
+    motion_dispersion_theta: 0.20      # Rotation noise (rad)
     
     # === POSE SMOOTHING ===
-    smoothing_alpha: 0.25              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth)
+    smoothing_alpha: 0.30              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth)
 
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
-    lidar_offset_x: 0.288              # LiDAR forward offset from base_link (m)
+    lidar_offset_x: 0.28               # LiDAR forward offset from base_link (m)
     lidar_offset_y: 0.0                # LiDAR lateral offset from base_link (m)
-    wheelbase: 0.325                   # Distance between axles (m)
+    wheelbase: 0.324                   # Distance between axles (m)
     
     # === SENSOR MODEL (4-component beam model) ===
-    z_hit: 0.80                        # Weight for correct measurements
+    z_hit: 0.75                        # Weight for correct measurements
     z_short: 0.01                      # Weight for unexpected obstacles
     z_max: 0.07                        # Weight for max range readings
-    z_rand: 0.12                       # Weight for random noise
+    z_rand: 0.17                       # Weight for random noise
     sigma_hit: 8.0                     # Measurement noise std dev
     
     # === RAY CASTING ===
@@ -47,7 +47,7 @@ particle_filter:
     angle_step: 18                     # Laser downsampling factor
     squash_factor: 2.2                 # Weight normalization
     use_parallel_raycasting: true      # Enable parallel processing
-    num_threads: 2                     # Auto-detect threads
+    num_threads: 0                     # Auto-detect threads
     
     # === ROS INTERFACE ===
     # Topic names (overridden by launch file based on mode)
