@@ -8,11 +8,11 @@
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 1000                # Number of particles in filter
-    max_viz_particles: 60              # Particles displayed in RViz (performance)
-    max_range: 10.0                    # Maximum laser range (m)
+    max_particles: 800                 # Optimized particle count for real-time performance
+    max_viz_particles: 40              # Reduced visualization particles for better performance
+    max_range: 10.0                    # Set laser max range 
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 1.0     # MCL timing compensation factor
+    delay_compensation_factor: 1.2     # Improved timing compensation for simulation
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
@@ -34,18 +34,18 @@ particle_filter:
     wheelbase: 0.324                   # Distance between axles (m)
     
     # === SENSOR MODEL (4-component beam model) ===
-    z_hit: 0.75                        # Weight for correct measurements
+    z_hit: 0.80                        # Weight for correct measurements (increased for better tracking)
     z_short: 0.01                      # Weight for unexpected obstacles
-    z_max: 0.07                        # Weight for max range readings
-    z_rand: 0.17                       # Weight for random noise
-    sigma_hit: 8.0                     # Measurement noise std dev
+    z_max: 0.05                        # Weight for max range readings (reduced)
+    z_rand: 0.14                       # Weight for random noise (reduced)
+    sigma_hit: 6.0                     # Measurement noise std dev (tightened)
     
     # === RAY CASTING ===
     range_method: "cddt"               # Distance transform method
     theta_discretization: 112          # Angular resolution
     rangelib_variant: 2                # Ray casting variant
     angle_step: 18                     # Laser downsampling factor
-    squash_factor: 2.2                 # Weight normalization
+    squash_factor: 2.0                 # Weight normalization (optimized for faster convergence)
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
     
@@ -65,7 +65,7 @@ particle_filter:
     laser_frame: "laser"               # Laser scanner frame
     
     # === PERFORMANCE & DEBUGGING ===
-    fine_timing: 0                     # Detailed timing output (0=off, 1=on)
+    fine_timing: 1                     # Detailed timing output (0=off, 1=on) - enabled for optimization monitoring
 
 # ================================================================================================
 # MAP SERVER CONFIGURATION

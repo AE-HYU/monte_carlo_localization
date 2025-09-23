@@ -174,8 +174,11 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- PERFORMANCE CACHES ---------------------------------
     Eigen::MatrixXd local_deltas_;
     Eigen::MatrixXd queries_;
+    Eigen::MatrixXd proposal_distribution_;  // Pre-allocated for MCL resampling
     std::vector<float> ranges_;
     std::vector<float> tiled_angles_;
+    std::vector<float> obs_px_;              // Pre-allocated for sensor model
+    std::vector<float> ranges_px_;           // Pre-allocated for sensor model
 
     // --------------------------------- ROS2 INTERFACES ---------------------------------
     // Subscribers
@@ -199,6 +202,7 @@ class ParticleFilter : public rclcpp::Node
     // Timers
     rclcpp::TimerBase::SharedPtr update_timer_;
     rclcpp::TimerBase::SharedPtr map_timer_;
+    rclcpp::TimerBase::SharedPtr viz_timer_;  // Separate visualization timer
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
@@ -226,6 +230,7 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void timer_update();
     void publish_map_periodically();
+    void viz_timer_callback();  // Separate visualization timer callback
     
     // Performance profiling methods
 };

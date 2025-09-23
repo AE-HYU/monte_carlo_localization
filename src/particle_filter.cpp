@@ -151,8 +151,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     particle_indices_.resize(MAX_PARTICLES);
     std::iota(particle_indices_.begin(), particle_indices_.end(), 0);
 
-    // Motion cache
+    // Motion cache and performance optimizations
     local_deltas_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
+    proposal_distribution_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
 
     // Publishers
     if (DO_VIZ)
@@ -208,6 +209,15 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::chrono::milliseconds(200),
         std::bind(&ParticleFilter::publish_map_periodically, this)
     );
+
+    // Separate visualization timer - run at lower frequency to save CPU
+    if (DO_VIZ) {
+        int viz_interval_ms = static_cast<int>(1000.0 / 30.0);  // 30 Hz visualization
+        viz_timer_ = this->create_wall_timer(
+            std::chrono::milliseconds(viz_interval_ms),
+            std::bind(&ParticleFilter::viz_timer_callback, this)
+        );
+    }
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)", 
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential", 
@@ -512,6 +522,12 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
     double velocity = std::copysign(std::min(std::abs(motion_cmd.velocity), 15.0), motion_cmd.velocity);  // 15 m/s max
     double angular_velocity = std::copysign(std::min(std::abs(motion_cmd.angular_velocity), 10.0), motion_cmd.angular_velocity);  // 10 rad/s max
 
+    // Pre-compute common values for optimization
+    const bool is_straight_motion = std::abs(angular_velocity) < 1e-6;
+    const double delta_theta = angular_velocity * dt;
+    const double radius = is_straight_motion ? 0.0 : velocity / angular_velocity;
+    const double linear_displacement = velocity * dt;
+
     // Apply bicycle model kinematics
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
@@ -519,19 +535,24 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
         double y = proposal_dist(i, 1);
         double theta = proposal_dist(i, 2);
         
-        if (std::abs(angular_velocity) < 1e-6) {
-            // Straight line motion
-            proposal_dist(i, 0) = x + velocity * dt * std::cos(theta);
-            proposal_dist(i, 1) = y + velocity * dt * std::sin(theta);
+        if (is_straight_motion) {
+            // Straight line motion - optimized with pre-computed displacement
+            double cos_theta = std::cos(theta);
+            double sin_theta = std::sin(theta);
+            proposal_dist(i, 0) = x + linear_displacement * cos_theta;
+            proposal_dist(i, 1) = y + linear_displacement * sin_theta;
             proposal_dist(i, 2) = theta;
         } else {
-            // Curved motion
-            double radius = velocity / angular_velocity;
-            double delta_theta = angular_velocity * dt;
+            // Curved motion - optimized trigonometry
+            double new_theta = theta + delta_theta;
+            double sin_theta = std::sin(theta);
+            double cos_theta = std::cos(theta);
+            double sin_new_theta = std::sin(new_theta);
+            double cos_new_theta = std::cos(new_theta);
             
-            proposal_dist(i, 0) = x + radius * (std::sin(theta + delta_theta) - std::sin(theta));
-            proposal_dist(i, 1) = y - radius * (std::cos(theta + delta_theta) - std::cos(theta));
-            proposal_dist(i, 2) = theta + delta_theta;
+            proposal_dist(i, 0) = x + radius * (sin_new_theta - sin_theta);
+            proposal_dist(i, 1) = y - radius * (cos_new_theta - cos_theta);
+            proposal_dist(i, 2) = new_theta;
         }
         
         // Add adaptive noise based on velocity
@@ -558,15 +579,20 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
 {
     int num_rays = downsampled_angles_.size();
 
-    // First-time array allocation for ray casting
+    // First-time array allocation for ray casting - optimized memory pre-allocation
     if (first_sensor_update_)
     {
         queries_ = Eigen::MatrixXd::Zero(num_rays * MAX_PARTICLES, 3);
         ranges_.resize(num_rays * MAX_PARTICLES);
         tiled_angles_.clear();
+        tiled_angles_.reserve(num_rays * MAX_PARTICLES);
+        
+        // Pre-compute tiled angles more efficiently
+        tiled_angles_.resize(num_rays * MAX_PARTICLES);
         for (int i = 0; i < MAX_PARTICLES; ++i)
         {
-            tiled_angles_.insert(tiled_angles_.end(), downsampled_angles_.begin(), downsampled_angles_.end());
+            std::copy(downsampled_angles_.begin(), downsampled_angles_.end(), 
+                     tiled_angles_.begin() + i * num_rays);
         }
         first_sensor_update_ = false;
     }
@@ -592,22 +618,22 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
     // Start timing for sensor model evaluation (lookup table part only)
     auto sensor_eval_start = std::chrono::high_resolution_clock::now();
 
-    // Convert to pixel units and compute weights
-    std::vector<float> obs_px(obs.size());
-    std::vector<float> ranges_px(ranges_.size());
+    // Convert to pixel units and compute weights - using pre-allocated vectors
+    obs_px_.resize(obs.size());
+    ranges_px_.resize(ranges_.size());
 
     for (size_t i = 0; i < obs.size(); ++i)
     {
-        obs_px[i] = obs[i] / map_resolution_;
-        if (obs_px[i] > MAX_RANGE_PX)
-            obs_px[i] = MAX_RANGE_PX;
+        obs_px_[i] = obs[i] / map_resolution_;
+        if (obs_px_[i] > MAX_RANGE_PX)
+            obs_px_[i] = MAX_RANGE_PX;
     }
 
     for (size_t i = 0; i < ranges_.size(); ++i)
     {
-        ranges_px[i] = ranges_[i] / map_resolution_;
-        if (ranges_px[i] > MAX_RANGE_PX)
-            ranges_px[i] = MAX_RANGE_PX;
+        ranges_px_[i] = ranges_[i] / map_resolution_;
+        if (ranges_px_[i] > MAX_RANGE_PX)
+            ranges_px_[i] = MAX_RANGE_PX;
     }
 
     // Likelihood calculation using lookup table
@@ -617,8 +643,8 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
         
         for (int j = 0; j < num_rays; ++j)
         {
-            int obs_idx = static_cast<int>(std::round(obs_px[j]));
-            int range_idx = static_cast<int>(std::round(ranges_px[i * num_rays + j]));
+            int obs_idx = static_cast<int>(std::round(obs_px_[j]));
+            int range_idx = static_cast<int>(std::round(ranges_px_[i * num_rays + j]));
 
             obs_idx = std::max(0, std::min(obs_idx, MAX_RANGE_PX));
             range_idx = std::max(0, std::min(range_idx, MAX_RANGE_PX));
@@ -705,27 +731,26 @@ void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<floa
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
-    // 1. Multinomial resampling
+    // 1. Multinomial resampling - using pre-allocated memory
     auto resample_start = std::chrono::high_resolution_clock::now();
     std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
-    Eigen::MatrixXd proposal_distribution(MAX_PARTICLES, 3);
 
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         int idx = particle_dist(rng_);
-        proposal_distribution.row(i) = particles_.row(idx);
+        proposal_distribution_.row(i) = particles_.row(idx);
     }
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
 
     // 2. Motion prediction
     auto motion_start = std::chrono::high_resolution_clock::now();
-    motion_model(proposal_distribution, motion_cmd);
+    motion_model(proposal_distribution_, motion_cmd);
     auto motion_end = std::chrono::high_resolution_clock::now();
     timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
     // 3. Sensor likelihood evaluation
-    sensor_model(proposal_distribution, observation, weights_);
+    sensor_model(proposal_distribution_, observation, weights_);
 
     // 4. Weight normalization
     double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
@@ -737,8 +762,8 @@ void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<floa
         }
     }
 
-    // 5. Update particle set
-    particles_ = proposal_distribution;
+    // 5. Update particle set - using efficient swap
+    particles_.swap(proposal_distribution_);
     
     auto mcl_end = std::chrono::high_resolution_clock::now();
     timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
@@ -906,8 +931,6 @@ void ParticleFilter::timer_update()
                 }
                 timing_stats_.reset();
             }
-            
-            visualize();
         }
         
         state_lock_.unlock();
@@ -932,6 +955,17 @@ void ParticleFilter::publish_map_periodically()
     if (map_initialized_ && map_pub_ && map_msg_) {
         map_pub_->publish(*map_msg_);
     }
+}
+
+void ParticleFilter::viz_timer_callback()
+{
+    // Only visualize if we have valid particles and are not currently updating
+    if (!map_initialized_ || !state_lock_.try_lock()) {
+        return;
+    }
+    
+    visualize();
+    state_lock_.unlock();
 }
 
 // ================================================================================================
