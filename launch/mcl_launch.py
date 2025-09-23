@@ -18,10 +18,13 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+import os
 
 
 def generate_launch_description():
-    # Get package share directory
+    # Get package share directory  
+    from ament_index_python.packages import get_package_share_directory
+    pkg_share_dir = get_package_share_directory('particle_filter_cpp')
     pkg_share = FindPackageShare('particle_filter_cpp')
     
     # === LAUNCH ARGUMENTS ===
@@ -44,7 +47,31 @@ def generate_launch_description():
     )
     
     # === CONFIGURATION ===
-    config_file = PathJoinSubstitution([pkg_share, 'config', 'mcl_config.yaml'])
+    # Try to find source config first, fallback to install config
+    install_config_file = os.path.join(
+        get_package_share_directory('particle_filter_cpp'),
+        'config',
+        'mcl_config.yaml'
+    )
+    
+    # Look for source config relative to install directory
+    install_dir = get_package_share_directory('particle_filter_cpp')
+    potential_source_config = os.path.join(install_dir, '..', '..', '..', '..', 'src', 'perception_ws', 'monte_carlo_localization', 'config', 'mcl_config.yaml')
+    potential_source_config = os.path.abspath(potential_source_config)
+    
+    # Use source config if it exists, otherwise use install config
+    if os.path.exists(potential_source_config):
+        default_config_file = potential_source_config
+        print(f"[MCL Launch] Using SOURCE config: {default_config_file}")
+    else:
+        default_config_file = install_config_file
+        print(f"[MCL Launch] Using INSTALL config: {default_config_file}")
+    
+    config_arg = DeclareLaunchArgument(
+        'config_file',
+        default_value=default_config_file,
+        description='Path to MCL configuration file'
+    )
     map_file_path = PathJoinSubstitution([pkg_share, 'maps', [LaunchConfiguration('map_name'), '.yaml']])
     
     # === DYNAMIC PARAMETERS BASED ON MODE ===
@@ -124,7 +151,7 @@ def generate_launch_description():
                 name='particle_filter',
                 output='screen',
                 parameters=[
-                    config_file,
+                    LaunchConfiguration('config_file'),
                     common_params,
                     dynamic_params
                 ],
@@ -164,6 +191,7 @@ def generate_launch_description():
         mode_arg,
         map_name_arg,
         use_rviz_arg,
+        config_arg,
         
         # Nodes
         map_server_node,
