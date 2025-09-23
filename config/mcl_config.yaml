@@ -17,6 +17,9 @@ particle_filter:
     motion_dispersion_y: 0.025         # Lateral motion noise (m)
     motion_dispersion_theta: 0.25      # Rotation noise (rad)
     
+    # === POSE SMOOTHING ===
+    smoothing_alpha: 0.25              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth)
+
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
     lidar_offset_x: 0.288              # LiDAR forward offset from base_link (m)
