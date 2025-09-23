@@ -465,38 +465,14 @@ void ParticleFilter::initialize_global()
 // ================================================================================================
 // MCL ALGORITHM CORE
 // ================================================================================================
-void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double real_dt)
+void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd)
 {
-    // action[0] = forward displacement, action[2] = angular displacement
-    double dt = real_dt;  // Start with real time
-    double velocity = 0.0;
-    double angular_velocity = 0.0;
+    // Extract motion parameters with safety bounds
+    double dt = std::max(0.001, std::min(motion_cmd.dt, 0.5));  // Bounds: 1ms to 500ms
     
-    double forward_displacement = action[0];
-    double angular_displacement = action[2];
-    
-    
-    // Use real time interval with bounds
-    dt = std::max(0.001, std::min(real_dt, 0.5));  // Bounds: 1ms to 500ms
-    
-    if (std::abs(forward_displacement) > 0.001) {
-        velocity = forward_displacement / dt;
-        
-        
-        // Cap velocity to reasonable limits (prevent unrealistic speeds)
-        double max_velocity = 15.0;  // 15 m/s max
-        if (std::abs(velocity) > max_velocity) {
-            velocity = std::copysign(max_velocity, velocity);
-            // Recalculate dt based on capped velocity
-            dt = std::abs(forward_displacement) / max_velocity;
-            dt = std::max(0.001, std::min(dt, 0.5));
-            
-        }
-    }
-    
-    if (std::abs(angular_displacement) > 0.001) {
-        angular_velocity = angular_displacement / dt;
-    }
+    // Apply velocity limits (prevent unrealistic speeds)
+    double velocity = std::copysign(std::min(std::abs(motion_cmd.velocity), 15.0), motion_cmd.velocity);  // 15 m/s max
+    double angular_velocity = std::copysign(std::min(std::abs(motion_cmd.angular_velocity), 10.0), motion_cmd.angular_velocity);  // 10 rad/s max
 
     // Apply bicycle model kinematics
     for (int i = 0; i < MAX_PARTICLES; ++i)
@@ -687,7 +663,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
     return MAX_RANGE_METERS;
 }
 
-void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt)
+void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -706,7 +682,7 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 
     // 2. Motion prediction
     auto motion_start = std::chrono::high_resolution_clock::now();
-    motion_model(proposal_distribution, action, dt);
+    motion_model(proposal_distribution, motion_cmd);
     auto motion_end = std::chrono::high_resolution_clock::now();
     timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
@@ -826,23 +802,21 @@ void ParticleFilter::timer_update()
         if (lidar_initialized_ && !downsampled_ranges_.empty()) {
             ++iters_;
             
-            Eigen::Vector3d action = Eigen::Vector3d::Zero();
+            MotionCommand motion_cmd;
             if (has_odometry_for_motion && apply_motion && 
                 (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
-                action[0] = current_velocity_ * dt;
-                action[1] = 0.0;
-                action[2] = current_angular_vel_ * dt;
+                motion_cmd = MotionCommand(current_velocity_, current_angular_vel_, dt);
             } else if (!has_odometry_for_motion && !pose_initialized_from_rviz_ && iters_ < 15) {
                 double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
-                action[0] = normal_dist_(rng_) * 0.02 * noise_factor;
-                action[1] = normal_dist_(rng_) * 0.01 * noise_factor;
-                action[2] = normal_dist_(rng_) * 0.05 * noise_factor;
+                double random_velocity = normal_dist_(rng_) * 0.02 * noise_factor / dt;  // Convert displacement to velocity
+                double random_angular_velocity = normal_dist_(rng_) * 0.05 * noise_factor / dt;  // Convert displacement to angular velocity
+                motion_cmd = MotionCommand(random_velocity, random_angular_velocity, dt);
             }
             
             auto observation = downsampled_ranges_;
             
             // Execute MCL pipeline
-            MCL(action, observation, dt);
+            MCL(motion_cmd, observation);
             Eigen::Vector3d raw_pose = expected_pose();
             inferred_pose_ = smooth_pose(raw_pose);
             

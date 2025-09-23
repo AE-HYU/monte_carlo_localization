@@ -29,6 +29,28 @@
 namespace particle_filter_cpp
 {
 
+// Motion command structure for optimized motion model
+struct MotionCommand
+{
+    double velocity;          // Linear velocity (m/s)
+    double angular_velocity;  // Angular velocity (rad/s)
+    double dt;               // Time interval (s)
+    
+    // Default constructor
+    MotionCommand() : velocity(0.0), angular_velocity(0.0), dt(0.0) {}
+    
+    // Constructor with values
+    MotionCommand(double v, double w, double time) : velocity(v), angular_velocity(w), dt(time) {}
+    
+    // Constructor from legacy action vector (displacement-based)
+    static MotionCommand from_displacement(const Eigen::Vector3d& action, double time_interval)
+    {
+        double v = (std::abs(action[0]) > 0.001) ? action[0] / time_interval : 0.0;
+        double w = (std::abs(action[2]) > 0.001) ? action[2] / time_interval : 0.0;
+        return MotionCommand(v, w, time_interval);
+    }
+};
+
 class ParticleFilter : public rclcpp::Node
 {
   public:
@@ -36,8 +58,8 @@ class ParticleFilter : public rclcpp::Node
 
   private:
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
-    void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt);
-    void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double real_dt);  // Now uses bicycle kinematics with real time interval
+    void MCL(const MotionCommand &motion_cmd, const std::vector<float> &observation);
+    void motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
     Eigen::Vector3d expected_pose();
