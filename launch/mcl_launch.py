@@ -55,6 +55,12 @@ def generate_launch_description():
         'scan_topic': '/scan',  # All modes use /scan
         'odom_topic': PythonExpression([
             "'/ego_racecar/odom' if '", LaunchConfiguration('mod'), "' == 'sim' else '/odom'"
+        ]),
+        'base_frame': PythonExpression([
+            "'ego_racecar/base_link' if '", LaunchConfiguration('mod'), "' == 'sim' else 'base_link'"
+        ]),
+        'laser_frame': PythonExpression([
+            "'ego_racecar/laser' if '", LaunchConfiguration('mod'), "' == 'sim' else 'laser'"
         ])
         # Removed hardcoded parameters - use config file values instead
     }
@@ -122,7 +128,13 @@ def generate_launch_description():
         name='particle_filter_static_tf_publisher',
         arguments=[
             '0.288',  # Use config file value: lidar_offset_x
-            '0.0', '0.0', '0.0', '0.0', '0.0', 'base_link', 'laser'
+            '0.0', '0.0', '0.0', '0.0', '0.0', 
+            PythonExpression([
+                "'ego_racecar/base_link' if '", LaunchConfiguration('mod'), "' == 'sim' else 'base_link'"
+            ]),
+            PythonExpression([
+                "'ego_racecar/laser' if '", LaunchConfiguration('mod'), "' == 'sim' else 'laser'"
+            ])
         ],
         output='screen',
         parameters=[common_params]

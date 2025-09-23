@@ -58,8 +58,8 @@ particle_filter:
     
     # === TF FRAMES ===
     map_frame: "map"                   # Global reference frame
-    base_frame: "base_link"            # Robot base frame
-    laser_frame: "laser"               # Laser scanner frame
+    base_frame: "base_link"            # Robot base frame (real car) / ego_racecar/base_link (sim)
+    laser_frame: "laser"               # Laser scanner frame (real car) / ego_racecar/laser (sim)
 
 # Map server configuration
 map_server:
