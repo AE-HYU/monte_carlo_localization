@@ -1144,9 +1144,9 @@ Eigen::Vector3d ParticleFilter::apply_tf_offset(const Eigen::Vector3d& pose_in_l
 
     if (!offset_read) {
         try {
-            // Read the actual F1Tenth transform: base_link → laser
+            // Read the actual F1Tenth transform: base_link → laser  
             auto transform = tf_buffer_->lookupTransform(
-                LASER_FRAME, BASE_FRAME, tf2::TimePointZero, tf2::Duration(std::chrono::milliseconds(100)));
+                BASE_FRAME, LASER_FRAME, tf2::TimePointZero, tf2::Duration(std::chrono::milliseconds(100)));
 
             lidar_offset_x = transform.transform.translation.x;
             lidar_offset_y = transform.transform.translation.y;
