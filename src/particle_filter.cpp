@@ -46,8 +46,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("motion_dispersion_theta", 0.25);
     
     // Robot geometry
-    this->declare_parameter("lidar_offset_x", 0.0);
-    this->declare_parameter("lidar_offset_y", 0.0);
+    // this->declare_parameter("lidar_offset_x", 0.0);  // Use TF transform instead
+    // this->declare_parameter("lidar_offset_y", 0.0);  // Use TF transform instead
     this->declare_parameter("wheelbase", 0.325);
     
     // ROS interface
@@ -95,8 +95,8 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     MOTION_DISPERSION_THETA = this->get_parameter("motion_dispersion_theta").as_double();
 
     // Robot geometry
-    LIDAR_OFFSET_X = this->get_parameter("lidar_offset_x").as_double();
-    LIDAR_OFFSET_Y = this->get_parameter("lidar_offset_y").as_double();
+    // LIDAR_OFFSET_X = this->get_parameter("lidar_offset_x").as_double();  // Use TF transform instead
+    // LIDAR_OFFSET_Y = this->get_parameter("lidar_offset_y").as_double();  // Use TF transform instead
     WHEELBASE = this->get_parameter("wheelbase").as_double();
 
     // ROS interface
@@ -169,8 +169,10 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Map publisher
     map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(1).transient_local());
 
-    // TF broadcaster
+    // TF broadcaster and listener
     pub_tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
     // Subscribers
     laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
@@ -937,7 +939,7 @@ void ParticleFilter::publish_map_periodically()
 // ================================================================================================
 void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
 {
-    Eigen::Vector3d base_link_pose = utils::geometry::apply_vehicle_offset(pose, LIDAR_OFFSET_X);
+    Eigen::Vector3d base_link_pose = apply_tf_offset(pose);
 
     // === TF TRANSFORM PUBLISHING ===
     // Real mode: Publish map->odom and odom->base_link
@@ -1044,8 +1046,8 @@ void ParticleFilter::visualize()
     // RViz pose visualization (with vehicle frame offset)
     if (pose_pub_ && pose_pub_->get_subscription_count() > 0)
     {
-        // Apply vehicle frame offset
-        Eigen::Vector3d offset_pose = utils::geometry::apply_vehicle_offset(inferred_pose_, LIDAR_OFFSET_X);
+        // Apply vehicle frame offset using TF
+        Eigen::Vector3d offset_pose = apply_tf_offset(inferred_pose_);
         
         geometry_msgs::msg::PoseStamped ps;
         ps.header.stamp = this->get_clock()->now();
@@ -1087,7 +1089,7 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
     
     for (int i = 0; i < offset_particles.rows(); ++i) {
         Eigen::Vector3d particle_pose(offset_particles(i, 0), offset_particles(i, 1), offset_particles(i, 2));
-        Eigen::Vector3d offset_pose = utils::geometry::apply_vehicle_offset(particle_pose, LIDAR_OFFSET_X);
+        Eigen::Vector3d offset_pose = apply_tf_offset(particle_pose);
         offset_particles(i, 0) = offset_pose[0];
         offset_particles(i, 1) = offset_pose[1];
     }
@@ -1128,6 +1130,47 @@ void ParticleFilter::update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& 
     
     Eigen::Vector3d odom_delta = current_odom - odom_reference_odom_;
     odom_pose_ = odom_reference_pose_ + odom_delta;
+}
+
+// ================================================================================================
+// TF UTILITIES
+// ================================================================================================
+Eigen::Vector3d ParticleFilter::apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame)
+{
+    // Get the offset from F1Tenth system's static transform
+    static double lidar_offset_x = 0.27;  // Default fallback
+    static double lidar_offset_y = 0.0;
+    static bool offset_read = false;
+
+    if (!offset_read) {
+        try {
+            // Read the actual F1Tenth transform: base_link → laser
+            auto transform = tf_buffer_->lookupTransform(
+                LASER_FRAME, BASE_FRAME, tf2::TimePointZero, tf2::Duration(std::chrono::milliseconds(100)));
+
+            lidar_offset_x = transform.transform.translation.x;
+            lidar_offset_y = transform.transform.translation.y;
+            offset_read = true;
+
+            RCLCPP_INFO(this->get_logger(), "Using F1Tenth TF offset: x=%.3fm, y=%.3fm",
+                       lidar_offset_x, lidar_offset_y);
+        }
+        catch (tf2::TransformException &ex) {
+            RCLCPP_WARN(this->get_logger(), "Could not read F1Tenth TF, using default 0.27m: %s", ex.what());
+            offset_read = true;  // Don't keep trying on every call
+        }
+    }
+
+    // Apply offset: laser frame pose → base_link frame pose
+    double cos_theta = std::cos(pose_in_laser_frame[2]);
+    double sin_theta = std::sin(pose_in_laser_frame[2]);
+
+    Eigen::Vector3d base_link_pose;
+    base_link_pose[0] = pose_in_laser_frame[0] - lidar_offset_x * cos_theta + lidar_offset_y * sin_theta;
+    base_link_pose[1] = pose_in_laser_frame[1] - lidar_offset_x * sin_theta - lidar_offset_y * cos_theta;
+    base_link_pose[2] = pose_in_laser_frame[2];
+
+    return base_link_pose;
 }
 
 

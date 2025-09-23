@@ -17,7 +17,7 @@ particle_filter:
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
     publish_map_odom_tf: true          # Publish map->odom transform (real mode only)
-    publish_odom_base_tf: true         # Publish odom->base_link transform (real mode only)
+    publish_odom_base_tf: false        # Let F1Tenth stack handle odom->base_link
     
     # === MOTION MODEL NOISE ===
     motion_dispersion_x: 0.10          # Forward motion noise (m)
@@ -29,8 +29,8 @@ particle_filter:
 
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
-    lidar_offset_x: 0.28               # LiDAR forward offset from base_link (m)
-    lidar_offset_y: 0.0                # LiDAR lateral offset from base_link (m)
+    # lidar_offset_x: 0.28             # Use TF transform instead
+    # lidar_offset_y: 0.0              # Use TF transform instead
     wheelbase: 0.324                   # Distance between axles (m)
     
     # === SENSOR MODEL (4-component beam model) ===

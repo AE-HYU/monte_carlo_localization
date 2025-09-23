@@ -17,6 +17,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include <Eigen/Dense>
 #include <memory>
@@ -87,6 +90,9 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- POSE MANAGEMENT ---------------------------------
     Eigen::Vector3d get_current_pose();
     bool is_pose_valid(const Eigen::Vector3d& pose);
+
+    // --------------------------------- TF UTILITIES ---------------------------------
+    Eigen::Vector3d apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame);
     
     // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
     void initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz = true);
@@ -121,7 +127,7 @@ class ParticleFilter : public rclcpp::Node
     double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;
 
     // --------------------------------- SENSOR FRAME PARAMETERS ---------------------------------
-    double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;
+    // double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;  // Use TF transforms instead
     double WHEELBASE;
 
     // --------------------------------- TF FRAME NAMES ---------------------------------
@@ -187,6 +193,8 @@ class ParticleFilter : public rclcpp::Node
     // Services and TF
     rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> pub_tf_;
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
     
     // Timers
     rclcpp::TimerBase::SharedPtr update_timer_;
