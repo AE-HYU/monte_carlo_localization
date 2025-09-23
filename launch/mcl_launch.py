@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 Unified MCL Launch File
-Supports both real hardware and simulation modes via sim_mode argument
+Supports real hardware, simulation, and bag playback modes
 
 Usage:
-  Real hardware: ros2 launch particle_filter_cpp mcl_launch.py
-  Simulation:    ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
+  Real car:      ros2 launch particle_filter_cpp mcl_launch.py mod:=real
+  Simulation:    ros2 launch particle_filter_cpp mcl_launch.py mod:=sim  
+  Bag playback:  ros2 launch particle_filter_cpp mcl_launch.py mod:=bag
   
   # To change map, launch with map_name:='your_map'
-  Example:       ros2 launch particle_filter_cpp mcl_launch.py map_name:='my_custom_map'
+  Example:       ros2 launch particle_filter_cpp mcl_launch.py mod:=real map_name:='my_custom_map'
 """
 
 from launch import LaunchDescription
@@ -24,10 +25,10 @@ def generate_launch_description():
     pkg_share = FindPackageShare('particle_filter_cpp')
     
     # === LAUNCH ARGUMENTS ===
-    sim_mode_arg = DeclareLaunchArgument(
-        'sim_mode',
-        default_value='false',
-        description='Enable simulation mode (true/false)'
+    mode_arg = DeclareLaunchArgument(
+        'mod',
+        default_value='real',
+        description='Launch mode: real (real car using /odom), sim (simulation, use sim time, /ego_racecar/odom), bag (bag file play, use sim time, /odom)'
     )
     
     map_name_arg = DeclareLaunchArgument(
@@ -41,31 +42,29 @@ def generate_launch_description():
         default_value='true',
         description='Launch RViz visualization'
     )
-
-    sim_odom_arg = DeclareLaunchArgument(
-        'sim_odom',
-        default_value='false',
-        description='Use simulation odometry topic (/ego_racecar/odom) when true, real odometry (/odom) when false'
-    )
     
     # === CONFIGURATION ===
     config_file = PathJoinSubstitution([pkg_share, 'config', 'mcl_config.yaml'])
     map_file_path = PathJoinSubstitution([pkg_share, 'maps', [LaunchConfiguration('map_name'), '.yaml']])
     
-    # === DYNAMIC PARAMETERS BASED ON SIM_MODE ===
+    # === DYNAMIC PARAMETERS BASED ON MODE ===
     dynamic_params = {
-        'sim_mode': LaunchConfiguration('sim_mode'),
-        'scan_topic': PythonExpression([
-            "'/scan' if '", LaunchConfiguration('sim_mode'), "' == 'false' else '/scan'"
+        'sim_mode': PythonExpression([
+            "'true' if '", LaunchConfiguration('mod'), "' == 'sim' else 'false'"
         ]),
+        'scan_topic': '/scan',  # All modes use /scan
         'odom_topic': PythonExpression([
-            "'/odom' if '", LaunchConfiguration('sim_odom'), "' == 'false' else '/ego_racecar/odom'"
+            "'/ego_racecar/odom' if '", LaunchConfiguration('mod'), "' == 'sim' else '/odom'"
         ])
         # Removed hardcoded parameters - use config file values instead
     }
     
     # === COMMON PARAMETERS ===
-    common_params = {'use_sim_time': LaunchConfiguration('sim_mode')}
+    common_params = {
+        'use_sim_time': PythonExpression([
+            "'true' if '", LaunchConfiguration('mod'), "' in ['sim', 'bag'] else 'false'"
+        ])
+    }
     
     # === MAP SERVER NODE ===
     map_server_node = Node(
@@ -154,10 +153,9 @@ def generate_launch_description():
     
     return LaunchDescription([
         # Launch arguments
-        sim_mode_arg,
+        mode_arg,
         map_name_arg,
         use_rviz_arg,
-        sim_odom_arg,
         
         # Nodes
         map_server_node,

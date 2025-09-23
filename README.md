@@ -9,11 +9,14 @@ High-performance particle filter localization for F1TENTH with unified real/simu
 colcon build --packages-select particle_filter_cpp
 source install/setup.bash
 
-# Real hardware
-ros2 launch particle_filter_cpp mcl_launch.py
+# Real car
+ros2 launch particle_filter_cpp mcl_launch.py mod:=real
 
 # Simulation
-ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
+ros2 launch particle_filter_cpp mcl_launch.py mod:=sim
+
+# Bag playback
+ros2 launch particle_filter_cpp mcl_launch.py mod:=bag
 
 # To change map, launch with map_name:='your_map'
 ```
@@ -22,21 +25,29 @@ ros2 launch particle_filter_cpp mcl_launch.py sim_mode:=true
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `sim_mode` | `false` | Use simulation topics if true |
+| `mod` | `real` | Launch mode: `real`, `sim`, or `bag` |
 | `map_name` | `sibal1` | Map file to load |
 | `use_rviz` | `true` | Launch RViz visualization |
 
 ## Topics
 
-### Real Hardware Mode
+### Real Mode (`mod:=real`)
 - **Input**: `/scan`, `/odom` - LiDAR and odometry data
 - **Output**: `/pf/pose/odom` - Localized pose for planner/controller
 - **Transforms**: `map → base_link`
+- **Timing**: Real time
 
-### Simulation Mode
+### Simulation Mode (`mod:=sim`)
 - **Input**: `/scan`, `/ego_racecar/odom` - Simulation sensor data
 - **Output**: `/pf/pose/odom` - Localized pose
 - **Transforms**: `map → base_link`
+- **Timing**: Simulation time
+
+### Bag Playback Mode (`mod:=bag`)
+- **Input**: `/scan`, `/odom` - Recorded LiDAR and odometry data
+- **Output**: `/pf/pose/odom` - Localized pose
+- **Transforms**: `map → base_link`
+- **Timing**: Simulation time
 
 ### Visualization
 - `/pf/viz/particles` - Particle cloud
