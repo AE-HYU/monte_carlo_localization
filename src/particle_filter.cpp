@@ -127,6 +127,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     first_sensor_update_ = true;
     current_velocity_ = 0.0;
     current_angular_vel_ = 0.0;
+    has_new_lidar_data_ = false;
+    last_lidar_time_ = rclcpp::Time(0);
+    mcl_processing_time_ = 0.0;
     
     // Odometry tracking
     odom_pose_ = Eigen::Vector3d::Zero();
@@ -368,6 +371,9 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         downsampled_ranges_.push_back(msg->ranges[i]);
     }
 
+    // Mark new lidar data available
+    last_lidar_time_ = msg->header.stamp;
+    has_new_lidar_data_ = true;
     lidar_initialized_ = true;
 }
 
@@ -802,22 +808,22 @@ void ParticleFilter::timer_update()
     if (!map_initialized_) {
         return;
     }
-    
+
     bool has_odometry_for_motion = odom_initialized_;
     if (!has_odometry_for_motion) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000, 
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
                             "Running MCL without odometry");
     }
-    
+
     rclcpp::Time current_time = this->get_clock()->now();
-    
+
     // Use steady clock for simulation compatibility
     static auto steady_start_time = std::chrono::steady_clock::now();
     static auto last_steady_time = steady_start_time;
-    
+
     auto current_steady_time = std::chrono::steady_clock::now();
     double dt = std::chrono::duration<double>(current_steady_time - last_steady_time).count();
-    
+
     // First call initialization
     static bool timer_initialized = false;
     if (!timer_initialized) {
@@ -825,21 +831,28 @@ void ParticleFilter::timer_update()
         last_steady_time = current_steady_time;
         return;
     }
-    
+
     // Skip excessive time steps
     if (dt > 1.0) {
         return;
     }
-    
+
     bool apply_motion = (dt >= 0.0001);
-    
+
+    bool mcl_executed = false;  // Track if MCL was executed this cycle
+
     if (state_lock_.try_lock()) {
-        
-        if (lidar_initialized_ && !downsampled_ranges_.empty()) {
+
+        // Always check for new lidar data first
+        if (lidar_initialized_ && !downsampled_ranges_.empty() && has_new_lidar_data_) {
+            // Record MCL start time for accurate timestamp calculation
+            auto mcl_start_time = std::chrono::steady_clock::now();
+
+            // Run MCL when new lidar data is available
             ++iters_;
-            
+
             MotionCommand motion_cmd;
-            if (has_odometry_for_motion && apply_motion && 
+            if (has_odometry_for_motion && apply_motion &&
                 (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
                 motion_cmd = MotionCommand(current_velocity_, current_angular_vel_, dt);
             } else if (!has_odometry_for_motion && !pose_initialized_from_rviz_ && iters_ < 15) {
@@ -848,14 +861,18 @@ void ParticleFilter::timer_update()
                 double random_angular_velocity = normal_dist_(rng_) * 0.05 * noise_factor / dt;  // Convert displacement to angular velocity
                 motion_cmd = MotionCommand(random_velocity, random_angular_velocity, dt);
             }
-            
+
             auto observation = downsampled_ranges_;
-            
+
             // Execute MCL pipeline
             MCL(motion_cmd, observation);
             Eigen::Vector3d raw_pose = expected_pose();
             inferred_pose_ = smooth_pose(raw_pose);
-            
+
+            // Calculate MCL processing time for timestamp compensation
+            auto mcl_end_time = std::chrono::steady_clock::now();
+            mcl_processing_time_ = std::chrono::duration<double>(mcl_end_time - mcl_start_time).count();
+
             // Update odometry tracking
             bool can_use_odom_tracking = has_odometry_for_motion &&
                 (pose_initialized_from_rviz_ || (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
@@ -866,61 +883,109 @@ void ParticleFilter::timer_update()
                     RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized");
                 }
 
-                // Apply delay compensation for motion during MCL processing
+                // Apply delay compensation for motion during MCL processing using actual processing time
                 Eigen::Vector3d compensated_pose = inferred_pose_;
-                if (timing_stats_.measurement_count > 0) {
-                    double mcl_delay_sec = timing_stats_.total_mcl_time / timing_stats_.measurement_count / 1000.0;
-                    double longitudinal_displacement = current_velocity_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
-                    double angular_displacement = current_angular_vel_ * mcl_delay_sec * DELAY_COMPENSATION_FACTOR;
+                double longitudinal_displacement = current_velocity_ * mcl_processing_time_ * DELAY_COMPENSATION_FACTOR;
+                double angular_displacement = current_angular_vel_ * mcl_processing_time_ * DELAY_COMPENSATION_FACTOR;
 
-                    // Apply compensation in vehicle's forward direction
-                    compensated_pose[0] += longitudinal_displacement * std::cos(inferred_pose_[2]);
-                    compensated_pose[1] += longitudinal_displacement * std::sin(inferred_pose_[2]);
-                    // Apply heading compensation
-                    compensated_pose[2] += angular_displacement;
-                }
+                // Apply compensation in vehicle's forward direction
+                compensated_pose[0] += longitudinal_displacement * std::cos(inferred_pose_[2]);
+                compensated_pose[1] += longitudinal_displacement * std::sin(inferred_pose_[2]);
+                // Apply heading compensation
+                compensated_pose[2] += angular_displacement;
+                compensated_pose[2] = utils::geometry::normalize_angle(compensated_pose[2]);
 
                 odom_reference_pose_ = compensated_pose;
                 odom_reference_odom_ = last_pose_;
                 odom_pose_ = compensated_pose;
+
+                // Update inferred pose to compensated pose for consistency
+                inferred_pose_ = compensated_pose;
             }
-            
+
+            mcl_executed = true;  // Mark that MCL was executed
+            has_new_lidar_data_ = false;    // Mark lidar data as processed
+
             if (iters_ % 100 == 0) {
-                RCLCPP_INFO(this->get_logger(), "MCL iter %d: [%.2f, %.2f, %.2f]", iters_, 
+                RCLCPP_INFO(this->get_logger(), "MCL iter %d: [%.2f, %.2f, %.2f]", iters_,
                            inferred_pose_[0], inferred_pose_[1], inferred_pose_[2]);
             }
-            
+
             if (iters_ % 200 == 0) {
                 // Print performance stats
                 auto logger_func = [this](const std::string& msg) {
                     RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
                 };
                 timing_stats_.print_stats(logger_func);
-                
+
                 if (timing_stats_.measurement_count > 0) {
-                    RCLCPP_INFO(this->get_logger(), 
-                        "Particles: %d, Rays/particle: %zu, Total rays: %d", 
+                    RCLCPP_INFO(this->get_logger(),
+                        "Particles: %d, Rays/particle: %zu, Total rays: %d",
                         MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
                 }
                 timing_stats_.reset();
             }
-            
-            visualize();
         }
-        
+        // If no new lidar data and timer frequency > 40Hz, use odometry for pose estimation
+        else if (TIMER_FREQUENCY > 40.0 && has_odometry_for_motion && odom_tracking_active_) {
+            // Update pose based on odometry when no new lidar data is available
+            if (apply_motion && (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
+                // Dead reckoning based on current velocities
+                Eigen::Vector3d current_pose_estimate = get_current_pose();
+
+                // Apply motion model using current velocities
+                if (std::abs(current_angular_vel_) < 1e-6) {
+                    // Straight line motion
+                    current_pose_estimate[0] += current_velocity_ * dt * std::cos(current_pose_estimate[2]);
+                    current_pose_estimate[1] += current_velocity_ * dt * std::sin(current_pose_estimate[2]);
+                } else {
+                    // Curved motion (bicycle model)
+                    double radius = current_velocity_ / current_angular_vel_;
+                    double delta_theta = current_angular_vel_ * dt;
+
+                    current_pose_estimate[0] += radius * (std::sin(current_pose_estimate[2] + delta_theta) - std::sin(current_pose_estimate[2]));
+                    current_pose_estimate[1] -= radius * (std::cos(current_pose_estimate[2] + delta_theta) - std::cos(current_pose_estimate[2]));
+                    current_pose_estimate[2] += delta_theta;
+                }
+
+                // Normalize angle
+                current_pose_estimate[2] = utils::geometry::normalize_angle(current_pose_estimate[2]);
+
+                // Update odom pose
+                odom_pose_ = current_pose_estimate;
+            }
+        }
+
         state_lock_.unlock();
     }
-    
+
     // Always update steady time for next calculation
     last_steady_time = current_steady_time;
-    
-    // Publish TF and odometry
+
+    // Publish TF and odometry with appropriate timestamp
     if (map_initialized_) {
         Eigen::Vector3d current_pose = get_current_pose();
-        rclcpp::Time timestamp = (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) ? 
-                                last_stamp_ : current_time;
-        
+
+        // Use appropriate timestamp based on data source
+        rclcpp::Time timestamp;
+        if (mcl_executed && last_lidar_time_.nanoseconds() != 0) {
+            // Use compensated timestamp: LiDAR time + processing time
+            int64_t compensation_ns = static_cast<int64_t>(mcl_processing_time_ * 1e9);
+            timestamp = last_lidar_time_ + rclcpp::Duration::from_nanoseconds(compensation_ns);
+        } else if (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) {
+            // Use odometry timestamp for odom-based updates
+            timestamp = last_stamp_;
+        } else {
+            // Fallback to current time
+            timestamp = current_time;
+        }
+
         publish_tf(current_pose, timestamp);
+
+        // Update visualization with same timestamp whenever pose changes
+        if (mcl_executed || (TIMER_FREQUENCY > 40.0 && has_odometry_for_motion && odom_tracking_active_)) {
+            visualize(timestamp);
+        }
     }
 }
 
@@ -1036,19 +1101,22 @@ bool ParticleFilter::is_pose_valid(const Eigen::Vector3d& pose)
     return utils::validation::is_pose_valid(pose, MAX_POSE_RANGE);
 }
 
-void ParticleFilter::visualize()
+void ParticleFilter::visualize(const rclcpp::Time &stamp)
 {
     if (!DO_VIZ)
         return;
+
+    // Use provided timestamp or fallback to current time
+    rclcpp::Time viz_stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
 
     // RViz pose visualization (with vehicle frame offset)
     if (pose_pub_ && pose_pub_->get_subscription_count() > 0)
     {
         // Apply vehicle frame offset
         Eigen::Vector3d offset_pose = utils::geometry::apply_vehicle_offset(inferred_pose_, LIDAR_OFFSET_X);
-        
+
         geometry_msgs::msg::PoseStamped ps;
-        ps.header.stamp = this->get_clock()->now();
+        ps.header.stamp = viz_stamp;
         ps.header.frame_id = "map";
         ps.pose.position.x = offset_pose[0];
         ps.pose.position.y = offset_pose[1];
@@ -1071,29 +1139,29 @@ void ParticleFilter::visualize()
                 viz_particles.row(i) = particles_.row(idx);
             }
 
-            publish_particles(viz_particles);
+            publish_particles(viz_particles, viz_stamp);
         }
         else
         {
-            publish_particles(particles_);
+            publish_particles(particles_, viz_stamp);
         }
     }
 }
 
-void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub)
+void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
 {
     // Apply vehicle frame offset to all particles
     Eigen::MatrixXd offset_particles = particles_to_pub;
-    
+
     for (int i = 0; i < offset_particles.rows(); ++i) {
         Eigen::Vector3d particle_pose(offset_particles(i, 0), offset_particles(i, 1), offset_particles(i, 2));
         Eigen::Vector3d offset_pose = utils::geometry::apply_vehicle_offset(particle_pose, LIDAR_OFFSET_X);
         offset_particles(i, 0) = offset_pose[0];
         offset_particles(i, 1) = offset_pose[1];
     }
-    
+
     auto pa = utils::particles_to_pose_array(offset_particles);
-    pa.header.stamp = this->get_clock()->now();
+    pa.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
     pa.header.frame_id = "map";
     particle_pub_->publish(pa);
 }
