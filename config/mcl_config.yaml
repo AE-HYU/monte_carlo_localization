@@ -8,7 +8,7 @@
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 1000                 # Optimized particle count for real-time performance
+    max_particles: 2000                 # Optimized particle count for real-time performance
     max_viz_particles: 40              # Reduced visualization particles for better performance
     max_range: 10.0                    # Set laser max range 
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
@@ -22,7 +22,7 @@ particle_filter:
     # === MOTION MODEL NOISE ===
     motion_dispersion_x: 0.15          # Forward motion noise (m) - increased for simulation
     motion_dispersion_y: 0.02          # Lateral motion noise (m) - increased for simulation  
-    motion_dispersion_theta: 0.15      # Rotation noise (rad) - increased for simulation
+    motion_dispersion_theta: 0.25      # Rotation noise (rad) - increased for simulation
     
     # === POSE SMOOTHING ===
     smoothing_alpha: 0.05              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
@@ -54,7 +54,7 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 40.0              # MCL update frequency (Hz) - increased for simulation
+    timer_frequency: 30.0              # MCL update frequency (Hz) - increased for simulation
     
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame
