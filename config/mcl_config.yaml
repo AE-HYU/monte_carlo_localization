@@ -20,9 +20,9 @@ particle_filter:
     publish_odom_base_tf: false        # Let F1Tenth stack handle odom->base_link
     
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.25          # Forward motion noise (m) - increased for simulation
-    motion_dispersion_y: 0.05          # Lateral motion noise (m) - increased for simulation  
-    motion_dispersion_theta: 0.35      # Rotation noise (rad) - increased for simulation
+    motion_dispersion_x: 0.15          # Forward motion noise (m) - increased for simulation
+    motion_dispersion_y: 0.02          # Lateral motion noise (m) - increased for simulation  
+    motion_dispersion_theta: 0.15      # Rotation noise (rad) - increased for simulation
     
     # === POSE SMOOTHING ===
     smoothing_alpha: 0.05              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
@@ -38,14 +38,14 @@ particle_filter:
     z_short: 0.01                      # Weight for unexpected obstacles
     z_max: 0.05                        # Weight for max range readings (reduced)
     z_rand: 0.14                       # Weight for random noise (reduced)
-    sigma_hit: 6.0                     # Measurement noise std dev (tightened)
+    sigma_hit: 7.0                     # Measurement noise std dev (tightened)
     
     # === RAY CASTING ===
     range_method: "cddt"               # Distance transform method
     theta_discretization: 112          # Angular resolution
     rangelib_variant: 2                # Ray casting variant
     angle_step: 18                     # Laser downsampling factor
-    squash_factor: 2.0                 # Weight normalization (optimized for faster convergence)
+    squash_factor: 2.5                 # Weight normalization (optimized for faster convergence)
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
     
@@ -54,7 +54,7 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 60.0              # MCL update frequency (Hz) - increased for simulation
+    timer_frequency: 40.0              # MCL update frequency (Hz) - increased for simulation
     
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame
