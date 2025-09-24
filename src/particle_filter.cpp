@@ -370,9 +370,12 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         downsampled_ranges_.push_back(msg->ranges[i]);
     }
 
-    // Mark new lidar data available
-    last_lidar_time_ = msg->header.stamp;
-    has_new_lidar_data_ = true;
+    // Mark new lidar data available - protected by mutex
+    {
+        std::lock_guard<std::mutex> lock(state_lock_);
+        last_lidar_time_ = msg->header.stamp;
+        has_new_lidar_data_ = true;
+    }
     lidar_initialized_ = true;
 }
 
@@ -382,6 +385,10 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     current_velocity_ = msg->twist.twist.linear.x;
     current_angular_vel_ = msg->twist.twist.angular.z;
 
+    // Store pose data
+    Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
+                             utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
+
     // Update odometry tracking if active
     bool can_use_odom_tracking = pose_initialized_from_rviz_ || 
                                (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_));
@@ -390,18 +397,16 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         update_odom_pose(msg);
     }
 
-    // Store pose data
-    Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                             utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
-
-    if (last_pose_.norm() <= 0)
+    // Store pose and timestamp - protected by mutex
     {
-        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        std::lock_guard<std::mutex> lock(state_lock_);
+        if (last_pose_.norm() <= 0)
+        {
+            RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        }
         last_pose_ = position;
+        last_stamp_ = msg->header.stamp;
     }
-    
-    last_pose_ = position;
-    last_stamp_ = msg->header.stamp;
     odom_initialized_ = true;
 }
 
@@ -979,18 +984,21 @@ void ParticleFilter::timer_update()
     if (map_initialized_) {
         Eigen::Vector3d current_pose = get_current_pose();
 
-        // Use appropriate timestamp based on data source
+        // Safely read timestamps - protected by mutex
         rclcpp::Time timestamp;
-        if (mcl_executed && last_lidar_time_.nanoseconds() != 0) {
-            // Use compensated timestamp: LiDAR time + processing time
-            int64_t compensation_ns = static_cast<int64_t>(mcl_processing_time_ * 1e9);
-            timestamp = last_lidar_time_ + rclcpp::Duration::from_nanoseconds(compensation_ns);
-        } else if (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) {
-            // Use odometry timestamp for odom-based updates
-            timestamp = last_stamp_;
-        } else {
-            // Fallback to current time
-            timestamp = current_time;
+        {
+            std::lock_guard<std::mutex> lock(state_lock_);
+            if (mcl_executed && last_lidar_time_.nanoseconds() != 0) {
+                // Use compensated timestamp: LiDAR time + processing time
+                int64_t compensation_ns = static_cast<int64_t>(mcl_processing_time_ * 1e9);
+                timestamp = last_lidar_time_ + rclcpp::Duration::from_nanoseconds(compensation_ns);
+            } else if (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) {
+                // Use odometry timestamp for odom-based updates
+                timestamp = last_stamp_;
+            } else {
+                // Fallback to current time
+                timestamp = current_time;
+            }
         }
 
         publish_tf(current_pose, timestamp);
