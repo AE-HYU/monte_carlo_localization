@@ -84,8 +84,8 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
     void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);
-    void visualize();
-    void publish_particles(const Eigen::MatrixXd &particles_to_pub);
+    void visualize(const rclcpp::Time &stamp = rclcpp::Time(0));
+    void publish_particles(const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp = rclcpp::Time(0));
     
     // --------------------------------- POSE MANAGEMENT ---------------------------------
     Eigen::Vector3d get_current_pose();
@@ -156,6 +156,9 @@ class ParticleFilter : public rclcpp::Node
     std::vector<float> laser_angles_;
     std::vector<float> downsampled_angles_;
     std::vector<float> downsampled_ranges_;
+    rclcpp::Time last_lidar_time_;
+    bool has_new_lidar_data_;
+    double mcl_processing_time_;  // Store actual MCL processing time for timestamp compensation
 
     // --------------------------------- MAP DATA ---------------------------------
     nav_msgs::msg::OccupancyGrid::SharedPtr map_msg_;
