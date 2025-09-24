@@ -12,7 +12,7 @@ particle_filter:
     max_viz_particles: 40              # Reduced visualization particles for better performance
     max_range: 10.0                    # Set laser max range 
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 2.0     # Improved timing compensation for simulation
+    delay_compensation_factor: 3.0     # Improved timing compensation for simulation
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
@@ -25,7 +25,7 @@ particle_filter:
     motion_dispersion_theta: 0.35      # Rotation noise (rad) - increased for simulation
     
     # === POSE SMOOTHING ===
-    smoothing_alpha: 0.10              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
+    smoothing_alpha: 0.05              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
 
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)

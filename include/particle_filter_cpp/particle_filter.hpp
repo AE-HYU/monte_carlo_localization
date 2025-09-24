@@ -127,7 +127,6 @@ class ParticleFilter : public rclcpp::Node
     double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;
 
     // --------------------------------- SENSOR FRAME PARAMETERS ---------------------------------
-    // double LIDAR_OFFSET_X, LIDAR_OFFSET_Y;  // Use TF transforms instead
     double WHEELBASE;
 
     // --------------------------------- TF FRAME NAMES ---------------------------------
@@ -205,7 +204,6 @@ class ParticleFilter : public rclcpp::Node
     // Timers
     rclcpp::TimerBase::SharedPtr update_timer_;
     rclcpp::TimerBase::SharedPtr map_timer_;
-    rclcpp::TimerBase::SharedPtr viz_timer_;  // Separate visualization timer
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
@@ -233,9 +231,6 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void timer_update();
     void publish_map_periodically();
-    void viz_timer_callback();  // Separate visualization timer callback
-    
-    // Performance profiling methods
 };
 
 } // namespace particle_filter_cpp

@@ -210,14 +210,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::bind(&ParticleFilter::publish_map_periodically, this)
     );
 
-    // Visualization timer
-    if (DO_VIZ) {
-        int viz_interval_ms = static_cast<int>(1000.0 / 50.0);
-        viz_timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(viz_interval_ms),
-            std::bind(&ParticleFilter::viz_timer_callback, this)
-        );
-    }
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)", 
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential", 
@@ -434,7 +426,7 @@ void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceSt
                 pose[0], pose[1], pose[2]);
     
     // Trigger immediate visualization update
-    visualize();
+    visualize(this->get_clock()->now());
 }
 
 void ParticleFilter::clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr /*msg*/)
@@ -1018,16 +1010,6 @@ void ParticleFilter::publish_map_periodically()
     }
 }
 
-void ParticleFilter::viz_timer_callback()
-{
-    // Only visualize if we have valid particles and are not currently updating
-    if (!map_initialized_ || !state_lock_.try_lock()) {
-        return;
-    }
-    
-    visualize();
-    state_lock_.unlock();
-}
 
 // ================================================================================================
 // OUTPUT & VISUALIZATION
