@@ -6,6 +6,7 @@
 
 #include "particle_filter_cpp/particle_filter.hpp"
 #include "particle_filter_cpp/utils.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -46,8 +47,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("motion_dispersion_theta", 0.25);
     
     // Robot geometry
-    // this->declare_parameter("lidar_offset_x", 0.0);  // Use TF transform instead
-    // this->declare_parameter("lidar_offset_y", 0.0);  // Use TF transform instead
     this->declare_parameter("wheelbase", 0.325);
     
     // ROS interface
@@ -95,8 +94,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     MOTION_DISPERSION_THETA = this->get_parameter("motion_dispersion_theta").as_double();
 
     // Robot geometry
-    // LIDAR_OFFSET_X = this->get_parameter("lidar_offset_x").as_double();  // Use TF transform instead
-    // LIDAR_OFFSET_Y = this->get_parameter("lidar_offset_y").as_double();  // Use TF transform instead
     WHEELBASE = this->get_parameter("wheelbase").as_double();
 
     // ROS interface
@@ -210,9 +207,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::bind(&ParticleFilter::publish_map_periodically, this)
     );
 
-    // Separate visualization timer - run at higher frequency to reduce lag
+    // Visualization timer
     if (DO_VIZ) {
-        int viz_interval_ms = static_cast<int>(1000.0 / 50.0);  // 50 Hz visualization (closer to MCL frequency)
+        int viz_interval_ms = static_cast<int>(1000.0 / 50.0);
         viz_timer_ = this->create_wall_timer(
             std::chrono::milliseconds(viz_interval_ms),
             std::bind(&ParticleFilter::viz_timer_callback, this)
@@ -250,7 +247,6 @@ void ParticleFilter::get_omap()
                                       utils::geometry::quaternion_to_yaw(map_msg_->info.origin.orientation));
 
         MAX_RANGE_PX = static_cast<int>(MAX_RANGE_METERS / map_resolution_);
-
 
         // Extract free space for particle initialization
         int height = map_msg_->info.height;
@@ -291,7 +287,6 @@ void ParticleFilter::get_omap()
 // ================================================================================================
 void ParticleFilter::precompute_sensor_model()
 {
-
     if (map_resolution_ <= 0.0)
     {
         RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f", map_resolution_);
@@ -877,7 +872,6 @@ void ParticleFilter::timer_update()
             }
             
             auto observation = downsampled_ranges_;
-            
             // Execute MCL pipeline
             MCL(motion_cmd, observation);
             Eigen::Vector3d raw_pose = expected_pose();

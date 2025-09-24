@@ -6,12 +6,13 @@
 // ================================================================================================
 
 #include "particle_filter_cpp/utils.hpp"
+
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <cmath>
 #include <algorithm>
-#include <numeric>
 #include <chrono>
+#include <cmath>
+#include <numeric>
 
 namespace particle_filter_cpp
 {
@@ -56,20 +57,6 @@ Eigen::Matrix2d rotation_matrix(double angle)
     return rot;
 }
 
-// Apply vehicle frame offset (lidar -> base_link transformation)
-Eigen::Vector3d apply_vehicle_offset(const Eigen::Vector3d& pose, double forward_offset)
-{
-    double cos_theta = std::cos(pose[2]);
-    double sin_theta = std::sin(pose[2]);
-
-    Eigen::Vector3d offset_pose;
-    // Convert from lidar frame to base_link frame
-    // lidar is forward_offset ahead of base_link, so subtract to get base_link position
-    offset_pose[0] = pose[0] - forward_offset * cos_theta;  // x with offset
-    offset_pose[1] = pose[1] - forward_offset * sin_theta;  // y with offset
-    offset_pose[2] = pose[2];                               // theta unchanged
-    return offset_pose;
-}
 
 } // namespace geometry
 
@@ -148,8 +135,6 @@ geometry_msgs::msg::PoseArray particles_to_pose_array(const Eigen::MatrixXd& par
     
     return pose_array;
 }
-
-
 
 } // namespace utils
 } // namespace particle_filter_cpp

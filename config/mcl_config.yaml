@@ -12,7 +12,7 @@ particle_filter:
     max_viz_particles: 40              # Reduced visualization particles for better performance
     max_range: 10.0                    # Set laser max range 
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 1.0     # Improved timing compensation for simulation
+    delay_compensation_factor: 2.0     # Improved timing compensation for simulation
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
@@ -25,7 +25,7 @@ particle_filter:
     motion_dispersion_theta: 0.35      # Rotation noise (rad) - increased for simulation
     
     # === POSE SMOOTHING ===
-    smoothing_alpha: 0.15              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
+    smoothing_alpha: 0.10              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
 
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
@@ -50,7 +50,6 @@ particle_filter:
     num_threads: 0                     # Auto-detect threads
     
     # === ROS INTERFACE ===
-    # Topic names (overridden by launch file based on mode)
     scan_topic: "/scan"                # LaserScan input topic
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
@@ -58,9 +57,8 @@ particle_filter:
     timer_frequency: 60.0              # MCL update frequency (Hz) - increased for simulation
     
     # === TF FRAME NAMES ===
-    # Frame names (overridden by launch file for simulation)
     map_frame: "map"                   # Global reference frame
-    odom_frame: "odom"                 # Odometry frame 
+    odom_frame: "odom"                 # Odometry frame
     base_frame: "base_link"            # Robot base frame
     laser_frame: "laser"               # Laser scanner frame
     
