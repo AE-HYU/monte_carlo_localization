@@ -523,6 +523,19 @@ void ParticleFilter::initialize_global()
 // ================================================================================================
 // MCL ALGORITHM CORE
 // ================================================================================================
+
+/**
+ * @brief Applies motion model to particles using bicycle kinematics with adaptive noise
+ *
+ * Features:
+ * - Bicycle model with straight-line and curved motion handling
+ * - Multi-step integration for high-speed accuracy (>3 m/s)
+ * - Curve-aware noise scaling to prevent particle divergence
+ * - Velocity-dependent noise adaptation
+ *
+ * @param proposal_dist Matrix of particle poses to update (in-place)
+ * @param motion_cmd Motion command containing velocity, angular velocity, and time step
+ */
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd)
 {
     // Extract motion parameters with safety bounds
@@ -533,177 +546,184 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
     double angular_velocity = std::copysign(std::min(std::abs(motion_cmd.angular_velocity), 10.0), motion_cmd.angular_velocity);  // 10 rad/s max
 
     // Pre-compute common values for optimization
-    const bool is_straight_motion = std::abs(angular_velocity) < 1e-6;
+    const double speed = std::abs(velocity);
+    const double angular_speed = std::abs(angular_velocity);
+    const bool is_straight_motion = angular_speed < 1e-6;
+    const bool use_high_speed_integration = speed > 3.0 && !is_straight_motion;
+
     const double delta_theta = angular_velocity * dt;
     const double radius = is_straight_motion ? 0.0 : velocity / angular_velocity;
     const double linear_displacement = velocity * dt;
 
+    // Pre-compute noise scaling factors
+    const double speed_factor = 1.0 + (speed / 8.0);  // Linear scaling: 1.0x at 0 m/s, 1.625x at 5 m/s
+    double curve_factor = 1.0;
+    if (speed > 3.0 && angular_speed > 0.5) {
+        // In high-speed curves, reduce noise to prevent particle divergence
+        curve_factor = std::max(0.4, 1.0 - (speed * angular_speed / 10.0));
+    }
+    const double noise_factor = std::min(speed_factor * curve_factor, 2.0);
+
     // Apply bicycle model kinematics
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        double x = proposal_dist(i, 0);
-        double y = proposal_dist(i, 1);
-        double theta = proposal_dist(i, 2);
-        
+        const double x = proposal_dist(i, 0);
+        const double y = proposal_dist(i, 1);
+        const double theta = proposal_dist(i, 2);
+
         if (is_straight_motion) {
             // Straight line motion - optimized with pre-computed displacement
-            double cos_theta = std::cos(theta);
-            double sin_theta = std::sin(theta);
+            const double cos_theta = std::cos(theta);
+            const double sin_theta = std::sin(theta);
             proposal_dist(i, 0) = x + linear_displacement * cos_theta;
             proposal_dist(i, 1) = y + linear_displacement * sin_theta;
             proposal_dist(i, 2) = theta;
-        } else {
-            // Curved motion with improved integration for high-speed accuracy
-            double new_theta = theta + delta_theta;
+        } else if (use_high_speed_integration) {
+            // Multi-step integration for high-speed curved motion
+            const int substeps = std::max(2, static_cast<int>(speed * dt * 2));
+            const double sub_dt = dt / substeps;
+            const double sub_delta_theta = angular_velocity * sub_dt;
+            const double sub_displacement = velocity * sub_dt;
 
-            // For high speeds, use more accurate integration
-            double speed = std::abs(velocity);
-            if (speed > 3.0) {
-                // Multi-step integration for better accuracy at high speeds
-                int substeps = std::max(2, static_cast<int>(speed * dt * 2));  // More substeps for higher speeds
-                double sub_dt = dt / substeps;
-                double sub_delta_theta = angular_velocity * sub_dt;
-                double sub_displacement = velocity * sub_dt;
-
-                double current_x = x, current_y = y, current_theta = theta;
-                for (int step = 0; step < substeps; ++step) {
-                    current_theta += sub_delta_theta;
-                    current_x += sub_displacement * std::cos(current_theta);
-                    current_y += sub_displacement * std::sin(current_theta);
-                }
-
-                proposal_dist(i, 0) = current_x;
-                proposal_dist(i, 1) = current_y;
-                proposal_dist(i, 2) = current_theta;
-            } else {
-                // Standard bicycle model for lower speeds
-                double sin_theta = std::sin(theta);
-                double cos_theta = std::cos(theta);
-                double sin_new_theta = std::sin(new_theta);
-                double cos_new_theta = std::cos(new_theta);
-
-                proposal_dist(i, 0) = x + radius * (sin_new_theta - sin_theta);
-                proposal_dist(i, 1) = y - radius * (cos_new_theta - cos_theta);
-                proposal_dist(i, 2) = new_theta;
+            double current_x = x, current_y = y, current_theta = theta;
+            for (int step = 0; step < substeps; ++step) {
+                current_theta += sub_delta_theta;
+                current_x += sub_displacement * std::cos(current_theta);
+                current_y += sub_displacement * std::sin(current_theta);
             }
+
+            proposal_dist(i, 0) = current_x;
+            proposal_dist(i, 1) = current_y;
+            proposal_dist(i, 2) = current_theta;
+        } else {
+            // Standard bicycle model for normal curved motion
+            const double new_theta = theta + delta_theta;
+            const double sin_theta = std::sin(theta);
+            const double cos_theta = std::cos(theta);
+            const double sin_new_theta = std::sin(new_theta);
+            const double cos_new_theta = std::cos(new_theta);
+
+            proposal_dist(i, 0) = x + radius * (sin_new_theta - sin_theta);
+            proposal_dist(i, 1) = y - radius * (cos_new_theta - cos_theta);
+            proposal_dist(i, 2) = new_theta;
         }
-        
-        // Add adaptive noise based on velocity with curve-aware scaling
-        double speed = std::abs(velocity);
-        double angular_speed = std::abs(angular_velocity);
 
-        // Moderate speed-based scaling - less aggressive for high-speed stability
-        double speed_factor = 1.0 + (speed / 8.0);  // Linear scaling: 1.0x at 0 m/s, 1.625x at 5 m/s
+        // Add adaptive motion noise
+        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * noise_factor;
+        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * noise_factor;
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * noise_factor;
 
-        // Curve-aware noise: reduce noise during high-speed curves to maintain tracking
-        double curve_factor = 1.0;
-        if (speed > 3.0 && angular_speed > 0.5) {
-            // In high-speed curves, reduce noise to prevent particle divergence
-            curve_factor = std::max(0.4, 1.0 - (speed * angular_speed / 10.0));
-        }
-
-        double final_factor = speed_factor * curve_factor;
-
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * final_factor;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * final_factor;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * std::min(final_factor, 2.0);  // Cap theta noise at 2x
-        
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
     }
 }
 
 
+/**
+ * @brief Evaluates sensor model likelihood for all particles using beam model
+ *
+ * Features:
+ * - Efficient batch ray casting with parallel processing
+ * - Pre-computed sensor model lookup table for fast evaluation
+ * - Adaptive weight squashing for high-speed curve stability
+ * - Memory-optimized query generation and range conversion
+ *
+ * @param proposal_dist Matrix of particle poses to evaluate
+ * @param obs Vector of observed laser range measurements
+ * @param weights Output vector of particle weights (normalized)
+ */
 void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                                   std::vector<double> &weights)
 {
-    int num_rays = downsampled_angles_.size();
+    const int num_rays = downsampled_angles_.size();
+    const int total_queries = num_rays * MAX_PARTICLES;
 
-    // First-time array allocation for ray casting - optimized memory pre-allocation
-    if (first_sensor_update_)
-    {
-        queries_ = Eigen::MatrixXd::Zero(num_rays * MAX_PARTICLES, 3);
-        ranges_.resize(num_rays * MAX_PARTICLES);
-        tiled_angles_.clear();
-        tiled_angles_.reserve(num_rays * MAX_PARTICLES);
-        
-        // Pre-compute tiled angles more efficiently
-        tiled_angles_.resize(num_rays * MAX_PARTICLES);
-        for (int i = 0; i < MAX_PARTICLES; ++i)
-        {
-            std::copy(downsampled_angles_.begin(), downsampled_angles_.end(), 
+    // === INITIALIZATION: First-time memory allocation ===
+    initialize_sensor_arrays(num_rays, total_queries);
+
+    // === RAY QUERY GENERATION ===
+    auto query_start = std::chrono::high_resolution_clock::now();
+    generate_ray_queries(proposal_dist, num_rays);
+    timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - query_start).count();
+
+    // === RAY CASTING ===
+    ranges_ = calc_range_many(queries_);
+
+    // === WEIGHT CALCULATION ===
+    auto sensor_eval_start = std::chrono::high_resolution_clock::now();
+    calculate_particle_weights(obs, num_rays, weights);
+    timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - sensor_eval_start).count();
+}
+
+void ParticleFilter::initialize_sensor_arrays(int num_rays, int total_queries)
+{
+    if (first_sensor_update_) {
+        queries_ = Eigen::MatrixXd::Zero(total_queries, 3);
+        ranges_.resize(total_queries);
+
+        // Pre-compute tiled angles for efficiency
+        tiled_angles_.resize(total_queries);
+        for (int i = 0; i < MAX_PARTICLES; ++i) {
+            std::copy(downsampled_angles_.begin(), downsampled_angles_.end(),
                      tiled_angles_.begin() + i * num_rays);
         }
         first_sensor_update_ = false;
     }
+}
 
-    // Generate ray queries
-    auto query_start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        for (int j = 0; j < num_rays; ++j)
-        {
-            int idx = i * num_rays + j;
-            queries_(idx, 0) = proposal_dist(i, 0);
-            queries_(idx, 1) = proposal_dist(i, 1);
-            queries_(idx, 2) = proposal_dist(i, 2) + downsampled_angles_[j];
+void ParticleFilter::generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays)
+{
+    for (int i = 0; i < MAX_PARTICLES; ++i) {
+        const int base_idx = i * num_rays;
+        const double x = proposal_dist(i, 0);
+        const double y = proposal_dist(i, 1);
+        const double theta = proposal_dist(i, 2);
+
+        for (int j = 0; j < num_rays; ++j) {
+            const int idx = base_idx + j;
+            queries_(idx, 0) = x;
+            queries_(idx, 1) = y;
+            queries_(idx, 2) = theta + downsampled_angles_[j];
         }
     }
-    auto query_end = std::chrono::high_resolution_clock::now();
-    timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(query_end - query_start).count();
+}
 
-    // Batch ray casting (timing handled separately in calc_range_many)
-    ranges_ = calc_range_many(queries_);
-
-    // Start timing for sensor model evaluation (lookup table part only)
-    auto sensor_eval_start = std::chrono::high_resolution_clock::now();
-
-    // Convert to pixel units and compute weights - using pre-allocated vectors
+void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, int num_rays,
+                                               std::vector<double> &weights)
+{
+    // Convert observations to pixel units
     obs_px_.resize(obs.size());
+    for (size_t i = 0; i < obs.size(); ++i) {
+        obs_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX), obs[i] / map_resolution_);
+    }
+
+    // Convert expected ranges to pixel units
     ranges_px_.resize(ranges_.size());
-
-    for (size_t i = 0; i < obs.size(); ++i)
-    {
-        obs_px_[i] = obs[i] / map_resolution_;
-        if (obs_px_[i] > MAX_RANGE_PX)
-            obs_px_[i] = MAX_RANGE_PX;
+    for (size_t i = 0; i < ranges_.size(); ++i) {
+        ranges_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX), ranges_[i] / map_resolution_);
     }
 
-    for (size_t i = 0; i < ranges_.size(); ++i)
-    {
-        ranges_px_[i] = ranges_[i] / map_resolution_;
-        if (ranges_px_[i] > MAX_RANGE_PX)
-            ranges_px_[i] = MAX_RANGE_PX;
-    }
+    // Calculate adaptive squash factor for high-speed maneuvers
+    const bool is_high_speed_curve = (current_velocity_ > 4.0 && std::abs(current_angular_vel_) > 0.3);
+    const double squash_factor = is_high_speed_curve ?
+        std::min(INV_SQUASH_FACTOR, 1.0 / 1.8) : INV_SQUASH_FACTOR;
 
-    // Likelihood calculation using lookup table
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
+    // Compute particle weights using pre-computed sensor model lookup table
+    for (int i = 0; i < MAX_PARTICLES; ++i) {
         double weight = 1.0;
-        
-        for (int j = 0; j < num_rays; ++j)
-        {
-            int obs_idx = static_cast<int>(std::round(obs_px_[j]));
-            int range_idx = static_cast<int>(std::round(ranges_px_[i * num_rays + j]));
+        const int base_idx = i * num_rays;
 
-            obs_idx = std::max(0, std::min(obs_idx, MAX_RANGE_PX));
-            range_idx = std::max(0, std::min(range_idx, MAX_RANGE_PX));
+        for (int j = 0; j < num_rays; ++j) {
+            const int obs_idx = std::max(0, std::min(static_cast<int>(std::round(obs_px_[j])), MAX_RANGE_PX));
+            const int range_idx = std::max(0, std::min(static_cast<int>(std::round(ranges_px_[base_idx + j])), MAX_RANGE_PX));
 
             weight *= sensor_model_table_(obs_idx, range_idx);
-        }
-        // Apply adaptive weight squashing based on vehicle dynamics
-        double squash_factor = INV_SQUASH_FACTOR;
-
-        // During high-speed curves, use less aggressive squashing to maintain particle diversity
-        if (current_velocity_ > 4.0 && std::abs(current_angular_vel_) > 0.3) {
-            squash_factor = std::min(INV_SQUASH_FACTOR, 1.0 / 1.8);  // Reduce from 1/2.5 to 1/1.8
         }
 
         weights[i] = std::pow(weight, squash_factor);
     }
-
-    auto sensor_eval_end = std::chrono::high_resolution_clock::now();
-    timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(sensor_eval_end - sensor_eval_start).count();
 }
 
 // ================================================================================================
@@ -775,6 +795,19 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
     return MAX_RANGE_METERS;
 }
 
+/**
+ * @brief Main Monte Carlo Localization algorithm implementation
+ *
+ * Implements the complete MCL cycle:
+ * 1. Particle resampling based on previous weights
+ * 2. Motion model prediction with adaptive noise
+ * 3. Sensor model likelihood evaluation
+ * 4. Weight normalization with diversity monitoring
+ * 5. Emergency recovery for high-speed scenarios
+ *
+ * @param motion_cmd Motion command for particle prediction
+ * @param observation Laser scan measurements for likelihood evaluation
+ */
 void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();

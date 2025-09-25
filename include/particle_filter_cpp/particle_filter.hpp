@@ -65,6 +65,13 @@ class ParticleFilter : public rclcpp::Node
     void motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
+
+    // Sensor model helper functions
+    void initialize_sensor_arrays(int num_rays, int total_queries);
+    void generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays);
+    void calculate_particle_weights(const std::vector<float> &obs, int num_rays,
+                                   std::vector<double> &weights);
+
     Eigen::Vector3d expected_pose();
     Eigen::Vector3d smooth_pose(const Eigen::Vector3d &raw_pose);
 
