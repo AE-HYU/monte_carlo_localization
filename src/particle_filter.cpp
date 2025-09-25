@@ -578,15 +578,11 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
             proposal_dist(i, 1) = y + displacement * std::sin(theta);
             proposal_dist(i, 2) = theta;
         } else {
-            // Curved motion using proper Ackermann geometry with wheelbase
-            // Step 1: Convert angular_velocity to steering angle using wheelbase
-            double steering_angle = std::atan(WHEELBASE * angular_velocity / velocity);
-
-            // Step 2: Compute turning radius from wheelbase and steering angle
-            double turning_radius = WHEELBASE / std::tan(steering_angle);
-
-            // Step 3: Apply Ackermann kinematic equations
+            // Simple curved motion - avoid complex atan/tan calculations
+            double turning_radius = velocity / angular_velocity;
             double new_theta = theta + delta_theta;
+
+            // Simple kinematic equations without wheelbase complexity
             proposal_dist(i, 0) = x + turning_radius * (std::sin(new_theta) - std::sin(theta));
             proposal_dist(i, 1) = y - turning_radius * (std::cos(new_theta) - std::cos(theta));
             proposal_dist(i, 2) = new_theta;
