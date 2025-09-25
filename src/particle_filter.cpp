@@ -136,13 +136,22 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_tracking_active_ = false;
     smoothed_pose_ = Eigen::Vector3d::Zero();
     pose_smoothing_initialized_ = false;
+
+    // Startup performance controls
+    startup_mode_ = false;
+    startup_thread_count_ = 1;
+    startup_timer_interval_ = 67;  // Default 15Hz
+    full_timer_interval_ = 33;     // Default 30Hz
     
-    // Threading setup
+    // Threading setup with startup throttling
     if (USE_PARALLEL_RAYCASTING) {
         if (NUM_THREADS == 0) {
             NUM_THREADS = omp_get_max_threads();
         }
-        omp_set_num_threads(NUM_THREADS);
+        // Reduce thread count during startup to prevent resource contention
+        startup_thread_count_ = std::max(1, NUM_THREADS / 2);
+        omp_set_num_threads(startup_thread_count_);
+        startup_mode_ = true;
     }
 
     // Particle initialization
@@ -197,12 +206,15 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     get_omap();
     initialize_global();
 
-    // Update timer
-    int timer_interval_ms = static_cast<int>(1000.0 / TIMER_FREQUENCY);
+    // Update timer - use slower frequency during startup to reduce resource contention
+    double startup_frequency = std::min(TIMER_FREQUENCY, 15.0);  // Cap at 15Hz during startup
+    int timer_interval_ms = static_cast<int>(1000.0 / startup_frequency);
     update_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(timer_interval_ms),
         std::bind(&ParticleFilter::timer_update, this)
     );
+    startup_timer_interval_ = timer_interval_ms;
+    full_timer_interval_ = static_cast<int>(1000.0 / TIMER_FREQUENCY);
 
     // Map publisher timer
     map_timer_ = this->create_wall_timer(
@@ -870,6 +882,23 @@ void ParticleFilter::timer_update()
             // Run MCL when new lidar data is available
             ++iters_;
 
+            // Exit startup mode after sufficient iterations to allow full threading
+            if (startup_mode_ && iters_ >= 50) {
+                startup_mode_ = false;
+                if (USE_PARALLEL_RAYCASTING) {
+                    omp_set_num_threads(NUM_THREADS);
+                    RCLCPP_INFO(this->get_logger(), "Exiting startup mode - using full threading (%d threads)", NUM_THREADS);
+                }
+
+                // Recreate timer with full frequency
+                update_timer_.reset();
+                update_timer_ = this->create_wall_timer(
+                    std::chrono::milliseconds(full_timer_interval_),
+                    std::bind(&ParticleFilter::timer_update, this)
+                );
+                RCLCPP_INFO(this->get_logger(), "Timer frequency increased to %.1f Hz", TIMER_FREQUENCY);
+            }
+
             MotionCommand motion_cmd;
             if (has_odometry_for_motion && apply_motion &&
                 (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
@@ -1229,23 +1258,40 @@ Eigen::Vector3d ParticleFilter::apply_tf_offset(const Eigen::Vector3d& pose_in_l
     static double lidar_offset_x = 0.27;  // Default fallback
     static double lidar_offset_y = 0.0;
     static bool offset_read = false;
+    static int tf_retry_count = 0;
+    static std::chrono::steady_clock::time_point last_tf_attempt = std::chrono::steady_clock::now();
 
-    if (!offset_read) {
-        try {
-            // Read the actual F1Tenth transform: base_link → laser  
-            auto transform = tf_buffer_->lookupTransform(
-                BASE_FRAME, LASER_FRAME, tf2::TimePointZero, tf2::Duration(std::chrono::milliseconds(100)));
+    // Implement backoff strategy to prevent excessive TF lookups during startup
+    if (!offset_read && tf_retry_count < 10) {
+        auto now = std::chrono::steady_clock::now();
+        auto time_since_last_attempt = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tf_attempt);
 
-            lidar_offset_x = transform.transform.translation.x;
-            lidar_offset_y = transform.transform.translation.y;
-            offset_read = true;
+        // Exponential backoff: wait longer between attempts
+        int backoff_ms = 100 * (1 << std::min(tf_retry_count, 4)); // 100, 200, 400, 800, 1600ms max
 
-            RCLCPP_INFO(this->get_logger(), "Using F1Tenth TF offset: x=%.3fm, y=%.3fm",
-                       lidar_offset_x, lidar_offset_y);
-        }
-        catch (tf2::TransformException &ex) {
-            RCLCPP_WARN(this->get_logger(), "Could not read F1Tenth TF, using default 0.27m: %s", ex.what());
-            offset_read = true;  // Don't keep trying on every call
+        if (time_since_last_attempt.count() >= backoff_ms) {
+            try {
+                // Use shorter timeout to prevent blocking
+                auto transform = tf_buffer_->lookupTransform(
+                    BASE_FRAME, LASER_FRAME, tf2::TimePointZero, tf2::Duration(std::chrono::milliseconds(50)));
+
+                lidar_offset_x = transform.transform.translation.x;
+                lidar_offset_y = transform.transform.translation.y;
+                offset_read = true;
+
+                RCLCPP_INFO(this->get_logger(), "Using F1Tenth TF offset: x=%.3fm, y=%.3fm",
+                           lidar_offset_x, lidar_offset_y);
+            }
+            catch (tf2::TransformException &ex) {
+                tf_retry_count++;
+                last_tf_attempt = now;
+
+                if (tf_retry_count >= 10) {
+                    RCLCPP_WARN(this->get_logger(), "Could not read F1Tenth TF after %d attempts, using default 0.27m: %s",
+                               tf_retry_count, ex.what());
+                    offset_read = true;  // Stop trying after max attempts
+                }
+            }
         }
     }
 

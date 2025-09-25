@@ -129,6 +129,12 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- SENSOR FRAME PARAMETERS ---------------------------------
     double WHEELBASE;
 
+    // --------------------------------- STARTUP PERFORMANCE CONTROLS ---------------------------------
+    bool startup_mode_;              // Flag to track startup throttling mode
+    int startup_thread_count_;       // Reduced thread count during startup
+    int startup_timer_interval_;     // Timer interval during startup (ms)
+    int full_timer_interval_;        // Full speed timer interval (ms)
+
     // --------------------------------- TF FRAME NAMES ---------------------------------
     std::string MAP_FRAME;
     std::string ODOM_FRAME;
