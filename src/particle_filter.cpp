@@ -97,6 +97,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
     DO_VIZ = this->get_parameter("viz").as_bool();
     TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
+    RCLCPP_INFO(this->get_logger(), "Loaded timer_frequency: %.1f Hz", TIMER_FREQUENCY);
 
     // Performance
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
@@ -392,13 +393,10 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
                              utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
 
-    // Update odometry tracking if active
-    bool can_use_odom_tracking = pose_initialized_from_rviz_ || 
-                               (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_));
-    
-    if (can_use_odom_tracking && odom_tracking_active_) {
-        update_odom_pose(msg);
-    }
+    // Disable odometry tracking to fix oscillation
+    // if (can_use_odom_tracking && odom_tracking_active_) {
+    //     update_odom_pose(msg);
+    // }
 
     if (last_pose_.norm() > 0)
     {
@@ -414,8 +412,7 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         last_stamp_ = msg->header.stamp;
         odom_initialized_ = true;
 
-        // Trigger immediate update for full odometry step (like old version)
-        update();
+        // MCL update moved to timer_update for controlled frequency
     }
     else
     {
@@ -948,7 +945,12 @@ void ParticleFilter::update()
 
 void ParticleFilter::timer_update()
 {
-    // Simple timer like the old working version - just publish odometry at timer frequency
+    // Run MCL update at controlled timer frequency
+    if (odom_initialized_ && lidar_initialized_ && map_initialized_) {
+        update();  // MCL update at timer frequency
+    }
+
+    // Publish odometry
     if (PUBLISH_ODOM && odom_pub_)
     {
         nav_msgs::msg::Odometry odom;
@@ -1038,19 +1040,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         pub_tf_->sendTransform(odom_to_base);
     }
 
-    // Optional odometry message
-    if (PUBLISH_ODOM && odom_pub_)
-    {
-        nav_msgs::msg::Odometry odom;
-        odom.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
-        odom.header.frame_id = MAP_FRAME;
-        odom.child_frame_id = BASE_FRAME;
-        odom.pose.pose.position.x = base_link_pose[0];
-        odom.pose.pose.position.y = base_link_pose[1];
-        odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(pose[2]);
-        odom.twist.twist.linear.x = current_velocity_;
-        odom_pub_->publish(odom);
-    }
+    // Odometry publishing moved to timer_update for controlled frequency
 }
 
 
