@@ -8,11 +8,10 @@
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 2000                 # Optimized particle count for real-time performance
-    max_viz_particles: 40              # Reduced visualization particles for better performance
-    max_range: 10.0                    # Set laser max range 
+    max_particles: 4000                # Increased particle count for smoother tracking (matches old working version)
+    max_viz_particles: 60              # Visualization particle count
+    max_range: 12.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    delay_compensation_factor: 3.0     # Improved timing compensation for simulation
     
     # === MODE & TF CONTROL ===
     sim_mode: false                    # Simulation mode flag (set by launch file)
@@ -20,12 +19,9 @@ particle_filter:
     publish_odom_base_tf: false        # Let F1Tenth stack handle odom->base_link
     
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.15          # Forward motion noise (m) - increased for simulation
-    motion_dispersion_y: 0.02          # Lateral motion noise (m) - increased for simulation  
-    motion_dispersion_theta: 0.25      # Rotation noise (rad) - increased for simulation
-    
-    # === POSE SMOOTHING ===
-    smoothing_alpha: 0.05              # Pose smoothing factor (0.0=max smooth, 1.0=no smooth) - less smoothing for faster response
+    motion_dispersion_x: 0.05          # Forward motion noise (m) - matches old working version
+    motion_dispersion_y: 0.025         # Lateral motion noise (m) - matches old working version
+    motion_dispersion_theta: 0.25      # Rotation noise (rad) - matches old working version
 
     # === ROBOT GEOMETRY ===
     # Real hardware values (overridden in sim_mode)
@@ -45,7 +41,7 @@ particle_filter:
     theta_discretization: 112          # Angular resolution
     rangelib_variant: 2                # Ray casting variant
     angle_step: 18                     # Laser downsampling factor
-    squash_factor: 2.5                 # Weight normalization (optimized for faster convergence)
+    squash_factor: 2.2                 # Weight normalization (matches old working version)
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
     
@@ -54,7 +50,7 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 30.0              # MCL update frequency (Hz) - increased for simulation
+    timer_frequency: 100.0             # MCL update frequency (Hz) - matches code defaults
     
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame

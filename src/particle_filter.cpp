@@ -26,7 +26,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // === PARAMETER DECLARATIONS ===
     // Core algorithm parameters
     this->declare_parameter("angle_step", 18);
-    this->declare_parameter("max_particles", 2000);
+    this->declare_parameter("max_particles", 4000);
     this->declare_parameter("max_viz_particles", 60);
     this->declare_parameter("squash_factor", 2.2);
     this->declare_parameter("max_range", 12.0);
@@ -43,9 +43,10 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("motion_dispersion_x", 0.05);
     this->declare_parameter("motion_dispersion_y", 0.025);
     this->declare_parameter("motion_dispersion_theta", 0.25);
-    
+
     // Robot geometry
-    this->declare_parameter("wheelbase", 0.325);
+    this->declare_parameter("wheelbase", 0.324);
+
     
     // ROS interface
     this->declare_parameter("scan_topic", "/scan");
@@ -134,8 +135,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Fast convergence initialization
     fast_convergence_mode_ = false;
     fast_convergence_remaining_ = 0;
-    smoothed_pose_ = Eigen::Vector3d::Zero();
-    pose_smoothing_initialized_ = false;
 
     // Threading setup - no startup throttling like old working version
     if (USE_PARALLEL_RAYCASTING) {
@@ -377,7 +376,7 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         has_new_lidar_data_ = true;
 
         RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-            "LiDAR callback: new data received, timestamp: %ld.%09ld",
+            "LiDAR callback: new data received, timestamp: %d.%09u",
             msg->header.stamp.sec, msg->header.stamp.nanosec);
     }
     lidar_initialized_ = true;
@@ -558,15 +557,15 @@ void ParticleFilter::initialize_global()
  */
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd)
 {
-    // Simple Ackermann kinematics - no over-engineering
+    // Ackermann kinematics with wheelbase parameter
     double dt = motion_cmd.dt;
     double velocity = motion_cmd.velocity;
     double angular_velocity = motion_cmd.angular_velocity;
 
-    double delta_theta = angular_velocity * dt;
     double displacement = velocity * dt;
+    double delta_theta = angular_velocity * dt;
 
-    // Apply basic Ackermann model to each particle
+    // Apply Ackermann model with wheelbase to each particle
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
         double x = proposal_dist(i, 0);
@@ -579,16 +578,21 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
             proposal_dist(i, 1) = y + displacement * std::sin(theta);
             proposal_dist(i, 2) = theta;
         } else {
-            // Curved motion using Ackermann geometry
-            double radius = velocity / angular_velocity;
-            double new_theta = theta + delta_theta;
+            // Curved motion using proper Ackermann geometry with wheelbase
+            // Step 1: Convert angular_velocity to steering angle using wheelbase
+            double steering_angle = std::atan(WHEELBASE * angular_velocity / velocity);
 
-            proposal_dist(i, 0) = x + radius * (std::sin(new_theta) - std::sin(theta));
-            proposal_dist(i, 1) = y - radius * (std::cos(new_theta) - std::cos(theta));
+            // Step 2: Compute turning radius from wheelbase and steering angle
+            double turning_radius = WHEELBASE / std::tan(steering_angle);
+
+            // Step 3: Apply Ackermann kinematic equations
+            double new_theta = theta + delta_theta;
+            proposal_dist(i, 0) = x + turning_radius * (std::sin(new_theta) - std::sin(theta));
+            proposal_dist(i, 1) = y - turning_radius * (std::cos(new_theta) - std::cos(theta));
             proposal_dist(i, 2) = new_theta;
         }
 
-        // Add simple motion noise
+        // Add simple motion noise like old working version
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
         proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
@@ -891,30 +895,6 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 // ================================================================================================
 // POSE SMOOTHING
 // ================================================================================================
-Eigen::Vector3d ParticleFilter::smooth_pose(const Eigen::Vector3d &raw_pose)
-{
-    if (!pose_smoothing_initialized_) {
-        smoothed_pose_ = raw_pose;
-        pose_smoothing_initialized_ = true;
-        return smoothed_pose_;
-    }
-    
-    // EMA filter with adaptive alpha based on velocity
-    double base_alpha = SMOOTHING_ALPHA;  // Base smoothing factor from config
-    double velocity_factor = std::min(1.0, std::abs(current_velocity_) / 2.0);  // Scale with velocity
-    double alpha = base_alpha + velocity_factor * 0.4;  // base_alpha to (base_alpha + 0.4) range
-    alpha = std::min(0.8, alpha);  // Cap at 0.8
-    
-    // Smooth x, y
-    smoothed_pose_[0] = alpha * raw_pose[0] + (1.0 - alpha) * smoothed_pose_[0];
-    smoothed_pose_[1] = alpha * raw_pose[1] + (1.0 - alpha) * smoothed_pose_[1];
-    
-    // Smooth angle with circular interpolation
-    double angle_diff = utils::geometry::normalize_angle(raw_pose[2] - smoothed_pose_[2]);
-    smoothed_pose_[2] = utils::geometry::normalize_angle(smoothed_pose_[2] + alpha * angle_diff);
-    
-    return smoothed_pose_;
-}
 
 
 // ================================================================================================
