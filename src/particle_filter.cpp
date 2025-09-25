@@ -31,8 +31,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("squash_factor", 2.2);
     this->declare_parameter("max_range", 12.0);
     this->declare_parameter("max_pose_range", 10000.0);
-    this->declare_parameter("delay_compensation_factor", 1.5);
-    this->declare_parameter("smoothing_alpha", 0.3);
     
     // Sensor model parameters
     this->declare_parameter("z_short", 0.01);
@@ -78,8 +76,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     INV_SQUASH_FACTOR = 1.0 / this->get_parameter("squash_factor").as_double();
     MAX_RANGE_METERS = this->get_parameter("max_range").as_double();
     MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
-    DELAY_COMPENSATION_FACTOR = this->get_parameter("delay_compensation_factor").as_double();
-    SMOOTHING_ALPHA = this->get_parameter("smoothing_alpha").as_double();
 
     // Sensor model parameters
     Z_SHORT = this->get_parameter("z_short").as_double();
@@ -201,15 +197,12 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     get_omap();
     initialize_global();
 
-    // Update timer - use slower frequency during startup to reduce resource contention
-    double startup_frequency = std::min(TIMER_FREQUENCY, 15.0);  // Cap at 15Hz during startup
-    int timer_interval_ms = static_cast<int>(1000.0 / startup_frequency);
+    // Update timer - simple like old working version
+    int timer_interval_ms = static_cast<int>(1000.0 / TIMER_FREQUENCY);
     update_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(timer_interval_ms),
         std::bind(&ParticleFilter::timer_update, this)
     );
-    startup_timer_interval_ = timer_interval_ms;
-    full_timer_interval_ = static_cast<int>(1000.0 / TIMER_FREQUENCY);
 
     // Map publisher timer
     map_timer_ = this->create_wall_timer(
@@ -537,7 +530,14 @@ void ParticleFilter::initialize_global()
 
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
 
-    RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally", MAX_PARTICLES);
+    // Calculate expected pose from initialized particles for odometry tracking
+    Eigen::Vector3d initial_pose = expected_pose();
+
+    // Initialize odometry tracking from global initialization (not from RViz)
+    initialize_odom_tracking(initial_pose, false);
+
+    RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally with odometry tracking at [%.3f, %.3f, %.3f]",
+                MAX_PARTICLES, initial_pose[0], initial_pose[1], initial_pose[2]);
 }
 
 // ================================================================================================
