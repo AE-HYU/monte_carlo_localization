@@ -558,80 +558,40 @@ void ParticleFilter::initialize_global()
  */
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd)
 {
-    // Extract motion parameters with safety bounds
-    double dt = std::max(0.001, std::min(motion_cmd.dt, 0.5));  // Bounds: 1ms to 500ms
-    
-    // Apply velocity limits (prevent unrealistic speeds)
-    double velocity = std::copysign(std::min(std::abs(motion_cmd.velocity), 15.0), motion_cmd.velocity);  // 15 m/s max
-    double angular_velocity = std::copysign(std::min(std::abs(motion_cmd.angular_velocity), 10.0), motion_cmd.angular_velocity);  // 10 rad/s max
+    // Simple Ackermann kinematics - no over-engineering
+    double dt = motion_cmd.dt;
+    double velocity = motion_cmd.velocity;
+    double angular_velocity = motion_cmd.angular_velocity;
 
-    // Pre-compute common values for optimization
-    const double speed = std::abs(velocity);
-    const double angular_speed = std::abs(angular_velocity);
-    const bool is_straight_motion = angular_speed < 1e-6;
-    const bool use_high_speed_integration = speed > 3.0 && !is_straight_motion;
+    double delta_theta = angular_velocity * dt;
+    double displacement = velocity * dt;
 
-    const double delta_theta = angular_velocity * dt;
-    const double radius = is_straight_motion ? 0.0 : velocity / angular_velocity;
-    const double linear_displacement = velocity * dt;
-
-    // Pre-compute noise scaling factors
-    const double speed_factor = 1.0 + (speed / 8.0);  // Linear scaling: 1.0x at 0 m/s, 1.625x at 5 m/s
-    double curve_factor = 1.0;
-    if (speed > 3.0 && angular_speed > 0.5) {
-        // In high-speed curves, reduce noise to prevent particle divergence
-        curve_factor = std::max(0.4, 1.0 - (speed * angular_speed / 10.0));
-    }
-    const double noise_factor = std::min(speed_factor * curve_factor, 2.0);
-
-    // Apply bicycle model kinematics
+    // Apply basic Ackermann model to each particle
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        const double x = proposal_dist(i, 0);
-        const double y = proposal_dist(i, 1);
-        const double theta = proposal_dist(i, 2);
+        double x = proposal_dist(i, 0);
+        double y = proposal_dist(i, 1);
+        double theta = proposal_dist(i, 2);
 
-        if (is_straight_motion) {
-            // Straight line motion - optimized with pre-computed displacement
-            const double cos_theta = std::cos(theta);
-            const double sin_theta = std::sin(theta);
-            proposal_dist(i, 0) = x + linear_displacement * cos_theta;
-            proposal_dist(i, 1) = y + linear_displacement * sin_theta;
+        if (std::abs(angular_velocity) < 1e-6) {
+            // Straight line motion
+            proposal_dist(i, 0) = x + displacement * std::cos(theta);
+            proposal_dist(i, 1) = y + displacement * std::sin(theta);
             proposal_dist(i, 2) = theta;
-        } else if (use_high_speed_integration) {
-            // Multi-step integration for high-speed curved motion
-            const int substeps = std::max(2, static_cast<int>(speed * dt * 2));
-            const double sub_dt = dt / substeps;
-            const double sub_delta_theta = angular_velocity * sub_dt;
-            const double sub_displacement = velocity * sub_dt;
-
-            double current_x = x, current_y = y, current_theta = theta;
-            for (int step = 0; step < substeps; ++step) {
-                current_theta += sub_delta_theta;
-                current_x += sub_displacement * std::cos(current_theta);
-                current_y += sub_displacement * std::sin(current_theta);
-            }
-
-            proposal_dist(i, 0) = current_x;
-            proposal_dist(i, 1) = current_y;
-            proposal_dist(i, 2) = current_theta;
         } else {
-            // Standard bicycle model for normal curved motion
-            const double new_theta = theta + delta_theta;
-            const double sin_theta = std::sin(theta);
-            const double cos_theta = std::cos(theta);
-            const double sin_new_theta = std::sin(new_theta);
-            const double cos_new_theta = std::cos(new_theta);
+            // Curved motion using Ackermann geometry
+            double radius = velocity / angular_velocity;
+            double new_theta = theta + delta_theta;
 
-            proposal_dist(i, 0) = x + radius * (sin_new_theta - sin_theta);
-            proposal_dist(i, 1) = y - radius * (cos_new_theta - cos_theta);
+            proposal_dist(i, 0) = x + radius * (std::sin(new_theta) - std::sin(theta));
+            proposal_dist(i, 1) = y - radius * (std::cos(new_theta) - std::cos(theta));
             proposal_dist(i, 2) = new_theta;
         }
 
-        // Add adaptive motion noise
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * noise_factor;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * noise_factor;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * noise_factor;
+        // Add simple motion noise
+        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
+        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
 
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
