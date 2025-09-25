@@ -1056,26 +1056,22 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
 
 Eigen::Vector3d ParticleFilter::get_current_pose()
 {
-    // Priority 1: Use odometry-based tracking if active and valid
-    if (odom_tracking_active_ && is_pose_valid(odom_pose_))
-        return odom_pose_;
-    
-    // Priority 2: Use particle filter estimate if valid
+    // Use particle filter estimate primarily - avoid jumping between sources
     if (is_pose_valid(inferred_pose_))
         return inferred_pose_;
-    
-    // Priority 3: During initialization without pose estimate, use center of particles
+
+    // During initialization, use center of particles
     if (map_initialized_ && particles_.rows() > 0) {
         Eigen::Vector3d particle_center = particles_.colwise().mean();
         if (is_pose_valid(particle_center)) {
             return particle_center;
         }
     }
-    
-    // Priority 4: Fallback to last known good pose
+
+    // Fallback to last known good pose
     if (is_pose_valid(last_pose_))
         return last_pose_;
-    
+
     // Default to origin
     return Eigen::Vector3d::Zero();
 }
