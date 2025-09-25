@@ -553,30 +553,60 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
             proposal_dist(i, 1) = y + linear_displacement * sin_theta;
             proposal_dist(i, 2) = theta;
         } else {
-            // Curved motion - optimized trigonometry
+            // Curved motion with improved integration for high-speed accuracy
             double new_theta = theta + delta_theta;
-            double sin_theta = std::sin(theta);
-            double cos_theta = std::cos(theta);
-            double sin_new_theta = std::sin(new_theta);
-            double cos_new_theta = std::cos(new_theta);
-            
-            proposal_dist(i, 0) = x + radius * (sin_new_theta - sin_theta);
-            proposal_dist(i, 1) = y - radius * (cos_new_theta - cos_theta);
-            proposal_dist(i, 2) = new_theta;
+
+            // For high speeds, use more accurate integration
+            double speed = std::abs(velocity);
+            if (speed > 3.0) {
+                // Multi-step integration for better accuracy at high speeds
+                int substeps = std::max(2, static_cast<int>(speed * dt * 2));  // More substeps for higher speeds
+                double sub_dt = dt / substeps;
+                double sub_delta_theta = angular_velocity * sub_dt;
+                double sub_displacement = velocity * sub_dt;
+
+                double current_x = x, current_y = y, current_theta = theta;
+                for (int step = 0; step < substeps; ++step) {
+                    current_theta += sub_delta_theta;
+                    current_x += sub_displacement * std::cos(current_theta);
+                    current_y += sub_displacement * std::sin(current_theta);
+                }
+
+                proposal_dist(i, 0) = current_x;
+                proposal_dist(i, 1) = current_y;
+                proposal_dist(i, 2) = current_theta;
+            } else {
+                // Standard bicycle model for lower speeds
+                double sin_theta = std::sin(theta);
+                double cos_theta = std::cos(theta);
+                double sin_new_theta = std::sin(new_theta);
+                double cos_new_theta = std::cos(new_theta);
+
+                proposal_dist(i, 0) = x + radius * (sin_new_theta - sin_theta);
+                proposal_dist(i, 1) = y - radius * (cos_new_theta - cos_theta);
+                proposal_dist(i, 2) = new_theta;
+            }
         }
         
-        // Add adaptive noise based on velocity
+        // Add adaptive noise based on velocity with curve-aware scaling
         double speed = std::abs(velocity);
-        double speed_factor = std::max(1.0, speed / 1.5);  // More aggressive scaling (min factor = 1.0)
-        
-        // Additional boost for very high speeds
-        if (speed > 4.0) {
-            speed_factor = std::max(speed_factor, 2.5);  // Minimum 2.5x for speeds > 4 m/s
+        double angular_speed = std::abs(angular_velocity);
+
+        // Moderate speed-based scaling - less aggressive for high-speed stability
+        double speed_factor = 1.0 + (speed / 8.0);  // Linear scaling: 1.0x at 0 m/s, 1.625x at 5 m/s
+
+        // Curve-aware noise: reduce noise during high-speed curves to maintain tracking
+        double curve_factor = 1.0;
+        if (speed > 3.0 && angular_speed > 0.5) {
+            // In high-speed curves, reduce noise to prevent particle divergence
+            curve_factor = std::max(0.4, 1.0 - (speed * angular_speed / 10.0));
         }
-        
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * speed_factor;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * std::min(speed_factor, 3.0);  // Cap theta noise at 3x
+
+        double final_factor = speed_factor * curve_factor;
+
+        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * final_factor;
+        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * final_factor;
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * std::min(final_factor, 2.0);  // Cap theta noise at 2x
         
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
@@ -661,7 +691,15 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
 
             weight *= sensor_model_table_(obs_idx, range_idx);
         }
-        weights[i] = std::pow(weight, INV_SQUASH_FACTOR);
+        // Apply adaptive weight squashing based on vehicle dynamics
+        double squash_factor = INV_SQUASH_FACTOR;
+
+        // During high-speed curves, use less aggressive squashing to maintain particle diversity
+        if (current_velocity_ > 4.0 && std::abs(current_angular_vel_) > 0.3) {
+            squash_factor = std::min(INV_SQUASH_FACTOR, 1.0 / 1.8);  // Reduce from 1/2.5 to 1/1.8
+        }
+
+        weights[i] = std::pow(weight, squash_factor);
     }
 
     auto sensor_eval_end = std::chrono::high_resolution_clock::now();
@@ -762,13 +800,38 @@ void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<floa
     // 3. Sensor likelihood evaluation
     sensor_model(proposal_distribution_, observation, weights_);
 
-    // 4. Weight normalization
+    // 4. Weight normalization with particle diversity check
     double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
     if (sum_weights > 0)
     {
         for (double &w : weights_)
         {
             w /= sum_weights;
+        }
+
+        // Check effective sample size for high-speed recovery
+        double effective_particles = 0.0;
+        for (const double &w : weights_) {
+            effective_particles += w * w;
+        }
+        effective_particles = 1.0 / effective_particles;
+
+        // Emergency recovery: inject random particles during high-speed maneuvers if diversity is too low
+        if (effective_particles < MAX_PARTICLES * 0.15 && std::abs(current_velocity_) > 4.0) {
+            // Replace 10% of particles with random samples around current estimate
+            int recovery_count = MAX_PARTICLES / 10;
+            Eigen::Vector3d current_pose = expected_pose();
+
+            std::uniform_int_distribution<int> particle_idx_dist(0, MAX_PARTICLES - 1);
+            for (int i = 0; i < recovery_count; ++i) {
+                int idx = particle_idx_dist(rng_);
+                // Add particles around current pose with moderate spread
+                proposal_distribution_(idx, 0) = current_pose[0] + normal_dist_(rng_) * 1.0;
+                proposal_distribution_(idx, 1) = current_pose[1] + normal_dist_(rng_) * 1.0;
+                proposal_distribution_(idx, 2) = current_pose[2] + normal_dist_(rng_) * 0.5;
+                proposal_distribution_(idx, 2) = utils::geometry::normalize_angle(proposal_distribution_(idx, 2));
+                weights_[idx] = 1.0 / MAX_PARTICLES;
+            }
         }
     }
 
