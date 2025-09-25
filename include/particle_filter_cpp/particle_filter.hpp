@@ -164,6 +164,10 @@ class ParticleFilter : public rclcpp::Node
     bool pose_initialized_from_rviz_;        // Flag to track if pose was set via 2D Pose Estimate
     bool odom_tracking_active_;              // Flag to track if odometry tracking is active
 
+    // Fast convergence after RViz initialization
+    bool fast_convergence_mode_;             // Enable aggressive convergence mode
+    int fast_convergence_remaining_;         // Iterations remaining for fast convergence
+
     // --------------------------------- SENSOR DATA ---------------------------------
     std::vector<float> laser_angles_;
     std::vector<float> downsampled_angles_;

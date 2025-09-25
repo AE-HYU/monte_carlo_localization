@@ -134,6 +134,10 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     odom_reference_odom_ = Eigen::Vector3d::Zero();
     pose_initialized_from_rviz_ = false;
     odom_tracking_active_ = false;
+
+    // Fast convergence initialization
+    fast_convergence_mode_ = false;
+    fast_convergence_remaining_ = 0;
     smoothed_pose_ = Eigen::Vector3d::Zero();
     pose_smoothing_initialized_ = false;
 
@@ -442,10 +446,14 @@ void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceSt
 
     // Set inferred pose immediately for visualization
     inferred_pose_ = pose;
-    
-    RCLCPP_INFO(this->get_logger(), "Pose initialized from RViz at [%.3f, %.3f, %.3f]", 
+
+    // Enable aggressive convergence mode for next 20 iterations
+    fast_convergence_mode_ = true;
+    fast_convergence_remaining_ = 20;
+
+    RCLCPP_INFO(this->get_logger(), "Pose initialized from RViz at [%.3f, %.3f, %.3f] - fast convergence enabled",
                 pose[0], pose[1], pose[2]);
-    
+
     // Trigger immediate visualization update
     visualize(this->get_clock()->now());
 }
@@ -466,12 +474,16 @@ void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
     std::lock_guard<std::mutex> lock(state_lock_);
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
 
+    // Use tighter distribution for faster convergence after manual pose setting
+    double pos_std = 0.1;   // Reduced from 0.5m to 0.1m (±10cm)
+    double angle_std = 0.1; // Reduced from 0.4rad to 0.1rad (±5.7°)
+
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        particles_(i, 0) = pose[0] + normal_dist_(rng_) * 0.5;
-        particles_(i, 1) = pose[1] + normal_dist_(rng_) * 0.5;
-        particles_(i, 2) = pose[2] + normal_dist_(rng_) * 0.4;
-        
+        particles_(i, 0) = pose[0] + normal_dist_(rng_) * pos_std;
+        particles_(i, 1) = pose[1] + normal_dist_(rng_) * pos_std;
+        particles_(i, 2) = pose[2] + normal_dist_(rng_) * angle_std;
+
         // Normalize angle
         particles_(i, 2) = utils::geometry::normalize_angle(particles_(i, 2));
     }
@@ -709,10 +721,20 @@ void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, i
         ranges_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX), ranges_[i] / map_resolution_);
     }
 
-    // Calculate adaptive squash factor for high-speed maneuvers
+    // Calculate adaptive squash factor for high-speed maneuvers and fast convergence
     const bool is_high_speed_curve = (current_velocity_ > 4.0 && std::abs(current_angular_vel_) > 0.3);
-    const double squash_factor = is_high_speed_curve ?
+    double squash_factor = is_high_speed_curve ?
         std::min(INV_SQUASH_FACTOR, 1.0 / 1.8) : INV_SQUASH_FACTOR;
+
+    // Apply stronger weighting during fast convergence mode for faster particle selection
+    if (fast_convergence_mode_ && fast_convergence_remaining_ > 0) {
+        squash_factor = std::min(squash_factor, 1.0 / 1.2); // More aggressive weighting
+        --fast_convergence_remaining_;
+        if (fast_convergence_remaining_ <= 0) {
+            fast_convergence_mode_ = false;
+            RCLCPP_INFO(this->get_logger(), "Fast convergence mode completed");
+        }
+    }
 
     // Compute particle weights using pre-computed sensor model lookup table
     for (int i = 0; i < MAX_PARTICLES; ++i) {
