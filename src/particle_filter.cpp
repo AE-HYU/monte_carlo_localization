@@ -141,21 +141,12 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     smoothed_pose_ = Eigen::Vector3d::Zero();
     pose_smoothing_initialized_ = false;
 
-    // Startup performance controls
-    startup_mode_ = false;
-    startup_thread_count_ = 1;
-    startup_timer_interval_ = 67;  // Default 15Hz
-    full_timer_interval_ = 33;     // Default 30Hz
-    
-    // Threading setup with startup throttling
+    // Threading setup - no startup throttling like old working version
     if (USE_PARALLEL_RAYCASTING) {
         if (NUM_THREADS == 0) {
             NUM_THREADS = omp_get_max_threads();
         }
-        // Reduce thread count during startup to prevent resource contention
-        startup_thread_count_ = std::max(1, NUM_THREADS / 2);
-        omp_set_num_threads(startup_thread_count_);
-        startup_mode_ = true;
+        omp_set_num_threads(NUM_THREADS);  // Use full thread count immediately
     }
 
     // Particle initialization
@@ -417,17 +408,30 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         update_odom_pose(msg);
     }
 
-    // Store pose and timestamp - protected by mutex
+    if (last_pose_.norm() > 0)
     {
-        std::lock_guard<std::mutex> lock(state_lock_);
-        if (last_pose_.norm() <= 0)
-        {
-            RCLCPP_INFO(this->get_logger(), "Odometry initialized");
-        }
+        // Transform global displacement to robot-local coordinates (like old version)
+        Eigen::Matrix2d rot = utils::geometry::rotation_matrix(-last_pose_[2]);
+        Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
+        Eigen::Vector2d local_delta = rot * delta;
+
+        // Use the motion directly for MCL update
+        odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
+
         last_pose_ = position;
         last_stamp_ = msg->header.stamp;
+        odom_initialized_ = true;
+
+        // Trigger immediate update for full odometry step (like old version)
+        update();
     }
-    odom_initialized_ = true;
+    else
+    {
+        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        last_pose_ = position;
+        last_stamp_ = msg->header.stamp;
+        odom_initialized_ = true;
+    }
 }
 
 // ================================================================================================
@@ -956,246 +960,80 @@ Eigen::Vector3d ParticleFilter::smooth_pose(const Eigen::Vector3d &raw_pose)
 // ================================================================================================
 // TIMER UPDATE
 // ================================================================================================
+// --------------------------------- MAIN UPDATE LOOP ---------------------------------
+void ParticleFilter::update()
+{
+    if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
+    {
+        return;
+    }
+
+    if (state_lock_.try_lock())
+    {
+        ++iters_;
+
+        auto observation = downsampled_ranges_;
+        auto action = odometry_data_;
+        odometry_data_ = Eigen::Vector3d::Zero();
+
+        // Execute complete MCL cycle - convert action to MotionCommand
+        MotionCommand motion_cmd = MotionCommand::from_displacement(action, 0.1); // 0.1s default dt
+        MCL(motion_cmd, observation);
+
+        // Final pose estimate: weighted mean
+        inferred_pose_ = expected_pose();
+
+        state_lock_.unlock();
+
+        // Output to navigation stack and visualization
+        publish_tf(inferred_pose_, last_stamp_);
+
+        if (iters_ % 10 == 0)
+        {
+            RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)", iters_, inferred_pose_[0],
+                        inferred_pose_[1], inferred_pose_[2]);
+        }
+
+        if (iters_ % 100 == 0)
+        {
+            // Print performance statistics using utils TimingStats
+            timing_stats_.print_stats([this](const std::string& msg) {
+                RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+            });
+        }
+
+        visualize();
+    }
+    else
+    {
+        RCLCPP_INFO(this->get_logger(), "Concurrency error avoided");
+    }
+}
+
 void ParticleFilter::timer_update()
 {
-    if (!map_initialized_) {
-        return;
-    }
+    // Simple timer like the old working version - just publish odometry at timer frequency
+    if (PUBLISH_ODOM && odom_pub_)
+    {
+        nav_msgs::msg::Odometry odom;
+        odom.header.stamp = this->get_clock()->now();
+        odom.header.frame_id = "map";
+        odom.child_frame_id = "base_link";
 
-    rclcpp::Time current_time = this->get_clock()->now();
-
-    // Determine what sensor data is available
-    bool has_odom = odom_initialized_;
-
-    // Check if LiDAR data is recent (within last 500ms)
-    bool has_recent_lidar = false;
-    if (lidar_initialized_ && last_lidar_time_.nanoseconds() != 0) {
-        double lidar_age = (current_time - last_lidar_time_).seconds();
-        has_recent_lidar = (lidar_age < 0.5); // 500ms threshold - more lenient
-
-        // Debug: Log lidar timing (only in debug builds)
-        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-            "LiDAR age: %.3f sec, recent: %d, has_new: %d, has_lidar: %d",
-            lidar_age, has_recent_lidar, has_new_lidar_data_, has_recent_lidar && has_new_lidar_data_);
-    }
-
-    bool has_lidar = has_recent_lidar && has_new_lidar_data_;
-
-    // Conditional processing based on sensor availability
-    if (!has_odom && !has_lidar) {
-        // Case 4: Neither available - just return and wait
-        return;
-    }
-
-    if (!has_odom && has_lidar) {
-        // Case 3: Only LiDAR - localization without motion model
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                            "Running MCL with LiDAR only (no odometry)");
-    }
-
-    if (has_odom && !has_lidar) {
-        // Case 2: Only odometry - use odometry tracking
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                            "Running odometry tracking only (no LiDAR)");
-    }
-
-    // Case 1: Both available - full MCL (no special message needed)
-
-    // Use steady clock for simulation compatibility
-    static auto steady_start_time = std::chrono::steady_clock::now();
-    static auto last_steady_time = steady_start_time;
-
-    auto current_steady_time = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(current_steady_time - last_steady_time).count();
-
-    // First call initialization
-    static bool timer_initialized = false;
-    if (!timer_initialized) {
-        timer_initialized = true;
-        last_steady_time = current_steady_time;
-        return;
-    }
-
-    // Skip excessive time steps
-    if (dt > 1.0) {
-        return;
-    }
-
-    bool apply_motion = (dt >= 0.0001);
-
-    bool mcl_executed = false;  // Track if MCL was executed this cycle
-
-    if (state_lock_.try_lock()) {
-
-        // CASE 1 & 3: Process LiDAR data (with or without odometry)
-        if (has_lidar && !downsampled_ranges_.empty()) {
-            // Record MCL start time for accurate timestamp calculation
-            auto mcl_start_time = std::chrono::steady_clock::now();
-
-            // Run MCL when new lidar data is available
-            ++iters_;
-
-            // Exit startup mode after sufficient iterations to allow full threading
-            if (startup_mode_ && iters_ >= 50) {
-                startup_mode_ = false;
-                if (USE_PARALLEL_RAYCASTING) {
-                    omp_set_num_threads(NUM_THREADS);
-                    RCLCPP_INFO(this->get_logger(), "Exiting startup mode - using full threading (%d threads)", NUM_THREADS);
-                }
-
-                // Recreate timer with full frequency
-                update_timer_.reset();
-                update_timer_ = this->create_wall_timer(
-                    std::chrono::milliseconds(full_timer_interval_),
-                    std::bind(&ParticleFilter::timer_update, this)
-                );
-                RCLCPP_INFO(this->get_logger(), "Timer frequency increased to %.1f Hz", TIMER_FREQUENCY);
-            }
-
-            MotionCommand motion_cmd;
-            if (has_odom && apply_motion &&
-                (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
-                motion_cmd = MotionCommand(current_velocity_, current_angular_vel_, dt);
-            } else if (!has_odom && !pose_initialized_from_rviz_ && iters_ < 15) {
-                // No odometry: Add small random motion for particle diversity
-                double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
-                double random_velocity = normal_dist_(rng_) * 0.02 * noise_factor / dt;
-                double random_angular_velocity = normal_dist_(rng_) * 0.05 * noise_factor / dt;
-                motion_cmd = MotionCommand(random_velocity, random_angular_velocity, dt);
-            }
-
-            auto observation = downsampled_ranges_;
-            // Execute MCL pipeline
-            MCL(motion_cmd, observation);
-            Eigen::Vector3d raw_pose = expected_pose();
-            inferred_pose_ = smooth_pose(raw_pose);
-
-            // Calculate MCL processing time for timestamp compensation
-            auto mcl_end_time = std::chrono::steady_clock::now();
-            mcl_processing_time_ = std::chrono::duration<double>(mcl_end_time - mcl_start_time).count();
-
-            // Update odometry tracking
-            bool can_use_odom_tracking = has_odom &&
-                (pose_initialized_from_rviz_ || (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
-
-            if (can_use_odom_tracking) {
-                if (!odom_tracking_active_ && is_pose_valid(inferred_pose_)) {
-                    initialize_odom_tracking(inferred_pose_, false);
-                    RCLCPP_INFO(this->get_logger(), "Odometry tracking initialized");
-                }
-
-                // Apply delay compensation for motion during MCL processing using actual processing time
-                Eigen::Vector3d compensated_pose = inferred_pose_;
-                double longitudinal_displacement = current_velocity_ * mcl_processing_time_ * DELAY_COMPENSATION_FACTOR;
-                double angular_displacement = current_angular_vel_ * mcl_processing_time_ * DELAY_COMPENSATION_FACTOR;
-
-                // Apply compensation in vehicle's forward direction
-                compensated_pose[0] += longitudinal_displacement * std::cos(inferred_pose_[2]);
-                compensated_pose[1] += longitudinal_displacement * std::sin(inferred_pose_[2]);
-                // Apply heading compensation
-                compensated_pose[2] += angular_displacement;
-                compensated_pose[2] = utils::geometry::normalize_angle(compensated_pose[2]);
-
-                odom_reference_pose_ = compensated_pose;
-                odom_reference_odom_ = last_pose_;
-                odom_pose_ = compensated_pose;
-
-                // Update inferred pose to compensated pose for consistency
-                inferred_pose_ = compensated_pose;
-            }
-
-            mcl_executed = true;  // Mark that MCL was executed
-            has_new_lidar_data_ = false;    // Mark lidar data as processed
-
-            if (iters_ % 100 == 0) {
-                RCLCPP_INFO(this->get_logger(), "MCL iter %d: [%.2f, %.2f, %.2f]", iters_,
-                           inferred_pose_[0], inferred_pose_[1], inferred_pose_[2]);
-            }
-
-            if (iters_ % 200 == 0) {
-                // Print performance stats
-                auto logger_func = [this](const std::string& msg) {
-                    RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
-                };
-                timing_stats_.print_stats(logger_func);
-
-                if (timing_stats_.measurement_count > 0) {
-                    RCLCPP_INFO(this->get_logger(),
-                        "Particles: %d, Rays/particle: %zu, Total rays: %d",
-                        MAX_PARTICLES, downsampled_angles_.size(), MAX_PARTICLES * static_cast<int>(downsampled_angles_.size()));
-                }
-                timing_stats_.reset();
-            }
-        }
-        // CASE 2: Only odometry available - odometry tracking
-        else if (has_odom && !has_lidar && odom_tracking_active_) {
-            // Update pose based on odometry when no new lidar data is available
-            if (apply_motion && (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
-                // Dead reckoning based on current velocities
-                Eigen::Vector3d current_pose_estimate = get_current_pose();
-
-                // Apply motion model using current velocities
-                if (std::abs(current_angular_vel_) < 1e-6) {
-                    // Straight line motion
-                    current_pose_estimate[0] += current_velocity_ * dt * std::cos(current_pose_estimate[2]);
-                    current_pose_estimate[1] += current_velocity_ * dt * std::sin(current_pose_estimate[2]);
-                } else {
-                    // Curved motion (bicycle model)
-                    double radius = current_velocity_ / current_angular_vel_;
-                    double delta_theta = current_angular_vel_ * dt;
-
-                    current_pose_estimate[0] += radius * (std::sin(current_pose_estimate[2] + delta_theta) - std::sin(current_pose_estimate[2]));
-                    current_pose_estimate[1] -= radius * (std::cos(current_pose_estimate[2] + delta_theta) - std::cos(current_pose_estimate[2]));
-                    current_pose_estimate[2] += delta_theta;
-                }
-
-                // Normalize angle
-                current_pose_estimate[2] = utils::geometry::normalize_angle(current_pose_estimate[2]);
-
-                // Update odom pose
-                odom_pose_ = current_pose_estimate;
-            }
-        }
-
-        state_lock_.unlock();
-    }
-
-    // Always update steady time for next calculation
-    last_steady_time = current_steady_time;
-
-    // Publish TF and odometry with appropriate timestamp
-    if (map_initialized_) {
+        // Get best available pose
         Eigen::Vector3d current_pose = get_current_pose();
 
-        // Safely read timestamps - protected by mutex
-        rclcpp::Time timestamp;
-        {
-            std::lock_guard<std::mutex> lock(state_lock_);
-            if (mcl_executed && last_lidar_time_.nanoseconds() != 0) {
-                // Use compensated timestamp: LiDAR time + processing time
-                int64_t compensation_ns = static_cast<int64_t>(mcl_processing_time_ * 1e9);
-                timestamp = last_lidar_time_ + rclcpp::Duration::from_nanoseconds(compensation_ns);
-            } else if (has_odom && last_stamp_.nanoseconds() != 0) {
-                // Use odometry timestamp for odom-based updates
-                timestamp = last_stamp_;
-            } else {
-                // Fallback to current time
-                timestamp = current_time;
-            }
-        }
+        odom.pose.pose.position.x = current_pose[0];
+        odom.pose.pose.position.y = current_pose[1];
+        odom.pose.pose.position.z = 0.0;
+        odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(current_pose[2]);
 
-        publish_tf(current_pose, timestamp);
+        // Set velocity
+        odom.twist.twist.linear.x = current_velocity_;
+        odom.twist.twist.angular.z = current_angular_vel_;
 
-        // Update visualization with same timestamp whenever pose changes
-        if (mcl_executed || (has_odom && !has_lidar && odom_tracking_active_)) {
-            visualize(timestamp);
-        }
-
-        state_lock_.unlock();
+        odom_pub_->publish(odom);
     }
-
-    // Update timing for next iteration
-    last_steady_time = current_steady_time;
 }
 
 void ParticleFilter::publish_map_periodically()

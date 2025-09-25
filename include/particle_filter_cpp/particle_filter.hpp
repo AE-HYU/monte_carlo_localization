@@ -246,6 +246,7 @@ class ParticleFilter : public rclcpp::Node
     std::vector<int> particle_indices_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
+    void update();                    // Main MCL update function
     void timer_update();
     void publish_map_periodically();
 };
