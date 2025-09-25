@@ -30,18 +30,18 @@ particle_filter:
     wheelbase: 0.324                   # Distance between axles (m)
     
     # === SENSOR MODEL (4-component beam model) ===
-    z_hit: 0.70                        # Weight for correct measurements (reduced to smooth convergence)
+    z_hit: 0.80                        # Weight for correct measurements (increased for better tracking)
     z_short: 0.01                      # Weight for unexpected obstacles
-    z_max: 0.07                        # Weight for max range readings (increased)
-    z_rand: 0.22                       # Weight for random noise (increased for smoother tracking)
-    sigma_hit: 12.0                    # Measurement noise std dev (increased to prevent sharp convergence)
+    z_max: 0.05                        # Weight for max range readings (reduced)
+    z_rand: 0.14                       # Weight for random noise (reduced)
+    sigma_hit: 7.0                     # Measurement noise std dev (tightened)
     
     # === RAY CASTING ===
     range_method: "cddt"               # Distance transform method
     theta_discretization: 112          # Angular resolution
     rangelib_variant: 2                # Ray casting variant
     angle_step: 18                     # Laser downsampling factor
-    squash_factor: 1.8                 # Weight normalization (reduced for smoother tracking)
+    squash_factor: 2.2                 # Weight normalization (matches old working version)
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
     
