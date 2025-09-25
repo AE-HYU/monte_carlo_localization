@@ -387,6 +387,10 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         std::lock_guard<std::mutex> lock(state_lock_);
         last_lidar_time_ = msg->header.stamp;
         has_new_lidar_data_ = true;
+
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "LiDAR callback: new data received, timestamp: %ld.%09ld",
+            msg->header.stamp.sec, msg->header.stamp.nanosec);
     }
     lidar_initialized_ = true;
 }
@@ -936,13 +940,44 @@ void ParticleFilter::timer_update()
         return;
     }
 
-    bool has_odometry_for_motion = odom_initialized_;
-    if (!has_odometry_for_motion) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
-                            "Running MCL without odometry");
+    rclcpp::Time current_time = this->get_clock()->now();
+
+    // Determine what sensor data is available
+    bool has_odom = odom_initialized_;
+
+    // Check if LiDAR data is recent (within last 500ms)
+    bool has_recent_lidar = false;
+    if (lidar_initialized_ && last_lidar_time_.nanoseconds() != 0) {
+        double lidar_age = (current_time - last_lidar_time_).seconds();
+        has_recent_lidar = (lidar_age < 0.5); // 500ms threshold - more lenient
+
+        // Debug: Log lidar timing (only in debug builds)
+        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+            "LiDAR age: %.3f sec, recent: %d, has_new: %d, has_lidar: %d",
+            lidar_age, has_recent_lidar, has_new_lidar_data_, has_recent_lidar && has_new_lidar_data_);
     }
 
-    rclcpp::Time current_time = this->get_clock()->now();
+    bool has_lidar = has_recent_lidar && has_new_lidar_data_;
+
+    // Conditional processing based on sensor availability
+    if (!has_odom && !has_lidar) {
+        // Case 4: Neither available - just return and wait
+        return;
+    }
+
+    if (!has_odom && has_lidar) {
+        // Case 3: Only LiDAR - localization without motion model
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "Running MCL with LiDAR only (no odometry)");
+    }
+
+    if (has_odom && !has_lidar) {
+        // Case 2: Only odometry - use odometry tracking
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                            "Running odometry tracking only (no LiDAR)");
+    }
+
+    // Case 1: Both available - full MCL (no special message needed)
 
     // Use steady clock for simulation compatibility
     static auto steady_start_time = std::chrono::steady_clock::now();
@@ -970,8 +1005,8 @@ void ParticleFilter::timer_update()
 
     if (state_lock_.try_lock()) {
 
-        // Always check for new lidar data first
-        if (lidar_initialized_ && !downsampled_ranges_.empty() && has_new_lidar_data_) {
+        // CASE 1 & 3: Process LiDAR data (with or without odometry)
+        if (has_lidar && !downsampled_ranges_.empty()) {
             // Record MCL start time for accurate timestamp calculation
             auto mcl_start_time = std::chrono::steady_clock::now();
 
@@ -996,13 +1031,14 @@ void ParticleFilter::timer_update()
             }
 
             MotionCommand motion_cmd;
-            if (has_odometry_for_motion && apply_motion &&
+            if (has_odom && apply_motion &&
                 (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
                 motion_cmd = MotionCommand(current_velocity_, current_angular_vel_, dt);
-            } else if (!has_odometry_for_motion && !pose_initialized_from_rviz_ && iters_ < 15) {
+            } else if (!has_odom && !pose_initialized_from_rviz_ && iters_ < 15) {
+                // No odometry: Add small random motion for particle diversity
                 double noise_factor = std::max(0.1, 1.0 - (static_cast<double>(iters_) / 15.0));
-                double random_velocity = normal_dist_(rng_) * 0.02 * noise_factor / dt;  // Convert displacement to velocity
-                double random_angular_velocity = normal_dist_(rng_) * 0.05 * noise_factor / dt;  // Convert displacement to angular velocity
+                double random_velocity = normal_dist_(rng_) * 0.02 * noise_factor / dt;
+                double random_angular_velocity = normal_dist_(rng_) * 0.05 * noise_factor / dt;
                 motion_cmd = MotionCommand(random_velocity, random_angular_velocity, dt);
             }
 
@@ -1017,7 +1053,7 @@ void ParticleFilter::timer_update()
             mcl_processing_time_ = std::chrono::duration<double>(mcl_end_time - mcl_start_time).count();
 
             // Update odometry tracking
-            bool can_use_odom_tracking = has_odometry_for_motion &&
+            bool can_use_odom_tracking = has_odom &&
                 (pose_initialized_from_rviz_ || (map_initialized_ && iters_ > 0 && is_pose_valid(inferred_pose_)));
 
             if (can_use_odom_tracking) {
@@ -1069,8 +1105,8 @@ void ParticleFilter::timer_update()
                 timing_stats_.reset();
             }
         }
-        // If no new lidar data and timer frequency > 40Hz, use odometry for pose estimation
-        else if (TIMER_FREQUENCY > 40.0 && has_odometry_for_motion && odom_tracking_active_) {
+        // CASE 2: Only odometry available - odometry tracking
+        else if (has_odom && !has_lidar && odom_tracking_active_) {
             // Update pose based on odometry when no new lidar data is available
             if (apply_motion && (std::abs(current_velocity_) > 0.0001 || std::abs(current_angular_vel_) > 0.0001)) {
                 // Dead reckoning based on current velocities
@@ -1117,7 +1153,7 @@ void ParticleFilter::timer_update()
                 // Use compensated timestamp: LiDAR time + processing time
                 int64_t compensation_ns = static_cast<int64_t>(mcl_processing_time_ * 1e9);
                 timestamp = last_lidar_time_ + rclcpp::Duration::from_nanoseconds(compensation_ns);
-            } else if (has_odometry_for_motion && last_stamp_.nanoseconds() != 0) {
+            } else if (has_odom && last_stamp_.nanoseconds() != 0) {
                 // Use odometry timestamp for odom-based updates
                 timestamp = last_stamp_;
             } else {
@@ -1129,10 +1165,15 @@ void ParticleFilter::timer_update()
         publish_tf(current_pose, timestamp);
 
         // Update visualization with same timestamp whenever pose changes
-        if (mcl_executed || (TIMER_FREQUENCY > 40.0 && has_odometry_for_motion && odom_tracking_active_)) {
+        if (mcl_executed || (has_odom && !has_lidar && odom_tracking_active_)) {
             visualize(timestamp);
         }
+
+        state_lock_.unlock();
     }
+
+    // Update timing for next iteration
+    last_steady_time = current_steady_time;
 }
 
 void ParticleFilter::publish_map_periodically()
