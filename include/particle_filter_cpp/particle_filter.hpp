@@ -106,9 +106,6 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- TF UTILITIES ---------------------------------
     Eigen::Vector3d apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame);
     
-    // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
-    void initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz = true);
-    void update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg);
 
 
     // --------------------------------- RAY CASTING ---------------------------------
@@ -153,12 +150,7 @@ class ParticleFilter : public rclcpp::Node
     Eigen::Vector3d odometry_data_;
     Eigen::Vector3d last_pose_;
     
-    // --------------------------------- ODOMETRY-BASED TRACKING ---------------------------------
-    Eigen::Vector3d odom_pose_;              // Current odometry-based pose estimate (rear axle)
-    Eigen::Vector3d odom_reference_pose_;    // Reference pose from last MCL correction
-    Eigen::Vector3d odom_reference_odom_;    // Odometry reading at last MCL correction
     bool pose_initialized_from_rviz_;        // Flag to track if pose was set via 2D Pose Estimate
-    bool odom_tracking_active_;              // Flag to track if odometry tracking is active
 
     // Fast convergence after RViz initialization
     bool fast_convergence_mode_;             // Enable aggressive convergence mode

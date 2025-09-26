@@ -127,11 +127,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     mcl_processing_time_ = 0.0;
     
     // Odometry tracking
-    odom_pose_ = Eigen::Vector3d::Zero();
-    odom_reference_pose_ = Eigen::Vector3d::Zero();
-    odom_reference_odom_ = Eigen::Vector3d::Zero();
     pose_initialized_from_rviz_ = false;
-    odom_tracking_active_ = false;
 
     // Fast convergence initialization
     fast_convergence_mode_ = false;
@@ -393,10 +389,6 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
                              utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
 
-    // Disable odometry tracking to fix oscillation
-    // if (can_use_odom_tracking && odom_tracking_active_) {
-    //     update_odom_pose(msg);
-    // }
 
     if (last_pose_.norm() > 0)
     {
@@ -435,7 +427,6 @@ void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceSt
     initialize_particles_pose(pose);
 
     // Initialize odometry-based tracking from this pose
-    initialize_odom_tracking(pose);
 
     // Set inferred pose immediately for visualization
     inferred_pose_ = pose;
@@ -528,7 +519,6 @@ void ParticleFilter::initialize_global()
     Eigen::Vector3d initial_pose = expected_pose();
 
     // Initialize odometry tracking from global initialization (not from RViz)
-    initialize_odom_tracking(initial_pose, false);
 
     RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally with odometry tracking at [%.3f, %.3f, %.3f]",
                 MAX_PARTICLES, initial_pose[0], initial_pose[1], initial_pose[2]);
@@ -1103,36 +1093,6 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, 
 }
 
 
-
-// ================================================================================================
-// ODOMETRY TRACKING
-// ================================================================================================
-void ParticleFilter::initialize_odom_tracking(const Eigen::Vector3d& initial_pose, bool from_rviz)
-{
-    RCLCPP_INFO(this->get_logger(), "Odometry tracking init: [%.3f, %.3f, %.3f]", 
-                initial_pose[0], initial_pose[1], initial_pose[2]);
-    
-    odom_pose_ = initial_pose;
-    odom_reference_pose_ = initial_pose;
-    
-    if (last_pose_.norm() > 0) {
-        odom_reference_odom_ = last_pose_;
-    }
-    
-    pose_initialized_from_rviz_ = from_rviz;
-    odom_tracking_active_ = true;
-}
-
-void ParticleFilter::update_odom_pose(const nav_msgs::msg::Odometry::SharedPtr& msg)
-{
-    if (!odom_tracking_active_) return;
-    
-    Eigen::Vector3d current_odom(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                                 utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
-    
-    Eigen::Vector3d odom_delta = current_odom - odom_reference_odom_;
-    odom_pose_ = odom_reference_pose_ + odom_delta;
-}
 
 // ================================================================================================
 // TF UTILITIES

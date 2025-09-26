@@ -13,8 +13,7 @@ particle_filter:
     max_range: 12.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
     
-    # === MODE & TF CONTROL ===
-    sim_mode: false                    # Simulation mode flag (set by launch file)
+    # === TF CONTROL ===
     publish_map_odom_tf: true          # Publish map->odom transform (real mode only)
     publish_odom_base_tf: false        # Let F1Tenth stack handle odom->base_link
     
@@ -24,7 +23,7 @@ particle_filter:
     motion_dispersion_theta: 0.1       # Rotation noise (rad) - reduced from 0.25 to fix oscillation
 
     # === ROBOT GEOMETRY ===
-    # Real hardware values (overridden in sim_mode)
+    # Real hardware values
     # lidar_offset_x: 0.28             # Use TF transform instead
     # lidar_offset_y: 0.0              # Use TF transform instead
     wheelbase: 0.324                   # Distance between axles (m)
@@ -37,9 +36,6 @@ particle_filter:
     sigma_hit: 7.0                     # Measurement noise std dev (tightened)
     
     # === RAY CASTING ===
-    range_method: "cddt"               # Distance transform method
-    theta_discretization: 112          # Angular resolution
-    rangelib_variant: 2                # Ray casting variant
     angle_step: 18                     # Laser downsampling factor
     squash_factor: 2.2                 # Weight normalization (matches old working version)
     use_parallel_raycasting: true      # Enable parallel processing
@@ -58,8 +54,6 @@ particle_filter:
     base_frame: "base_link"            # Robot base frame
     laser_frame: "laser"               # Laser scanner frame
     
-    # === PERFORMANCE & DEBUGGING ===
-    fine_timing: 1                     # Detailed timing output (0=off, 1=on) - enabled for optimization monitoring
 
 # ================================================================================================
 # MAP SERVER CONFIGURATION

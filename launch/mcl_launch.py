@@ -76,11 +76,6 @@ def generate_launch_description():
     
     # === DYNAMIC PARAMETERS BASED ON MODE ===
     dynamic_params = {
-        # Mode configuration
-        'sim_mode': PythonExpression([
-            "'true' if '", LaunchConfiguration('mod'), "' == 'sim' else 'false'"
-        ]),
-        
         # Topic names
         'scan_topic': '/scan',  # All modes use /scan
         'odom_topic': PythonExpression([
