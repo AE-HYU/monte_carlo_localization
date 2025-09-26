@@ -552,42 +552,32 @@ void ParticleFilter::initialize_global()
  */
 void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd)
 {
-    // Ackermann kinematics with wheelbase parameter
-    double dt = motion_cmd.dt;
-    double velocity = motion_cmd.velocity;
-    double angular_velocity = motion_cmd.angular_velocity;
+    // Simple displacement-based motion model like old version
+    Eigen::Vector3d action = motion_cmd.to_displacement(); // Convert back to displacement
 
-    double displacement = velocity * dt;
-    double delta_theta = angular_velocity * dt;
-
-    // Apply Ackermann model with wheelbase to each particle
+    // Apply motion transformation: local → global coordinates
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        double x = proposal_dist(i, 0);
-        double y = proposal_dist(i, 1);
-        double theta = proposal_dist(i, 2);
+        double cos_theta = std::cos(proposal_dist(i, 2));
+        double sin_theta = std::sin(proposal_dist(i, 2));
 
-        if (std::abs(angular_velocity) < 1e-6) {
-            // Straight line motion
-            proposal_dist(i, 0) = x + displacement * std::cos(theta);
-            proposal_dist(i, 1) = y + displacement * std::sin(theta);
-            proposal_dist(i, 2) = theta;
-        } else {
-            // Simple curved motion - avoid complex atan/tan calculations
-            double turning_radius = velocity / angular_velocity;
-            double new_theta = theta + delta_theta;
+        // Transform displacement to global coordinates
+        double global_dx = cos_theta * action[0] - sin_theta * action[1];
+        double global_dy = sin_theta * action[0] + cos_theta * action[1];
+        double delta_theta = action[2];
 
-            // Simple kinematic equations without wheelbase complexity
-            proposal_dist(i, 0) = x + turning_radius * (std::sin(new_theta) - std::sin(theta));
-            proposal_dist(i, 1) = y - turning_radius * (std::cos(new_theta) - std::cos(theta));
-            proposal_dist(i, 2) = new_theta;
-        }
+        // Apply displacement
+        proposal_dist(i, 0) += global_dx;
+        proposal_dist(i, 1) += global_dy;
+        proposal_dist(i, 2) += delta_theta;
 
-        // Add velocity-proportional motion noise
-        double speed_factor = 1.0 + std::abs(velocity) * 0.1; // Scale noise with velocity
+        // Add simple Gaussian noise (keep velocity-proportional for high-speed stability)
+        double speed = std::sqrt(action[0]*action[0] + action[1]*action[1]) / motion_cmd.dt; // Estimate speed
+        double speed_factor = 1.0 + speed * 0.05; // Reduced factor for stability
+
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * speed_factor;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * (1.0 + std::abs(angular_velocity) * 0.2);
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * (1.0 + std::abs(delta_theta) * 0.1);
 
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));

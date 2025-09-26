@@ -52,6 +52,12 @@ struct MotionCommand
         double w = (std::abs(action[2]) > 0.001) ? action[2] / time_interval : 0.0;
         return MotionCommand(v, w, time_interval);
     }
+
+    // Convert back to displacement vector for simple motion model
+    Eigen::Vector3d to_displacement() const
+    {
+        return Eigen::Vector3d(velocity * dt, 0.0, angular_velocity * dt);
+    }
 };
 
 class ParticleFilter : public rclcpp::Node
