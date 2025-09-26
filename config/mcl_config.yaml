@@ -8,7 +8,7 @@
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 4000                # Increased particle count for smoother tracking (matches old working version)
+    max_particles: 2000                # Increased particle count for smoother tracking (matches old working version)
     max_viz_particles: 60              # Visualization particle count
     max_range: 12.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)

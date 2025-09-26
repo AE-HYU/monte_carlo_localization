@@ -959,7 +959,20 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         if (odom_initialized_ && last_pose_.norm() > 0) {
             // Calculate map->odom transform: T_map_odom = T_map_base * T_base_odom^(-1)
             double mcl_x = pose[0], mcl_y = pose[1], mcl_yaw = pose[2];
-            double odom_x = last_pose_[0], odom_y = last_pose_[1], odom_yaw = last_pose_[2];
+
+            // Get odometry from tf (odom to base_link) at lidar timestamp
+            double odom_x, odom_y, odom_yaw;
+            try {
+                auto odom_transform = tf_buffer_->lookupTransform(ODOM_FRAME, BASE_FRAME, stamp);
+                odom_x = odom_transform.transform.translation.x;
+                odom_y = odom_transform.transform.translation.y;
+                odom_yaw = utils::geometry::quaternion_to_yaw(odom_transform.transform.rotation);
+            } catch (tf2::TransformException& ex) {
+                RCLCPP_WARN(this->get_logger(), "Could not get odom->base_link transform: %s. Using last_pose_ fallback.", ex.what());
+                odom_x = last_pose_[0];
+                odom_y = last_pose_[1];
+                odom_yaw = last_pose_[2];
+            }
 
             // Inverse odom transform
             double cos_odom_inv = std::cos(-odom_yaw), sin_odom_inv = std::sin(-odom_yaw);
