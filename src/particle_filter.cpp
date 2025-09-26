@@ -583,10 +583,11 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
             proposal_dist(i, 2) = new_theta;
         }
 
-        // Add simple motion noise like old working version
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
+        // Add velocity-proportional motion noise
+        double speed_factor = 1.0 + std::abs(velocity) * 0.1; // Scale noise with velocity
+        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
+        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * speed_factor;
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * (1.0 + std::abs(angular_velocity) * 0.2);
 
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
