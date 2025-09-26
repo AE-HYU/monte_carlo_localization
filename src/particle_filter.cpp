@@ -894,7 +894,7 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 // TIMER UPDATE
 // ================================================================================================
 // --------------------------------- MAIN UPDATE LOOP ---------------------------------
-void ParticleFilter::update()
+void ParticleFilter::update(double dt)
 {
     if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
     {
@@ -910,7 +910,7 @@ void ParticleFilter::update()
         odometry_data_ = Eigen::Vector3d::Zero();
 
         // Execute complete MCL cycle - convert action to MotionCommand
-        MotionCommand motion_cmd = MotionCommand::from_displacement(action, 0.1); // 0.1s default dt
+        MotionCommand motion_cmd = MotionCommand::from_displacement(action, dt);
         MCL(motion_cmd, observation);
 
         // Final pose estimate: weighted mean
@@ -947,7 +947,8 @@ void ParticleFilter::timer_update()
 {
     // Run MCL update at controlled timer frequency
     if (odom_initialized_ && lidar_initialized_ && map_initialized_) {
-        update();  // MCL update at timer frequency
+        double dt = 1.0 / TIMER_FREQUENCY;
+        update(dt);  // MCL update at timer frequency
     }
 
     // Publish odometry
