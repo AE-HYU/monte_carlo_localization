@@ -550,7 +550,7 @@ void ParticleFilter::initialize_global()
  * @param proposal_dist Matrix of particle poses to update (in-place)
  * @param motion_cmd Motion command containing velocity, angular velocity, and time step
  */
-void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double dt)
+void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
     // Simple displacement-based motion model
 
@@ -771,7 +771,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
  * @param motion_cmd Motion command for particle prediction
  * @param observation Laser scan measurements for likelihood evaluation
  */
-void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt)
+void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -789,7 +789,7 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 
     // 2. Motion prediction
     auto motion_start = std::chrono::high_resolution_clock::now();
-    motion_model(proposal_distribution_, action, dt);
+    motion_model(proposal_distribution_, action);
     auto motion_end = std::chrono::high_resolution_clock::now();
     timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
@@ -847,7 +847,7 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 // TIMER UPDATE
 // ================================================================================================
 // --------------------------------- MAIN UPDATE LOOP ---------------------------------
-void ParticleFilter::update(double dt)
+void ParticleFilter::update()
 {
     if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
     {
@@ -863,7 +863,7 @@ void ParticleFilter::update(double dt)
         odometry_data_ = Eigen::Vector3d::Zero();
 
         // Execute complete MCL cycle - pass action directly
-        MCL(action, observation, dt);
+        MCL(action, observation);
 
         // Final pose estimate: weighted mean
         inferred_pose_ = expected_pose();
@@ -899,8 +899,7 @@ void ParticleFilter::timer_update()
 {
     // Run MCL update at controlled timer frequency
     if (odom_initialized_ && lidar_initialized_ && map_initialized_) {
-        double dt = 1.0 / TIMER_FREQUENCY;
-        update(dt);  // MCL update at timer frequency
+        update();  // MCL update at timer frequency
     }
 
     // Publish odometry

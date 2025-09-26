@@ -67,8 +67,8 @@ class ParticleFilter : public rclcpp::Node
 
   private:
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
-    void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt);
-    void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double dt);
+    void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation);
+    void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
 
@@ -242,7 +242,7 @@ class ParticleFilter : public rclcpp::Node
     std::vector<int> particle_indices_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
-    void update(double dt);           // Main MCL update function
+    void update();           // Main MCL update function
     void timer_update();
     void publish_map_periodically();
 };
