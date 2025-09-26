@@ -67,8 +67,8 @@ class ParticleFilter : public rclcpp::Node
 
   private:
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
-    void MCL(const MotionCommand &motion_cmd, const std::vector<float> &observation);
-    void motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd);
+    void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt);
+    void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double dt);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
 

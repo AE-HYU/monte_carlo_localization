@@ -550,10 +550,9 @@ void ParticleFilter::initialize_global()
  * @param proposal_dist Matrix of particle poses to update (in-place)
  * @param motion_cmd Motion command containing velocity, angular velocity, and time step
  */
-void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCommand &motion_cmd)
+void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action, double dt)
 {
-    // Simple displacement-based motion model like old version
-    Eigen::Vector3d action = motion_cmd.to_displacement(); // Convert back to displacement
+    // Simple displacement-based motion model
 
     // Apply motion transformation: local → global coordinates
     for (int i = 0; i < MAX_PARTICLES; ++i)
@@ -572,7 +571,7 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const MotionCo
         proposal_dist(i, 2) += delta_theta;
 
         // Add simple Gaussian noise (keep velocity-proportional for high-speed stability)
-        double speed = std::sqrt(action[0]*action[0] + action[1]*action[1]) / motion_cmd.dt; // Estimate speed
+        double speed = std::sqrt(action[0]*action[0] + action[1]*action[1]) / dt; // Estimate speed
         double speed_factor = 1.0 + speed * 0.05; // Reduced factor for stability
 
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
@@ -772,7 +771,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle)
  * @param motion_cmd Motion command for particle prediction
  * @param observation Laser scan measurements for likelihood evaluation
  */
-void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<float> &observation)
+void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation, double dt)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -790,7 +789,7 @@ void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<floa
 
     // 2. Motion prediction
     auto motion_start = std::chrono::high_resolution_clock::now();
-    motion_model(proposal_distribution_, motion_cmd);
+    motion_model(proposal_distribution_, action, dt);
     auto motion_end = std::chrono::high_resolution_clock::now();
     timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
@@ -863,9 +862,8 @@ void ParticleFilter::update(double dt)
         auto action = odometry_data_;
         odometry_data_ = Eigen::Vector3d::Zero();
 
-        // Execute complete MCL cycle - convert action to MotionCommand
-        MotionCommand motion_cmd = MotionCommand::from_displacement(action, dt);
-        MCL(motion_cmd, observation);
+        // Execute complete MCL cycle - pass action directly
+        MCL(action, observation, dt);
 
         // Final pose estimate: weighted mean
         inferred_pose_ = expected_pose();
