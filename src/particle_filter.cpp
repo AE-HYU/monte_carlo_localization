@@ -910,13 +910,27 @@ void ParticleFilter::timer_update()
         odom.header.frame_id = "map";
         odom.child_frame_id = "base_link";
 
-        // Get best available pose
-        Eigen::Vector3d current_pose = get_current_pose();
+        // Use TF lookup for smooth interpolated pose (eliminates MCL vibration)
+        // TF provides same global accuracy but with smooth interpolation between updates
+        try {
+            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
 
-        odom.pose.pose.position.x = current_pose[0];
-        odom.pose.pose.position.y = current_pose[1];
-        odom.pose.pose.position.z = 0.0;
-        odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(current_pose[2]);
+            odom.pose.pose.position.x = transform.transform.translation.x;
+            odom.pose.pose.position.y = transform.transform.translation.y;
+            odom.pose.pose.position.z = transform.transform.translation.z;
+            odom.pose.pose.orientation = transform.transform.rotation;
+        }
+        catch (const tf2::TransformException& ex) {
+            // Fallback to raw MCL output if TF lookup fails
+            Eigen::Vector3d current_pose = get_current_pose();
+            odom.pose.pose.position.x = current_pose[0];
+            odom.pose.pose.position.y = current_pose[1];
+            odom.pose.pose.position.z = 0.0;
+            odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(current_pose[2]);
+
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "TF lookup failed for /pf/pose/odom, using raw MCL: %s", ex.what());
+        }
 
         // Set velocity
         odom.twist.twist.linear.x = current_velocity_;
