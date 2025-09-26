@@ -570,13 +570,13 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
         proposal_dist(i, 1) += global_dy;
         proposal_dist(i, 2) += delta_theta;
 
-        // Add simple Gaussian noise (keep velocity-proportional for high-speed stability)
-        double speed = std::sqrt(action[0]*action[0] + action[1]*action[1]) / dt; // Estimate speed
-        double speed_factor = 1.0 + speed * 0.05; // Reduced factor for stability
+        // Add velocity-proportional Gaussian noise for high-speed stability
+        double speed_factor = 1.0 + std::abs(current_velocity_) * 0.1; // Scale with forward velocity
+        double angular_factor = 1.0 + std::abs(current_angular_vel_) * 0.2; // Scale with rotation rate
 
         proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X * speed_factor;
         proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y * speed_factor;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * (1.0 + std::abs(delta_theta) * 0.1);
+        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA * angular_factor;
 
         // Normalize angle
         proposal_dist(i, 2) = utils::geometry::normalize_angle(proposal_dist(i, 2));
