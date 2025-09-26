@@ -896,14 +896,14 @@ void ParticleFilter::timer_update()
     if (PUBLISH_ODOM && odom_pub_)
     {
         nav_msgs::msg::Odometry odom;
-        odom.header.stamp = last_lidar_time_;  // Use LiDAR timestamp (actual measurement time)
+        odom.header.stamp = this->now();
         odom.header.frame_id = "map";
         odom.child_frame_id = "base_link";
 
         // Use TF lookup for smooth interpolated pose (eliminates MCL vibration)
         // TF provides same global accuracy but with smooth interpolation between updates
         try {
-            auto transform = tf_buffer_->lookupTransform("map", "base_link", last_lidar_time_);
+            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
 
             odom.pose.pose.position.x = transform.transform.translation.x;
             odom.pose.pose.position.y = transform.transform.translation.y;
