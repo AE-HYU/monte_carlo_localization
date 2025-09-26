@@ -40,9 +40,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("sigma_hit", 8.0);
     
     // Motion model parameters
-    this->declare_parameter("motion_dispersion_x", 0.05);
-    this->declare_parameter("motion_dispersion_y", 0.025);
-    this->declare_parameter("motion_dispersion_theta", 0.25);
+    this->declare_parameter("motion_dispersion_x", 0.02);
+    this->declare_parameter("motion_dispersion_y", 0.01);
+    this->declare_parameter("motion_dispersion_theta", 0.05);
 
     // Robot geometry
     this->declare_parameter("wheelbase", 0.324);
@@ -440,9 +440,7 @@ void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceSt
     // Set inferred pose immediately for visualization
     inferred_pose_ = pose;
 
-    // Enable aggressive convergence mode for next 20 iterations
-    fast_convergence_mode_ = true;
-    fast_convergence_remaining_ = 20;
+    // Disabled fast convergence mode for simplicity
 
     RCLCPP_INFO(this->get_logger(), "Pose initialized from RViz at [%.3f, %.3f, %.3f] - fast convergence enabled",
                 pose[0], pose[1], pose[2]);
@@ -682,20 +680,8 @@ void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, i
         ranges_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX), ranges_[i] / map_resolution_);
     }
 
-    // Calculate adaptive squash factor for high-speed maneuvers and fast convergence
-    const bool is_high_speed_curve = (current_velocity_ > 4.0 && std::abs(current_angular_vel_) > 0.3);
-    double squash_factor = is_high_speed_curve ?
-        std::min(INV_SQUASH_FACTOR, 1.0 / 1.8) : INV_SQUASH_FACTOR;
-
-    // Apply stronger weighting during fast convergence mode for faster particle selection
-    if (fast_convergence_mode_ && fast_convergence_remaining_ > 0) {
-        squash_factor = std::min(squash_factor, 1.0 / 1.2); // More aggressive weighting
-        --fast_convergence_remaining_;
-        if (fast_convergence_remaining_ <= 0) {
-            fast_convergence_mode_ = false;
-            RCLCPP_INFO(this->get_logger(), "Fast convergence mode completed");
-        }
-    }
+    // Use simple fixed squash factor
+    double squash_factor = INV_SQUASH_FACTOR;
 
     // Compute particle weights using pre-computed sensor model lookup table
     for (int i = 0; i < MAX_PARTICLES; ++i) {
@@ -829,30 +815,7 @@ void ParticleFilter::MCL(const MotionCommand &motion_cmd, const std::vector<floa
             w /= sum_weights;
         }
 
-        // Check effective sample size for high-speed recovery
-        double effective_particles = 0.0;
-        for (const double &w : weights_) {
-            effective_particles += w * w;
-        }
-        effective_particles = 1.0 / effective_particles;
-
-        // Emergency recovery: inject random particles during high-speed maneuvers if diversity is too low
-        if (effective_particles < MAX_PARTICLES * 0.15 && std::abs(current_velocity_) > 4.0) {
-            // Replace 10% of particles with random samples around current estimate
-            int recovery_count = MAX_PARTICLES / 10;
-            Eigen::Vector3d current_pose = expected_pose();
-
-            std::uniform_int_distribution<int> particle_idx_dist(0, MAX_PARTICLES - 1);
-            for (int i = 0; i < recovery_count; ++i) {
-                int idx = particle_idx_dist(rng_);
-                // Add particles around current pose with moderate spread
-                proposal_distribution_(idx, 0) = current_pose[0] + normal_dist_(rng_) * 1.0;
-                proposal_distribution_(idx, 1) = current_pose[1] + normal_dist_(rng_) * 1.0;
-                proposal_distribution_(idx, 2) = current_pose[2] + normal_dist_(rng_) * 0.5;
-                proposal_distribution_(idx, 2) = utils::geometry::normalize_angle(proposal_distribution_(idx, 2));
-                weights_[idx] = 1.0 / MAX_PARTICLES;
-            }
-        }
+        // Simple resampling without emergency recovery
     }
 
     // 5. Update particle set - using efficient swap
