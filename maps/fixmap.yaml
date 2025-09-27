@@ -1,0 +1,9 @@
+free_thresh: 0.3
+image: fixmap.png
+negate: 0
+occupied_thresh: 0.65
+origin:
+- -9.497289276123047
+- -5.323116302490234
+- 0
+resolution: 0.05000000074505806
