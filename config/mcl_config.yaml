@@ -42,6 +42,7 @@ particle_filter:
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
     timer_frequency: 100.0             # Timer frequency (Hz) - publishing only now
+    update_from: "odom"                # MCL update trigger: "odom", "lidar", or "timer"
 
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame

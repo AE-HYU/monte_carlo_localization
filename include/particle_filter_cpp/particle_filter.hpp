@@ -100,6 +100,7 @@ class ParticleFilter : public rclcpp::Node
     bool USE_PARALLEL_RAYCASTING;
     int NUM_THREADS;
     double MAX_POSE_RANGE;
+    std::string UPDATE_FROM;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;

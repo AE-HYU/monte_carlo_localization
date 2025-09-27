@@ -5,11 +5,16 @@ Supports real hardware, simulation, and bag playback modes
 
 Usage:
   Real car:      ros2 launch particle_filter_cpp mcl_launch.py mod:=real
-  Simulation:    ros2 launch particle_filter_cpp mcl_launch.py mod:=sim  
+  Simulation:    ros2 launch particle_filter_cpp mcl_launch.py mod:=sim
   Bag playback:  ros2 launch particle_filter_cpp mcl_launch.py mod:=bag
-  
+
   # To change map, launch with map_name:='your_map'
   Example:       ros2 launch particle_filter_cpp mcl_launch.py mod:=real map_name:='my_custom_map'
+
+  # To change MCL update trigger (default: odom)
+  Update modes:  ros2 launch particle_filter_cpp mcl_launch.py update_from:=odom   # Update on odometry
+                 ros2 launch particle_filter_cpp mcl_launch.py update_from:=lidar  # Update on lidar
+                 ros2 launch particle_filter_cpp mcl_launch.py update_from:=timer  # Update on timer
 """
 
 from launch import LaunchDescription
@@ -44,6 +49,12 @@ def generate_launch_description():
         'use_rviz',
         default_value='true',
         description='Launch RViz visualization'
+    )
+
+    update_from_arg = DeclareLaunchArgument(
+        'update_from',
+        default_value='odom',
+        description='MCL update trigger: odom, lidar, or timer'
     )
     
     # === CONFIGURATION ===
@@ -99,7 +110,10 @@ def generate_launch_description():
         ]),
         'publish_odom_base_tf': PythonExpression([
             "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
-        ])
+        ]),
+
+        # MCL update trigger
+        'update_from': LaunchConfiguration('update_from')
     }
     
     # === COMMON PARAMETERS ===
@@ -186,6 +200,7 @@ def generate_launch_description():
         mode_arg,
         map_name_arg,
         use_rviz_arg,
+        update_from_arg,
         config_arg,
         
         # Nodes

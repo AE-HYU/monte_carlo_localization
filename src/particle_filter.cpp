@@ -61,6 +61,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Performance
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
+
+    // Update trigger
+    this->declare_parameter("update_from", "odom"); // odom, lidar, timer
     
     // TF frames
     this->declare_parameter("map_frame", "map");
@@ -105,6 +108,13 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Performance
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
     NUM_THREADS = this->get_parameter("num_threads").as_int();
+
+    // Update trigger
+    UPDATE_FROM = this->get_parameter("update_from").as_string();
+    if (UPDATE_FROM != "odom" && UPDATE_FROM != "lidar" && UPDATE_FROM != "timer") {
+        RCLCPP_WARN(this->get_logger(), "Invalid update_from value '%s', defaulting to 'odom'", UPDATE_FROM.c_str());
+        UPDATE_FROM = "odom";
+    }
 
     // TF frames
     MAP_FRAME = this->get_parameter("map_frame").as_string();
@@ -205,9 +215,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     );
 
 
-    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)", 
-        TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential", 
-        USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads), update_from: %s",
+        TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
+        USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1, UPDATE_FROM.c_str());
 }
 
 // ================================================================================================
@@ -384,6 +394,11 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
             msg->header.stamp.sec, msg->header.stamp.nanosec);
     }
     lidar_initialized_ = true;
+
+    // Trigger MCL update based on update_from parameter
+    if (UPDATE_FROM == "lidar") {
+        update();
+    }
 }
 
 /**
@@ -414,8 +429,10 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
         last_stamp_ = msg->header.stamp;
         odom_initialized_ = true;
 
-        // Trigger MCL update on every odometry message
-        update();
+        // Trigger MCL update based on update_from parameter
+        if (UPDATE_FROM == "odom") {
+            update();
+        }
     }
     else
     {
@@ -898,8 +915,10 @@ void ParticleFilter::update()
  */
 void ParticleFilter::timer_update()
 {
-    // MCL update is now triggered by odometry callback
-    // Timer only handles publishing and visualization
+    // Trigger MCL update based on update_from parameter
+    if (UPDATE_FROM == "timer") {
+        update();
+    }
 
     // Publish odometry
     if (PUBLISH_ODOM && odom_pub_)
