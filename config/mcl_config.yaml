@@ -1,53 +1,48 @@
 # ================================================================================================
 # MONTE CARLO LOCALIZATION (MCL) CONFIGURATION
 # ================================================================================================
-# Unified configuration supporting both real hardware and simulation modes
-# Mode-specific parameters are overridden by launch file based on 'mod' argument
-# ================================================================================================
+# This configuration file sets parameters for the Monte Carlo Localization node and the map server.
 
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 2000                # Increased particle count for smoother tracking (matches old working version)
-    max_viz_particles: 60              # Visualization particle count
+    max_particles: 4000                # Maximum number of particles
+    max_viz_particles: 60              # Visualization downsampling
     max_range: 12.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
-    
+
     # === TF CONTROL ===
-    publish_map_odom_tf: true          # Publish map->odom transform (real mode only)
-    publish_odom_base_tf: false        # Let F1Tenth stack handle odom->base_link
-    
+    publish_map_odom_tf: true          # Publish map->odom transform
+    publish_odom_base_tf: false        # Let odom stack handle this
+
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.02          # Forward motion noise (m) - reduced to fix oscillation
-    motion_dispersion_y: 0.01          # Lateral motion noise (m) - reduced to fix oscillation
-    motion_dispersion_theta: 0.1       # Rotation noise (rad) - reduced from 0.25 to fix oscillation
+    motion_dispersion_x: 0.02          # Forward motion noise (m)
+    motion_dispersion_y: 0.01          # Lateral motion noise (m)
+    motion_dispersion_theta: 0.05      # Rotation noise (rad) # ~3 degrees
 
     # === ROBOT GEOMETRY ===
-    # Real hardware values
-    # lidar_offset_x: 0.28             # Use TF transform instead
-    # lidar_offset_y: 0.0              # Use TF transform instead
     wheelbase: 0.324                   # Distance between axles (m)
-    
-    # === SENSOR MODEL (4-component beam model) ===
-    z_hit: 0.80                        # Weight for correct measurements (increased for better tracking)
-    z_short: 0.01                      # Weight for unexpected obstacles
-    z_max: 0.05                        # Weight for max range readings (reduced)
-    z_rand: 0.14                       # Weight for random noise (reduced)
-    sigma_hit: 7.0                     # Measurement noise std dev (tightened)
-    
+
+    # === SENSOR MODEL ===
+    z_hit: 0.80                        # Weight for correct measurements
+    z_short: 0.01                      # Weight for short readings
+    z_max: 0.07                        # Weight for max range readings
+    z_rand: 0.12                       # Weight for random noise
+    sigma_hit: 8.0                     # Measurement noise std dev
+
     # === RAY CASTING ===
     angle_step: 18                     # Laser downsampling factor
-    squash_factor: 2.2                 # Weight normalization (matches old working version)
+    squash_factor: 2.2                 # Weight normalization power
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
-    
+
     # === ROS INTERFACE ===
     scan_topic: "/scan"                # LaserScan input topic
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 50.0              # MCL update frequency (Hz) - reduced to fix oscillation
-    
+    timer_frequency: 100.0             # Timer frequency (Hz) - publishing only now
+
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame
     odom_frame: "odom"                 # Odometry frame

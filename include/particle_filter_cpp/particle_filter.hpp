@@ -32,33 +32,7 @@
 namespace particle_filter_cpp
 {
 
-// Motion command structure for optimized motion model
-struct MotionCommand
-{
-    double velocity;          // Linear velocity (m/s)
-    double angular_velocity;  // Angular velocity (rad/s)
-    double dt;               // Time interval (s)
-    
-    // Default constructor
-    MotionCommand() : velocity(0.0), angular_velocity(0.0), dt(0.0) {}
-    
-    // Constructor with values
-    MotionCommand(double v, double w, double time) : velocity(v), angular_velocity(w), dt(time) {}
-    
-    // Constructor from legacy action vector (displacement-based)
-    static MotionCommand from_displacement(const Eigen::Vector3d& action, double time_interval)
-    {
-        double v = (std::abs(action[0]) > 0.001) ? action[0] / time_interval : 0.0;
-        double w = (std::abs(action[2]) > 0.001) ? action[2] / time_interval : 0.0;
-        return MotionCommand(v, w, time_interval);
-    }
-
-    // Convert back to displacement vector for simple motion model
-    Eigen::Vector3d to_displacement() const
-    {
-        return Eigen::Vector3d(velocity * dt, 0.0, angular_velocity * dt);
-    }
-};
+// Simple displacement-based motion model
 
 class ParticleFilter : public rclcpp::Node
 {
@@ -150,11 +124,7 @@ class ParticleFilter : public rclcpp::Node
     Eigen::Vector3d odometry_data_;
     Eigen::Vector3d last_pose_;
     
-    bool pose_initialized_from_rviz_;        // Flag to track if pose was set via 2D Pose Estimate
-
-    // Fast convergence after RViz initialization
-    bool fast_convergence_mode_;             // Enable aggressive convergence mode
-    int fast_convergence_remaining_;         // Iterations remaining for fast convergence
+    // Simple state tracking
 
     // --------------------------------- SENSOR DATA ---------------------------------
     std::vector<float> laser_angles_;
