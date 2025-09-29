@@ -32,8 +32,6 @@
 namespace particle_filter_cpp
 {
 
-// Simple displacement-based motion model
-
 class ParticleFilter : public rclcpp::Node
 {
   public:
@@ -69,22 +67,20 @@ class ParticleFilter : public rclcpp::Node
     void get_omap();
 
     // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
-    void publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp);
-    void visualize(const rclcpp::Time &stamp = rclcpp::Time(0));
+    void publish_tf(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
+    void visualize(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp = rclcpp::Time(0));
     void publish_particles(const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp = rclcpp::Time(0));
     
     // --------------------------------- POSE MANAGEMENT ---------------------------------
-    Eigen::Vector3d get_current_pose();
     bool is_pose_valid(const Eigen::Vector3d& pose);
 
     // --------------------------------- TF UTILITIES ---------------------------------
     Eigen::Vector3d apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame);
-    
-
 
     // --------------------------------- RAY CASTING ---------------------------------
     std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);
-    float cast_ray(double x, double y, double angle);
+    float cast_ray(double x, double y, double angle,
+                   const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map);
 
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
     int ANGLE_STEP;
@@ -100,7 +96,6 @@ class ParticleFilter : public rclcpp::Node
     bool USE_PARALLEL_RAYCASTING;
     int NUM_THREADS;
     double MAX_POSE_RANGE;
-    std::string UPDATE_FROM;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
@@ -121,14 +116,10 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- PARTICLE FILTER STATE ---------------------------------
     Eigen::MatrixXd particles_;
     std::vector<double> weights_;
-    Eigen::Vector3d inferred_pose_;
     Eigen::Vector3d odometry_data_;
     Eigen::Vector3d last_pose_;
-    
-    // Simple state tracking
 
     // --------------------------------- SENSOR DATA ---------------------------------
-    std::vector<float> laser_angles_;
     std::vector<float> downsampled_angles_;
     std::vector<float> downsampled_ranges_;
     rclcpp::Time last_lidar_time_;
@@ -137,7 +128,6 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- MAP DATA ---------------------------------
     nav_msgs::msg::OccupancyGrid::SharedPtr map_msg_;
-    Eigen::MatrixXi permissible_region_;
     bool map_initialized_;
     bool lidar_initialized_;
     bool odom_initialized_;
@@ -145,9 +135,7 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- SENSOR MODEL OPTIMIZATION ---------------------------------
     Eigen::MatrixXd sensor_model_table_;
-    int MAX_RANGE_PX;
-    double map_resolution_;
-    Eigen::Vector3d map_origin_;
+    int MAX_RANGE_PX_;
 
     // --------------------------------- PERFORMANCE CACHES ---------------------------------
     Eigen::MatrixXd local_deltas_;
@@ -183,30 +171,24 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
+    std::mutex lidar_lock_;
+    std::mutex odom_lock_;
+    std::mutex map_lock_;
+    std::mutex rng_lock_;
 
     // --------------------------------- RANDOM NUMBER GENERATION ---------------------------------
     std::mt19937 rng_;
-    std::uniform_real_distribution<double> uniform_dist_;
     std::normal_distribution<double> normal_dist_;
 
-    // --------------------------------- TIMING & STATISTICS ---------------------------------
-    rclcpp::Time last_stamp_;
-    int iters_;
-    
     // --------------------------------- VELOCITY TRACKING ---------------------------------
     double current_velocity_;          // Current linear velocity (m/s)
     double current_angular_vel_;       // Current angular velocity (rad/s)
-    
-    // Performance profiling
-    utils::performance::TimingStats timing_stats_;
-    
 
-    // --------------------------------- ALGORITHM INTERNALS ---------------------------------
-    std::vector<int> particle_indices_;
+    // --------------------------------- PERFORMANCE PROFILING ---------------------------------
+    utils::performance::TimingStats timing_stats_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
-    void update();           // Main MCL update function
-    void timer_update();
+    void timer_update(); // Main MCL update function - includes odometry publishing
     void publish_map_periodically();
 };
 

@@ -6,9 +6,9 @@
 particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 4000                # Maximum number of particles
-    max_viz_particles: 60              # Visualization downsampling
-    max_range: 12.0                    # Laser max range (m)
+    max_particles: 2000                # Maximum number of particles
+    max_viz_particles: 100              # Visualization downsampling
+    max_range: 10.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
 
     # === TF CONTROL ===
@@ -17,7 +17,7 @@ particle_filter:
 
     # === MOTION MODEL NOISE ===
     motion_dispersion_x: 0.02          # Forward motion noise (m)
-    motion_dispersion_y: 0.01          # Lateral motion noise (m)
+    motion_dispersion_y: 0.02          # Lateral motion noise (m)
     motion_dispersion_theta: 0.05      # Rotation noise (rad) # ~3 degrees
 
     # === ROBOT GEOMETRY ===
@@ -41,7 +41,7 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 100.0             # Timer frequency (Hz) - publishing only now
+    timer_frequency: 40.0              # Timer frequency (Hz) - publishing only now
     update_from: "odom"                # MCL update trigger: "odom", "lidar", or "timer"
 
     # === TF FRAME NAMES ===

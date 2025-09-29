@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <numeric>
 #include <omp.h>
 
 namespace particle_filter_cpp
@@ -24,7 +23,7 @@ namespace particle_filter_cpp
  * @brief Initializes particle filter with parameters, publishers, and subscribers
  */
 ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
-    : Node("particle_filter", options), rng_(std::random_device{}()), uniform_dist_(0.0, 1.0), normal_dist_(0.0, 1.0)
+    : Node("particle_filter", options), rng_(std::random_device{}()), normal_dist_(0.0, 1.0)
 {
     // === PARAMETER DECLARATIONS ===
     // Core algorithm parameters
@@ -62,9 +61,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("use_parallel_raycasting", true);
     this->declare_parameter("num_threads", 0); // 0 = auto-detect
 
-    // Update trigger
-    this->declare_parameter("update_from", "odom"); // odom, lidar, timer
-    
     // TF frames
     this->declare_parameter("map_frame", "map");
     this->declare_parameter("odom_frame", "odom");
@@ -109,13 +105,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
     NUM_THREADS = this->get_parameter("num_threads").as_int();
 
-    // Update trigger
-    UPDATE_FROM = this->get_parameter("update_from").as_string();
-    if (UPDATE_FROM != "odom" && UPDATE_FROM != "lidar" && UPDATE_FROM != "timer") {
-        RCLCPP_WARN(this->get_logger(), "Invalid update_from value '%s', defaulting to 'odom'", UPDATE_FROM.c_str());
-        UPDATE_FROM = "odom";
-    }
-
     // TF frames
     MAP_FRAME = this->get_parameter("map_frame").as_string();
     ODOM_FRAME = this->get_parameter("odom_frame").as_string();
@@ -127,8 +116,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     PUBLISH_ODOM_BASE_TF = this->get_parameter("publish_odom_base_tf").as_bool();
 
     // State initialization
-    MAX_RANGE_PX = 0;
-    iters_ = 0;
+    MAX_RANGE_PX_ = 0;
     map_initialized_ = false;
     lidar_initialized_ = false;
     odom_initialized_ = false;
@@ -138,6 +126,10 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     has_new_lidar_data_ = false;
     last_lidar_time_ = rclcpp::Time(0);
     mcl_processing_time_ = 0.0;
+
+    // Initialize pose vectors
+    last_pose_ = Eigen::Vector3d::Zero();
+    odometry_data_ = Eigen::Vector3d::Zero();
     
     // Simple state tracking
 
@@ -152,8 +144,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Particle initialization
     particles_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
     weights_.resize(MAX_PARTICLES, 1.0 / MAX_PARTICLES);
-    particle_indices_.resize(MAX_PARTICLES);
-    std::iota(particle_indices_.begin(), particle_indices_.end(), 0);
 
     // Motion cache and performance optimizations
     local_deltas_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
@@ -215,9 +205,9 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     );
 
 
-    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads), update_from: %s",
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
-        USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1, UPDATE_FROM.c_str());
+        USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
 }
 
 // ================================================================================================
@@ -244,28 +234,8 @@ void ParticleFilter::get_omap()
         rclcpp::FutureReturnCode::SUCCESS)
     {
         map_msg_ = std::make_shared<nav_msgs::msg::OccupancyGrid>(future.get()->map);
-        map_resolution_ = map_msg_->info.resolution;
-        map_origin_ = Eigen::Vector3d(map_msg_->info.origin.position.x, map_msg_->info.origin.position.y,
-                                      utils::geometry::quaternion_to_yaw(map_msg_->info.origin.orientation));
 
-        MAX_RANGE_PX = static_cast<int>(MAX_RANGE_METERS / map_resolution_);
-
-        // Extract free space for particle initialization
-        int height = map_msg_->info.height;
-        int width = map_msg_->info.width;
-        permissible_region_ = Eigen::MatrixXi::Zero(height, width);
-
-        for (int i = 0; i < height; ++i)
-        {
-            for (int j = 0; j < width; ++j)
-            {
-                int idx = i * width + j;
-                if (idx < static_cast<int>(map_msg_->data.size()) && map_msg_->data[idx] == 0)
-                {
-                    permissible_region_(i, j) = 1; // permissible
-                }
-            }
-        }
+        MAX_RANGE_PX_ = static_cast<int>(MAX_RANGE_METERS / map_msg_->info.resolution);
 
         map_initialized_ = true;
         RCLCPP_INFO(this->get_logger(), "Map loaded and published");
@@ -292,13 +262,20 @@ void ParticleFilter::get_omap()
  */
 void ParticleFilter::precompute_sensor_model()
 {
-    if (map_resolution_ <= 0.0)
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
     {
-        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f", map_resolution_);
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+
+    if (!local_map || local_map->info.resolution <= 0.0)
+    {
+        RCLCPP_ERROR(this->get_logger(), "Invalid map resolution: %.6f",
+                     local_map ? local_map->info.resolution : 0.0);
         return;
     }
 
-    int table_width = MAX_RANGE_PX + 1;
+    int table_width = MAX_RANGE_PX_ + 1;
     sensor_model_table_ = Eigen::MatrixXd::Zero(table_width, table_width);
 
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -323,15 +300,15 @@ void ParticleFilter::precompute_sensor_model()
             }
 
             // Z_MAX: Delta function at maximum range
-            if (r == MAX_RANGE_PX)
+            if (r == MAX_RANGE_PX_)
             {
                 prob += Z_MAX;
             }
 
             // Z_RAND: Uniform distribution
-            if (r < MAX_RANGE_PX)
+            if (r < MAX_RANGE_PX_)
             {
-                prob += Z_RAND * 1.0 / static_cast<double>(MAX_RANGE_PX);
+                prob += Z_RAND * 1.0 / static_cast<double>(MAX_RANGE_PX_);
             }
 
             norm += prob;
@@ -358,47 +335,39 @@ void ParticleFilter::precompute_sensor_model()
  */
 void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
-    if (laser_angles_.empty())
+    if (downsampled_angles_.empty())
     {
-        // Extract scan parameters and downsample
-        laser_angles_.resize(msg->ranges.size());
-        for (size_t i = 0; i < msg->ranges.size(); ++i)
+        // Create downsampled angles directly from scan parameters
+        for (size_t i = 0; i < msg->ranges.size(); i += ANGLE_STEP)
         {
-            laser_angles_[i] = msg->angle_min + i * msg->angle_increment;
-        }
-
-        // Create downsampled angles
-        for (size_t i = 0; i < laser_angles_.size(); i += ANGLE_STEP)
-        {
-            downsampled_angles_.push_back(laser_angles_[i]);
+            downsampled_angles_.push_back(msg->angle_min + i * msg->angle_increment);
         }
 
         RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
     }
 
-    // Extract downsampled measurements
-    downsampled_ranges_.clear();
-    for (size_t i = 0; i < msg->ranges.size(); i += ANGLE_STEP)
+    // Extract downsampled measurements and mark new lidar data - protected by mutex
     {
-        downsampled_ranges_.push_back(msg->ranges[i]);
-    }
+        std::lock_guard<std::mutex> lock(lidar_lock_);
+        downsampled_ranges_.clear();
+        for (size_t i = 0; i < msg->ranges.size(); i += ANGLE_STEP)
+        {
+            downsampled_ranges_.push_back(msg->ranges[i]);
+        }
 
-    // Mark new lidar data available - protected by mutex
-    {
-        std::lock_guard<std::mutex> lock(state_lock_);
         last_lidar_time_ = msg->header.stamp;
         has_new_lidar_data_ = true;
 
-        RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-            "LiDAR callback: new data received, timestamp: %d.%09u",
-            msg->header.stamp.sec, msg->header.stamp.nanosec);
-    }
-    lidar_initialized_ = true;
+        // RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+        //     "LiDAR callback: new data received, timestamp: %d.%09u",
+        //     msg->header.stamp.sec, msg->header.stamp.nanosec);
 
-    // Trigger MCL update based on update_from parameter
-    if (UPDATE_FROM == "lidar") {
-        update();
+        lidar_initialized_ = true;
     }
+
+    // // Trigger MCL update based on update_from parameter
+    //     update();
+    // }
 }
 
 /**
@@ -406,40 +375,36 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
  */
 void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    // Store velocity information
-    current_velocity_ = msg->twist.twist.linear.x;
-    current_angular_vel_ = msg->twist.twist.angular.z;
-
     // Store pose data
     Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
                              utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
 
-
-    if (last_pose_.norm() > 0)
+    // Protect all shared variables with mutex
     {
-        // Transform global displacement to robot-local coordinates
-        Eigen::Matrix2d rot = utils::geometry::rotation_matrix(-last_pose_[2]);
-        Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
-        Eigen::Vector2d local_delta = rot * delta;
+        std::lock_guard<std::mutex> lock(odom_lock_);
 
-        // Use the motion directly for MCL update
-        odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
+        // Store velocity information
+        current_velocity_ = msg->twist.twist.linear.x;  // 속도는 필요한대서 각자 가져다 쓰는게 더 좋지않나...
+        current_angular_vel_ = msg->twist.twist.angular.z;
 
-        last_pose_ = position;
-        last_stamp_ = msg->header.stamp;
-        odom_initialized_ = true;
+        if (last_pose_.norm() > 0)
+        {
+            // Transform global displacement to robot-local coordinates
+            Eigen::Matrix2d rot = utils::geometry::rotation_matrix(-last_pose_[2]);
+            Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
+            Eigen::Vector2d local_delta = rot * delta;
 
-        // Trigger MCL update based on update_from parameter
-        if (UPDATE_FROM == "odom") {
-            update();
+            // Use the motion directly for MCL update
+            odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
         }
-    }
-    else
-    {
-        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        else
+        {
+            RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+            odom_initialized_ = true;
+        }
+
+        // Update last pose AFTER delta calculation
         last_pose_ = position;
-        last_stamp_ = msg->header.stamp;
-        odom_initialized_ = true;
     }
 }
 
@@ -451,24 +416,53 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
  */
 void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
-    Eigen::Vector3d pose(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                         utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
-    
-    // Initialize particle filter around clicked pose
-    initialize_particles_pose(pose);
+    Eigen::Vector3d base_pose(msg->pose.pose.position.x, msg->pose.pose.position.y,
+                              utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
 
-    // Initialize odometry-based tracking from this pose
+    // Convert base_link pose to laser frame for particles initialization
+    Eigen::Vector3d laser_pose;
+    try {
+        // Create pose in base_link frame
+        geometry_msgs::msg::PoseStamped base_pose_msg;
+        base_pose_msg.header.frame_id = BASE_FRAME;
+        base_pose_msg.pose.position.x = base_pose[0];
+        base_pose_msg.pose.position.y = base_pose[1];
+        base_pose_msg.pose.position.z = 0.0;
+        base_pose_msg.pose.orientation = utils::geometry::yaw_to_quaternion(base_pose[2]);
 
-    // Set inferred pose immediately for visualization
-    inferred_pose_ = pose;
+        // Transform to laser frame
+        geometry_msgs::msg::PoseStamped laser_pose_msg;
+        tf_buffer_->transform(base_pose_msg, laser_pose_msg, LASER_FRAME);
 
-    // Simple initialization
+        laser_pose = Eigen::Vector3d(
+            laser_pose_msg.pose.position.x,
+            laser_pose_msg.pose.position.y,
+            utils::geometry::quaternion_to_yaw(laser_pose_msg.pose.orientation)
+        );
+    }
+    catch (tf2::TransformException &ex) {
+        // Fallback: manual conversion using default offset
+        RCLCPP_WARN(this->get_logger(), "TF transform failed, using manual conversion: %s", ex.what());
+        double offset_x = 0.28;
+        double cos_theta = std::cos(base_pose[2]);
+        double sin_theta = std::sin(base_pose[2]);
 
-    RCLCPP_INFO(this->get_logger(), "Pose initialized from RViz at [%.3f, %.3f, %.3f]",
-                pose[0], pose[1], pose[2]);
+        laser_pose = Eigen::Vector3d(
+            base_pose[0] + offset_x * cos_theta,
+            base_pose[1] + offset_x * sin_theta,
+            base_pose[2]
+        );
+    }
 
-    // Trigger immediate visualization update
-    visualize(this->get_clock()->now());
+    // Initialize particle filter around clicked pose (in laser frame)
+    initialize_particles_pose(laser_pose);
+
+    RCLCPP_INFO(this->get_logger(), "Pose initialized from RViz at base_link [%.3f, %.3f, %.3f] -> laser [%.3f, %.3f, %.3f]",
+                base_pose[0], base_pose[1], base_pose[2],
+                laser_pose[0], laser_pose[1], laser_pose[2]);
+
+    // Trigger immediate visualization update (use base_link frame for visualization)
+    visualize(base_pose, this->get_clock()->now());
 }
 
 /**
@@ -497,11 +491,27 @@ void ParticleFilter::initialize_particles_pose(const Eigen::Vector3d &pose)
     double pos_std = 0.1;   // Reduced from 0.5m to 0.1m (±10cm)
     double angle_std = 0.1; // Reduced from 0.4rad to 0.1rad (±5.7°)
 
+    // Generate all noise values at once
+    std::vector<double> noise_x_values(MAX_PARTICLES);
+    std::vector<double> noise_y_values(MAX_PARTICLES);
+    std::vector<double> noise_theta_values(MAX_PARTICLES);
+
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            noise_x_values[i] = normal_dist_(rng_) * pos_std;
+            noise_y_values[i] = normal_dist_(rng_) * pos_std;
+            noise_theta_values[i] = normal_dist_(rng_) * angle_std;
+        }
+    }
+
+    // Apply noise to particles without lock
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        particles_(i, 0) = pose[0] + normal_dist_(rng_) * pos_std;
-        particles_(i, 1) = pose[1] + normal_dist_(rng_) * pos_std;
-        particles_(i, 2) = pose[2] + normal_dist_(rng_) * angle_std;
+        particles_(i, 0) = pose[0] + noise_x_values[i];
+        particles_(i, 1) = pose[1] + noise_y_values[i];
+        particles_(i, 2) = pose[2] + noise_theta_values[i];
 
         // Normalize angle
         particles_(i, 2) = utils::geometry::normalize_angle(particles_(i, 2));
@@ -518,15 +528,29 @@ void ParticleFilter::initialize_global()
 
     RCLCPP_INFO(this->get_logger(), "Global initialization started");
 
-    std::lock_guard<std::mutex> lock(state_lock_);
-
-    // Extract free space cells
-    std::vector<std::pair<int, int>> permissible_positions;
-    for (int i = 0; i < permissible_region_.rows(); ++i)
+    // 1. Copy map data once with minimal lock time
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
     {
-        for (int j = 0; j < permissible_region_.cols(); ++j)
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+
+    if (!local_map) return;
+
+    // 2. Extract free space cells without lock (read-only operation)
+    int height = local_map->info.height;
+    int width = local_map->info.width;
+    double resolution = local_map->info.resolution;
+    double origin_x = local_map->info.origin.position.x;
+    double origin_y = local_map->info.origin.position.y;
+
+    std::vector<std::pair<int, int>> permissible_positions;
+    for (int i = 0; i < height; ++i)
+    {
+        for (int j = 0; j < width; ++j)
         {
-            if (permissible_region_(i, j) == 1)
+            int idx = i * width + j;
+            if (idx < static_cast<int>(local_map->data.size()) && local_map->data[idx] == 0)
             {
                 permissible_positions.emplace_back(i, j);
             }
@@ -539,29 +563,43 @@ void ParticleFilter::initialize_global()
         return;
     }
 
-    // Sample particles uniformly over free space
+    // 3. Generate particles without lock (using local data)
     std::uniform_int_distribution<int> pos_dist(0, permissible_positions.size() - 1);
     std::uniform_real_distribution<double> angle_dist(0.0, 2.0 * M_PI);
 
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        int idx = pos_dist(rng_);
-        auto pos = permissible_positions[idx];
+    // 4. Generate random values at once
+    std::vector<int> indices(MAX_PARTICLES);
+    std::vector<double> angles(MAX_PARTICLES);
 
-        particles_(i, 0) = pos.second * map_resolution_ + map_origin_[0];
-        particles_(i, 1) = pos.first * map_resolution_ + map_origin_[1];
-        particles_(i, 2) = angle_dist(rng_);
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            indices[i] = pos_dist(rng_);
+            angles[i] = angle_dist(rng_);
+        }
     }
 
-    std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
+    // 5. Update particle state with minimal lock time
+    {
+        std::lock_guard<std::mutex> lock(state_lock_);
 
-    // Calculate expected pose from initialized particles for odometry tracking
-    Eigen::Vector3d initial_pose = expected_pose();
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            auto pos = permissible_positions[indices[i]];
+            particles_(i, 0) = pos.second * resolution + origin_x;
+            particles_(i, 1) = pos.first * resolution + origin_y;
+            particles_(i, 2) = angles[i];
+        }
 
-    // Initialize odometry tracking from global initialization (not from RViz)
+        std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
 
-    RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally with odometry tracking at [%.3f, %.3f, %.3f]",
-                MAX_PARTICLES, initial_pose[0], initial_pose[1], initial_pose[2]);
+        // Calculate expected pose from initialized particles
+        Eigen::Vector3d initial_pose = expected_pose();
+
+        RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally at [%.3f, %.3f, %.3f]",
+                    MAX_PARTICLES, initial_pose[0], initial_pose[1], initial_pose[2]);
+    }
 }
 
 // ================================================================================================
@@ -589,16 +627,30 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
     proposal_dist.col(1) += global_dy;
     proposal_dist.col(2).array() += action[2];
 
-    // Add Gaussian noise
+    // Add Gaussian noise - generate all noise values at once
+    std::vector<double> noise_x_values(MAX_PARTICLES);
+    std::vector<double> noise_y_values(MAX_PARTICLES);
+    std::vector<double> noise_theta_values(MAX_PARTICLES);
+
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            noise_x_values[i] = normal_dist_(rng_) * MOTION_DISPERSION_X;
+            noise_y_values[i] = normal_dist_(rng_) * MOTION_DISPERSION_Y;
+            noise_theta_values[i] = normal_dist_(rng_) * MOTION_DISPERSION_THETA;
+        }
+    }
+
+    // Apply noise without lock
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        proposal_dist(i, 0) += normal_dist_(rng_) * MOTION_DISPERSION_X;
-        proposal_dist(i, 1) += normal_dist_(rng_) * MOTION_DISPERSION_Y;
-        proposal_dist(i, 2) += normal_dist_(rng_) * MOTION_DISPERSION_THETA;
+        proposal_dist(i, 0) += noise_x_values[i];
+        proposal_dist(i, 1) += noise_y_values[i];
+        proposal_dist(i, 2) += noise_theta_values[i];
     }
 
 }
-
 
 /**
  * @brief Evaluates sensor model likelihood using beam model and lookup table
@@ -637,6 +689,10 @@ void ParticleFilter::initialize_sensor_arrays(int num_rays, int total_queries)
         queries_ = Eigen::MatrixXd::Zero(total_queries, 3);
         ranges_.resize(total_queries);
 
+        // Pre-allocate sensor model vectors
+        obs_px_.resize(num_rays);
+        ranges_px_.resize(total_queries);
+
         // Pre-compute tiled angles for efficiency
         tiled_angles_.resize(total_queries);
         for (int i = 0; i < MAX_PARTICLES; ++i) {
@@ -673,16 +729,23 @@ void ParticleFilter::generate_ray_queries(const Eigen::MatrixXd &proposal_dist, 
 void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, int num_rays,
                                                std::vector<double> &weights)
 {
-    // Convert observations to pixel units
-    obs_px_.resize(obs.size());
+    // Thread-safe access to map resolution
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+    if (!local_map) return;
+    double resolution = local_map->info.resolution;
+
+    // Convert observations to pixel units (pre-allocated)
     for (size_t i = 0; i < obs.size(); ++i) {
-        obs_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX), obs[i] / map_resolution_);
+        obs_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX_), obs[i] / resolution);
     }
 
-    // Convert expected ranges to pixel units
-    ranges_px_.resize(ranges_.size());
+    // Convert expected ranges to pixel units (pre-allocated)
     for (size_t i = 0; i < ranges_.size(); ++i) {
-        ranges_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX), ranges_[i] / map_resolution_);
+        ranges_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX_), ranges_[i] / resolution);
     }
 
     // Compute particle weights using pre-computed sensor model lookup table
@@ -691,14 +754,18 @@ void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, i
         const int base_idx = i * num_rays;
 
         for (int j = 0; j < num_rays; ++j) {
-            const int obs_idx = std::max(0, std::min(static_cast<int>(std::round(obs_px_[j])), MAX_RANGE_PX));
-            const int range_idx = std::max(0, std::min(static_cast<int>(std::round(ranges_px_[base_idx + j])), MAX_RANGE_PX));
+            const int obs_idx = std::max(0, std::min(static_cast<int>(std::round(obs_px_[j])), MAX_RANGE_PX_));
+            const int range_idx = std::max(0, std::min(static_cast<int>(std::round(ranges_px_[base_idx + j])), MAX_RANGE_PX_));
 
             weight *= sensor_model_table_(obs_idx, range_idx);
         }
 
-        // Apply squash factor AFTER computing the product
-        weights[i] = std::pow(weight, INV_SQUASH_FACTOR);
+        // Apply squash factor AFTER computing the product - optimized
+        if (weight > 0.0) {
+            weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
+        } else {
+            weights[i] = 0.0;
+        }
     }
 }
 
@@ -711,65 +778,79 @@ void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, i
 std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &queries)
 {
     auto raycast_start = std::chrono::high_resolution_clock::now();
-    
+
     std::vector<float> results(queries.rows());
+
+    // Get map once for all ray casting operations
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+
+    if (!local_map || !map_initialized_) {
+        std::fill(results.begin(), results.end(), MAX_RANGE_METERS);
+        return results;
+    }
 
     if (USE_PARALLEL_RAYCASTING) {
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < queries.rows(); ++i)
         {
-            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map);
         }
     } else {
         for (int i = 0; i < queries.rows(); ++i)
         {
-            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2));
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map);
         }
     }
 
     auto raycast_end = std::chrono::high_resolution_clock::now();
     timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
-    
+
     return results;
 }
 
 /**
  * @brief Casts single ray to find obstacle distance
  */
-float ParticleFilter::cast_ray(double x, double y, double angle)
+float ParticleFilter::cast_ray(double x, double y, double angle,
+                               const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map)
 {
-    if (!map_initialized_)
+    if (!local_map)
         return MAX_RANGE_METERS;
 
-    double dx = std::cos(angle) * map_resolution_;
-    double dy = std::sin(angle) * map_resolution_;
+    double resolution = local_map->info.resolution;
+    double origin_x = local_map->info.origin.position.x;
+    double origin_y = local_map->info.origin.position.y;
 
-    double current_x = x;
-    double current_y = y;
+    double dx = std::cos(angle) * resolution;
+    double dy = std::sin(angle) * resolution;
 
-    for (int step = 0; step < MAX_RANGE_PX; ++step)
+    for (int step = 0; step < MAX_RANGE_PX_; ++step)
     {
-        current_x += dx;
-        current_y += dy;
+        x += dx;
+        y += dy;
 
         // World to grid coordinate transformation
-        int grid_x = static_cast<int>((current_x - map_origin_[0]) / map_resolution_);
-        int grid_y = static_cast<int>((current_y - map_origin_[1]) / map_resolution_);
+        int grid_x = static_cast<int>((x - origin_x) / resolution);
+        int grid_y = static_cast<int>((y - origin_y) / resolution);
 
         // Map boundary collision
-        if (grid_x < 0 || grid_x >= static_cast<int>(map_msg_->info.width) || grid_y < 0 ||
-            grid_y >= static_cast<int>(map_msg_->info.height))
+        if (grid_x < 0 || grid_x >= static_cast<int>(local_map->info.width) || grid_y < 0 ||
+            grid_y >= static_cast<int>(local_map->info.height))
         {
-            return step * map_resolution_;
+            return step * resolution;
         }
 
         // Check for obstacles
-        int map_idx = grid_y * map_msg_->info.width + grid_x;
-        if (map_idx >= 0 && map_idx < static_cast<int>(map_msg_->data.size()))
+        int map_idx = grid_y * local_map->info.width + grid_x;
+        if (map_idx >= 0 && map_idx < static_cast<int>(local_map->data.size()))
         {
-            if (map_msg_->data[map_idx] > 50)
+            if (local_map->data[map_idx] > 50)
             {
-                return step * map_resolution_;
+                return step * resolution;
             }
         }
     }
@@ -784,14 +865,23 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
-    // 1. Multinomial resampling - using pre-allocated memory
+    // 1. Multinomial resampling - generate all indices at once
     auto resample_start = std::chrono::high_resolution_clock::now();
     std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
+    std::vector<int> resample_indices(MAX_PARTICLES);
 
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            resample_indices[i] = particle_dist(rng_);
+        }
+    }
+
+    // Copy particles without lock
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        int idx = particle_dist(rng_);
-        proposal_distribution_.row(i) = particles_.row(idx);
+        proposal_distribution_.row(i) = particles_.row(resample_indices[i]);
     }
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
@@ -862,101 +952,99 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 /**
  * @brief Main update loop that runs MCL algorithm
  */
-void ParticleFilter::update()
+void ParticleFilter::timer_update()
 {
     if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
     {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+            "Waiting for initialization - LiDAR: %s, Odom: %s, Map: %s",
+            lidar_initialized_ ? "OK" : "NO",
+            odom_initialized_ ? "OK" : "NO",
+            map_initialized_ ? "OK" : "NO");
         return;
     }
 
-    if (state_lock_.try_lock())
-    {
-        ++iters_;
+    // 1. 센서 데이터 복사 (최소 락 시간)
+    std::vector<float> observation;
+    Eigen::Vector3d action;
+    rclcpp::Time lidar_timestamp;
+    double velocity, angular_vel;
 
-        auto observation = downsampled_ranges_;
-        auto action = odometry_data_;
+    // 센서 데이터 빠르게 복사
+    {
+        std::lock_guard<std::mutex> lidar_lock(lidar_lock_);
+        observation = downsampled_ranges_;
+        lidar_timestamp = last_lidar_time_;
+    }
+
+    {
+        std::lock_guard<std::mutex> odom_lock(odom_lock_);
+        action = odometry_data_;
         odometry_data_ = Eigen::Vector3d::Zero();
-
-        // Execute complete MCL cycle - pass action directly
-        MCL(action, observation);
-
-        // Final pose estimate: weighted mean
-        inferred_pose_ = expected_pose();
-
-        state_lock_.unlock();
-
-        // Output to navigation stack and visualization
-        publish_tf(inferred_pose_, last_lidar_time_);
-
-        if (iters_ % 10 == 0)
-        {
-            RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)", iters_, inferred_pose_[0],
-                        inferred_pose_[1], inferred_pose_[2]);
-        }
-
-        if (iters_ % 100 == 0)
-        {
-            // Print performance statistics using utils TimingStats
-            timing_stats_.print_stats([this](const std::string& msg) {
-                RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
-            });
-        }
-
-        visualize();
+        velocity = current_velocity_;
+        angular_vel = current_angular_vel_;
     }
-    else
+
+    // 2. MCL 상태 락 확보 및 실행
+    if (!state_lock_.try_lock()) {
+        RCLCPP_DEBUG(this->get_logger(), "MCL update skipped - previous update still running");
+        return;
+    }
+
+    // 반복 횟수 관리
+    static int current_iters = 0;
+    ++current_iters;
+
+    // 3. MCL 알고리즘 실행 (state_lock_ 보호 하에)
+    MCL(action, observation);
+
+    // 4. 결과 계산 및 좌표 변환
+    Eigen::Vector3d final_pose_laser = expected_pose();
+    Eigen::Vector3d final_pose_base = apply_tf_offset(final_pose_laser);
+
+    state_lock_.unlock();
+
+    // 5. 출력 및 시각화 (락 없이) - base_link 좌표 사용
+    publish_tf(final_pose_base, lidar_timestamp);
+
+    if (current_iters % 10 == 0)
     {
-        RCLCPP_INFO(this->get_logger(), "Concurrency error avoided");
+        RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)",
+                    current_iters, final_pose_base[0], final_pose_base[1], final_pose_base[2]);
     }
-}
 
-/**
- * @brief Timer callback for publishing odometry
- */
-void ParticleFilter::timer_update()
-{
-    // Trigger MCL update based on update_from parameter
-    if (UPDATE_FROM == "timer") {
-        update();
+    if (current_iters % 100 == 0)
+    {
+        // Print performance statistics using utils TimingStats
+        timing_stats_.print_stats([this](const std::string& msg) {
+            RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+        });
     }
+
+    visualize(final_pose_base, lidar_timestamp);
 
     // Publish odometry
-    if (PUBLISH_ODOM && odom_pub_)
+    if (PUBLISH_ODOM)
     {
         nav_msgs::msg::Odometry odom;
-        odom.header.stamp = this->now();
+        odom.header.stamp = lidar_timestamp;
         odom.header.frame_id = "map";
         odom.child_frame_id = "base_link";
 
-        // Use TF lookup for smooth interpolated pose (eliminates MCL vibration)
-        // TF provides same global accuracy but with smooth interpolation between updates
-        try {
-            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+        // Use pre-converted base_link coordinate (no TF needed)
+        odom.pose.pose.position.x = final_pose_base[0];
+        odom.pose.pose.position.y = final_pose_base[1];
+        odom.pose.pose.position.z = 0.0;
+        odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(final_pose_base[2]);
 
-            odom.pose.pose.position.x = transform.transform.translation.x;
-            odom.pose.pose.position.y = transform.transform.translation.y;
-            odom.pose.pose.position.z = transform.transform.translation.z;
-            odom.pose.pose.orientation = transform.transform.rotation;
-        }
-        catch (const tf2::TransformException& ex) {
-            // Fallback to raw MCL output if TF lookup fails
-            Eigen::Vector3d current_pose = get_current_pose();
-            odom.pose.pose.position.x = current_pose[0];
-            odom.pose.pose.position.y = current_pose[1];
-            odom.pose.pose.position.z = 0.0;
-            odom.pose.pose.orientation = utils::geometry::yaw_to_quaternion(current_pose[2]);
-
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                "TF lookup failed for /pf/pose/odom, using raw MCL: %s", ex.what());
-        }
-
-        // Set velocity
-        odom.twist.twist.linear.x = current_velocity_;
-        odom.twist.twist.angular.z = current_angular_vel_;
+        // Set velocity (using pre-copied data)
+        odom.twist.twist.linear.x = velocity;
+        odom.twist.twist.angular.z = angular_vel;
 
         odom_pub_->publish(odom);
     }
 }
+
 
 /**
  * @brief Periodically publishes map for RViz visualization
@@ -964,8 +1052,14 @@ void ParticleFilter::timer_update()
 void ParticleFilter::publish_map_periodically()
 {
     // Maintain persistent map display in RViz
-    if (map_initialized_ && map_pub_ && map_msg_) {
-        map_pub_->publish(*map_msg_);
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+
+    if (map_initialized_ && map_pub_ && local_map) {
+        map_pub_->publish(*local_map);
     }
 }
 
@@ -976,9 +1070,9 @@ void ParticleFilter::publish_map_periodically()
 /**
  * @brief Publishes TF transforms for map-odom-base_link chain
  */
-void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time &stamp)
+void ParticleFilter::publish_tf(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
-    Eigen::Vector3d base_link_pose = apply_tf_offset(pose);
+    // base_link_pose is already in base_link frame (no conversion needed)
 
     // === TF TRANSFORM PUBLISHING ===
     // Real mode: Publish map->odom and odom->base_link
@@ -990,9 +1084,9 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         map_to_odom.header.frame_id = MAP_FRAME;
         map_to_odom.child_frame_id = ODOM_FRAME;
 
-        if (odom_initialized_ && last_pose_.norm() > 0) {
+        if (odom_initialized_ && base_link_pose.norm() > 0) {
             // Calculate map->odom transform: T_map_odom = T_map_base * T_base_odom^(-1)
-            double mcl_x = pose[0], mcl_y = pose[1], mcl_yaw = pose[2];
+            double mcl_x = base_link_pose[0], mcl_y = base_link_pose[1], mcl_yaw = base_link_pose[2];
 
             // Get odometry from tf (odom to base_link) at lidar timestamp
             double odom_x, odom_y, odom_yaw;
@@ -1002,10 +1096,10 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
                 odom_y = odom_transform.transform.translation.y;
                 odom_yaw = utils::geometry::quaternion_to_yaw(odom_transform.transform.rotation);
             } catch (tf2::TransformException& ex) {
-                RCLCPP_WARN(this->get_logger(), "Could not get odom->base_link transform: %s. Using last_pose_ fallback.", ex.what());
-                odom_x = last_pose_[0];
-                odom_y = last_pose_[1];
-                odom_yaw = last_pose_[2];
+                RCLCPP_WARN(this->get_logger(), "Could not get odom->base_link transform: %s. Using current pose fallback.", ex.what());
+                odom_x = base_link_pose[0];
+                odom_y = base_link_pose[1];
+                odom_yaw = base_link_pose[2];
             }
 
             // Inverse odom transform
@@ -1031,45 +1125,19 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &pose, const rclcpp::Time 
         pub_tf_->sendTransform(map_to_odom);
     }
 
-    if (PUBLISH_ODOM_BASE_TF && odom_initialized_ && last_pose_.norm() > 0) {
+    if (PUBLISH_ODOM_BASE_TF && odom_initialized_ && base_link_pose.norm() > 0) {
         geometry_msgs::msg::TransformStamped odom_to_base;
         odom_to_base.header.stamp = stamp;
         odom_to_base.header.frame_id = ODOM_FRAME;
         odom_to_base.child_frame_id = BASE_FRAME;
-        odom_to_base.transform.translation.x = last_pose_[0];
-        odom_to_base.transform.translation.y = last_pose_[1];
+        odom_to_base.transform.translation.x = base_link_pose[0];
+        odom_to_base.transform.translation.y = base_link_pose[1];
         odom_to_base.transform.translation.z = 0.0;
-        odom_to_base.transform.rotation = utils::geometry::yaw_to_quaternion(last_pose_[2]);
+        odom_to_base.transform.rotation = utils::geometry::yaw_to_quaternion(base_link_pose[2]);
         pub_tf_->sendTransform(odom_to_base);
     }
 
     // Odometry publishing moved to timer_update for controlled frequency
-}
-
-
-/**
- * @brief Returns current best pose estimate with fallback logic
- */
-Eigen::Vector3d ParticleFilter::get_current_pose()
-{
-    // Use particle filter estimate primarily - avoid jumping between sources
-    if (is_pose_valid(inferred_pose_))
-        return inferred_pose_;
-
-    // During initialization, use center of particles
-    if (map_initialized_ && particles_.rows() > 0) {
-        Eigen::Vector3d particle_center = particles_.colwise().mean();
-        if (is_pose_valid(particle_center)) {
-            return particle_center;
-        }
-    }
-
-    // Fallback to last known good pose
-    if (is_pose_valid(last_pose_))
-        return last_pose_;
-
-    // Default to origin
-    return Eigen::Vector3d::Zero();
 }
 
 /**
@@ -1083,7 +1151,7 @@ bool ParticleFilter::is_pose_valid(const Eigen::Vector3d& pose)
 /**
  * @brief Publishes visualization data for RViz
  */
-void ParticleFilter::visualize(const rclcpp::Time &stamp)
+void ParticleFilter::visualize(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
     if (!DO_VIZ)
         return;
@@ -1091,18 +1159,15 @@ void ParticleFilter::visualize(const rclcpp::Time &stamp)
     // Use provided timestamp or fallback to current time
     rclcpp::Time viz_stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
 
-    // RViz pose visualization (with vehicle frame offset)
+    // RViz pose visualization (already in base_link frame)
     if (pose_pub_ && pose_pub_->get_subscription_count() > 0)
     {
-        // Apply vehicle frame offset using TF
-        Eigen::Vector3d offset_pose = apply_tf_offset(inferred_pose_);
-        
         geometry_msgs::msg::PoseStamped ps;
         ps.header.stamp = viz_stamp;
         ps.header.frame_id = "map";
-        ps.pose.position.x = offset_pose[0];
-        ps.pose.position.y = offset_pose[1];
-        ps.pose.orientation = utils::geometry::yaw_to_quaternion(inferred_pose_[2]);
+        ps.pose.position.x = base_link_pose[0];
+        ps.pose.position.y = base_link_pose[1];
+        ps.pose.orientation = utils::geometry::yaw_to_quaternion(base_link_pose[2]);
         pose_pub_->publish(ps);
     }
 
@@ -1111,14 +1176,23 @@ void ParticleFilter::visualize(const rclcpp::Time &stamp)
     {
         if (MAX_PARTICLES > MAX_VIZ_PARTICLES)
         {
-            // Weighted downsampling
+            // Weighted downsampling - generate all indices at once
             std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
             Eigen::MatrixXd viz_particles(MAX_VIZ_PARTICLES, 3);
+            std::vector<int> indices(MAX_VIZ_PARTICLES);
 
+            {
+                std::lock_guard<std::mutex> lock(rng_lock_);
+                for (int i = 0; i < MAX_VIZ_PARTICLES; ++i)
+                {
+                    indices[i] = particle_dist(rng_);
+                }
+            }
+
+            // Copy particles without lock
             for (int i = 0; i < MAX_VIZ_PARTICLES; ++i)
             {
-                int idx = particle_dist(rng_);
-                viz_particles.row(i) = particles_.row(idx);
+                viz_particles.row(i) = particles_.row(indices[i]);
             }
 
             publish_particles(viz_particles, viz_stamp);
@@ -1138,11 +1212,40 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, 
     // Apply vehicle frame offset to all particles
     Eigen::MatrixXd offset_particles = particles_to_pub;
 
-    for (int i = 0; i < offset_particles.rows(); ++i) {
-        Eigen::Vector3d particle_pose(offset_particles(i, 0), offset_particles(i, 1), offset_particles(i, 2));
-        Eigen::Vector3d offset_pose = apply_tf_offset(particle_pose);
-        offset_particles(i, 0) = offset_pose[0];
-        offset_particles(i, 1) = offset_pose[1];
+    try {
+        // Get TF transform once for all particles (static transform)
+        auto transform = tf_buffer_->lookupTransform(BASE_FRAME, LASER_FRAME, tf2::TimePointZero);
+        double offset_x = transform.transform.translation.x;
+        double offset_y = transform.transform.translation.y;
+
+        // Apply same offset to all particles
+        for (int i = 0; i < offset_particles.rows(); ++i) {
+            double cos_theta = std::cos(offset_particles(i, 2));
+            double sin_theta = std::sin(offset_particles(i, 2));
+
+            double new_x = offset_particles(i, 0) - offset_x * cos_theta + offset_y * sin_theta;
+            double new_y = offset_particles(i, 1) - offset_x * sin_theta - offset_y * cos_theta;
+
+            offset_particles(i, 0) = new_x;
+            offset_particles(i, 1) = new_y;
+        }
+    }
+    catch (tf2::TransformException &ex) {
+        // Fallback: use default F1Tenth offset
+        static bool warning_shown = false;
+        if (!warning_shown) {
+            RCLCPP_WARN(this->get_logger(), "TF lookup failed for particles, using default offset: %s", ex.what());
+            warning_shown = true;
+        }
+
+        double default_offset_x = 0.28;
+        for (int i = 0; i < offset_particles.rows(); ++i) {
+            double cos_theta = std::cos(offset_particles(i, 2));
+            double sin_theta = std::sin(offset_particles(i, 2));
+
+            offset_particles(i, 0) -= default_offset_x * cos_theta;
+            offset_particles(i, 1) -= default_offset_x * sin_theta;
+        }
     }
 
     auto pa = utils::particles_to_pose_array(offset_particles);
@@ -1161,57 +1264,45 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, 
  */
 Eigen::Vector3d ParticleFilter::apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame)
 {
-    // Get the offset from F1Tenth system's static transform
-    static double lidar_offset_x = 0.27;  // Default fallback
-    static double lidar_offset_y = 0.0;
-    static bool offset_read = false;
-    static int tf_retry_count = 0;
-    static std::chrono::steady_clock::time_point last_tf_attempt = std::chrono::steady_clock::now();
+    try {
+        // Create pose in laser frame
+        geometry_msgs::msg::PoseStamped laser_pose;
+        laser_pose.header.frame_id = LASER_FRAME;
+        laser_pose.pose.position.x = pose_in_laser_frame[0];
+        laser_pose.pose.position.y = pose_in_laser_frame[1];
+        laser_pose.pose.position.z = 0.0;
+        laser_pose.pose.orientation = utils::geometry::yaw_to_quaternion(pose_in_laser_frame[2]);
 
-    // Implement backoff strategy to prevent excessive TF lookups during startup
-    if (!offset_read && tf_retry_count < 10) {
-        auto now = std::chrono::steady_clock::now();
-        auto time_since_last_attempt = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tf_attempt);
+        // Transform to base_link frame using TF system
+        geometry_msgs::msg::PoseStamped base_pose;
+        tf_buffer_->transform(laser_pose, base_pose, BASE_FRAME);
 
-        // Exponential backoff: wait longer between attempts
-        int backoff_ms = 100 * (1 << std::min(tf_retry_count, 4)); // 100, 200, 400, 800, 1600ms max
-
-        if (time_since_last_attempt.count() >= backoff_ms) {
-            try {
-                // Use shorter timeout to prevent blocking
-                auto transform = tf_buffer_->lookupTransform(
-                    BASE_FRAME, LASER_FRAME, tf2::TimePointZero, tf2::Duration(std::chrono::milliseconds(50)));
-
-                lidar_offset_x = transform.transform.translation.x;
-                lidar_offset_y = transform.transform.translation.y;
-                offset_read = true;
-
-                RCLCPP_INFO(this->get_logger(), "Using F1Tenth TF offset: x=%.3fm, y=%.3fm",
-                           lidar_offset_x, lidar_offset_y);
-            }
-            catch (tf2::TransformException &ex) {
-                tf_retry_count++;
-                last_tf_attempt = now;
-
-                if (tf_retry_count >= 10) {
-                    RCLCPP_WARN(this->get_logger(), "Could not read F1Tenth TF after %d attempts, using default 0.27m: %s",
-                               tf_retry_count, ex.what());
-                    offset_read = true;  // Stop trying after max attempts
-                }
-            }
-        }
+        // Convert back to Eigen::Vector3d
+        return Eigen::Vector3d(
+            base_pose.pose.position.x,
+            base_pose.pose.position.y,
+            utils::geometry::quaternion_to_yaw(base_pose.pose.orientation)
+        );
     }
+    catch (tf2::TransformException &ex) {
+        // Fallback: use default F1Tenth offset if TF lookup fails
+        static bool warning_shown = false;
+        if (!warning_shown) {
+            RCLCPP_WARN(this->get_logger(), "TF transform failed, using default F1Tenth offset (0.27m): %s", ex.what());
+            warning_shown = true;
+        }
 
-    // Apply offset: laser frame pose → base_link frame pose
-    double cos_theta = std::cos(pose_in_laser_frame[2]);
-    double sin_theta = std::sin(pose_in_laser_frame[2]);
+        // Manual offset calculation as fallback
+        double offset_x = 0.28;  // Default F1Tenth lidar offset
+        double cos_theta = std::cos(pose_in_laser_frame[2]);
+        double sin_theta = std::sin(pose_in_laser_frame[2]);
 
-    Eigen::Vector3d base_link_pose;
-    base_link_pose[0] = pose_in_laser_frame[0] - lidar_offset_x * cos_theta + lidar_offset_y * sin_theta;
-    base_link_pose[1] = pose_in_laser_frame[1] - lidar_offset_x * sin_theta - lidar_offset_y * cos_theta;
-    base_link_pose[2] = pose_in_laser_frame[2];
-
-    return base_link_pose;
+        return Eigen::Vector3d(
+            pose_in_laser_frame[0] - offset_x * cos_theta,
+            pose_in_laser_frame[1] - offset_x * sin_theta,
+            pose_in_laser_frame[2]
+        );
+    }
 }
 
 
