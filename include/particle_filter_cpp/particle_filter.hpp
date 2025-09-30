@@ -189,6 +189,11 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- UPDATE CONTROL ---------------------------------
     void timer_update(); // Main MCL update function - includes odometry publishing
     void publish_map_periodically();
+
+    // --------------------------------- CALLBACK GROUPS FOR THREADING ---------------------------------
+    rclcpp::CallbackGroup::SharedPtr sensor_group_;   // LiDAR, Odom 등 센서 콜백
+    rclcpp::CallbackGroup::SharedPtr compute_group_;  // timer_update 등 무거운 콜백
+
 };
 
 } // namespace particle_filter_cpp

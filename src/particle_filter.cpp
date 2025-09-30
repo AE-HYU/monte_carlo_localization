@@ -131,10 +131,13 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Threading setup - no startup throttling like old working version
     if (USE_PARALLEL_RAYCASTING) {
-        if (NUM_THREADS == 0) {
-            NUM_THREADS = omp_get_max_threads();
+        if (NUM_THREADS <= 0) {
+            int hw = static_cast<int>(std::thread::hardware_concurrency());
+            // executor 워커 2개 쓴다고 가정하고 여유 1개 남김
+            int suggested = std::max(1, hw - 3);
+            NUM_THREADS = suggested;
         }
-        omp_set_num_threads(NUM_THREADS);  // Use full thread count immediately
+        omp_set_num_threads(NUM_THREADS);
     }
 
     // Particle initialization
@@ -144,6 +147,10 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Motion cache and performance optimizations
     local_deltas_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
     proposal_distribution_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
+
+    sensor_group_  = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    compute_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
 
     // Publishers
     if (DO_VIZ)
@@ -166,19 +173,53 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
     // Subscribers
+    auto scan_topic = this->get_parameter("scan_topic").as_string();
+    auto odom_topic = this->get_parameter("odom_topic").as_string();
+
+    // LiDAR: 항상 최신 1개만
+    rclcpp::SensorDataQoS lidar_qos;             // best_effort + volatile
+    lidar_qos.keep_last(1);
+
+    rclcpp::SubscriptionOptions lidar_opts;
+    lidar_opts.callback_group = sensor_group_;
     laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-        this->get_parameter("scan_topic").as_string(), 1,
-        std::bind(&ParticleFilter::lidarCB, this, std::placeholders::_1));
+        scan_topic, lidar_qos,
+        std::bind(&ParticleFilter::lidarCB, this, std::placeholders::_1),
+        lidar_opts);
 
+    // Odom: 약간의 버퍼
+    rclcpp::QoS odom_qos(10);
+    rclcpp::SubscriptionOptions odom_opts;
+    odom_opts.callback_group = sensor_group_;
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        this->get_parameter("odom_topic").as_string(), 1,
-        std::bind(&ParticleFilter::odomCB, this, std::placeholders::_1));
+        odom_topic, odom_qos,
+        std::bind(&ParticleFilter::odomCB, this, std::placeholders::_1),
+        odom_opts);
 
+    // Timers
+    int timer_interval_ms = static_cast<int>(1000.0 / TIMER_FREQUENCY);
+    update_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(timer_interval_ms),
+        std::bind(&ParticleFilter::timer_update, this),
+        compute_group_);
+
+    map_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(200),
+        std::bind(&ParticleFilter::publish_map_periodically, this),
+        compute_group_);
+
+    rclcpp::SubscriptionOptions init_opts;
+    init_opts.callback_group = compute_group_; // MCL과 동시 실행 금지
     pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/initialpose", 1, std::bind(&ParticleFilter::clicked_pose, this, std::placeholders::_1));
+        "/initialpose", rclcpp::QoS(1),
+        std::bind(&ParticleFilter::clicked_pose, this, std::placeholders::_1),
+        init_opts);
 
     click_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
-        "/clicked_point", 1, std::bind(&ParticleFilter::clicked_point, this, std::placeholders::_1));
+        "/clicked_point", rclcpp::QoS(1),
+        std::bind(&ParticleFilter::clicked_point, this, std::placeholders::_1),
+        init_opts);
+
 
     // Map service client
     map_client_ = this->create_client<nav_msgs::srv::GetMap>("/map_server/map");
@@ -187,18 +228,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     get_omap();
     initialize_global();
 
-    // Update timer - simple like old working version
-    int timer_interval_ms = static_cast<int>(1000.0 / TIMER_FREQUENCY);
-    update_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(timer_interval_ms),
-        std::bind(&ParticleFilter::timer_update, this)
-    );
 
-    // Map publisher timer
-    map_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(200),
-        std::bind(&ParticleFilter::publish_map_periodically, this)
-    );
 
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
@@ -933,6 +963,8 @@ Eigen::Vector3d ParticleFilter::expected_pose()
  */
 void ParticleFilter::timer_update()
 {
+    auto timer_start = std::chrono::high_resolution_clock::now();
+
     if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
@@ -952,11 +984,11 @@ void ParticleFilter::timer_update()
     // 센서 데이터 빠르게 복사
     {
         std::lock_guard<std::mutex> lock(lidar_lock_);
-        // if (!has_new_lidar_data_) {
-        //     // No new LiDAR data since last update
-        //     RCLCPP_WARN(this->get_logger(), "MCL update skipped - no new LiDAR data");
-        //     return;
-        // }
+        if (!has_new_lidar_data_) {
+            // No new LiDAR data since last update
+            RCLCPP_WARN(this->get_logger(), "MCL update skipped - no new LiDAR data");
+            return;
+        }
         has_new_lidar_data_ = false;
         observation = downsampled_ranges_;
         lidar_timestamp = last_lidar_time_;
@@ -969,7 +1001,9 @@ void ParticleFilter::timer_update()
     }
 
     // 2. Calculate odometry motion between lidar frames using TF (outside of locks)
+    auto tf_motion_start = std::chrono::high_resolution_clock::now();
     action = calculate_lidar_frame_motion(lidar_timestamp);
+    auto tf_motion_end = std::chrono::high_resolution_clock::now();
 
     // 3. MCL 상태 락 확보 및 실행
     if (!state_lock_.try_lock()) {
@@ -982,16 +1016,22 @@ void ParticleFilter::timer_update()
     ++current_iters;
 
     // 4. MCL 알고리즘 실행 (state_lock_ 보호 하에)
+    auto mcl_start = std::chrono::high_resolution_clock::now();
     MCL(action, observation);
+    auto mcl_end = std::chrono::high_resolution_clock::now();
 
     // 5. 결과 계산 및 좌표 변환
+    auto pose_calc_start = std::chrono::high_resolution_clock::now();
     Eigen::Vector3d final_pose_laser = expected_pose();
     Eigen::Vector3d final_pose_base = apply_tf_offset(final_pose_laser);
+    auto pose_calc_end = std::chrono::high_resolution_clock::now();
 
     state_lock_.unlock();
 
     // 5. 출력 및 시각화 (락 없이) - base_link 좌표 사용
+    auto publish_start = std::chrono::high_resolution_clock::now();
     publish_tf(final_pose_base, lidar_timestamp);
+    auto publish_end = std::chrono::high_resolution_clock::now();
 
     if (current_iters % 10 == 0)
     {
@@ -1007,9 +1047,12 @@ void ParticleFilter::timer_update()
         });
     }
 
+    auto viz_start = std::chrono::high_resolution_clock::now();
     visualize(final_pose_base, lidar_timestamp);
+    auto viz_end = std::chrono::high_resolution_clock::now();
 
     // Publish odometry
+    auto odom_start = std::chrono::high_resolution_clock::now();
     if (PUBLISH_ODOM)
     {
         nav_msgs::msg::Odometry odom;
@@ -1028,6 +1071,25 @@ void ParticleFilter::timer_update()
         odom.twist.twist.angular.z = angular_vel;
 
         odom_pub_->publish(odom);
+    }
+    auto odom_end = std::chrono::high_resolution_clock::now();
+
+    // Timer update performance logging
+    auto timer_end = std::chrono::high_resolution_clock::now();
+    auto timer_duration = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
+
+    static int log_counter = 0;
+    if (++log_counter % 10 == 0) {  // Log every 10 iterations
+        auto tf_motion_time = std::chrono::duration<double, std::milli>(tf_motion_end - tf_motion_start).count();
+        auto mcl_time = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+        auto pose_calc_time = std::chrono::duration<double, std::milli>(pose_calc_end - pose_calc_start).count();
+        auto publish_time = std::chrono::duration<double, std::milli>(publish_end - publish_start).count();
+        auto viz_time = std::chrono::duration<double, std::milli>(viz_end - viz_start).count();
+        auto odom_time = std::chrono::duration<double, std::milli>(odom_end - odom_start).count();
+
+        RCLCPP_INFO(this->get_logger(),
+                    "Timer breakdown - Total: %.2f ms | TF: %.2f | MCL: %.2f | Pose: %.2f | Pub: %.2f | Viz: %.2f | Odom: %.2f",
+                    timer_duration, tf_motion_time, mcl_time, pose_calc_time, publish_time, viz_time, odom_time);
     }
 }
 
@@ -1323,7 +1385,7 @@ Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time&
     try {
         // Get odom->base_link transform at current lidar timestamp
         auto current_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, current_lidar_stamp);
+            ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
 
         // Get odom->base_link transform at previous lidar timestamp
         auto previous_transform = tf_buffer_->lookupTransform(
@@ -1372,7 +1434,13 @@ Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time&
 int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<particle_filter_cpp::ParticleFilter>());
+    auto node = std::make_shared<particle_filter_cpp::ParticleFilter>();
+
+    // 최소 2스레드: 센서(1) + 컴퓨트(1)
+    rclcpp::executors::MultiThreadedExecutor exec(rclcpp::ExecutorOptions(), /*num_threads=*/2);
+    exec.add_node(node);
+    exec.spin();
+
     rclcpp::shutdown();
     return 0;
 }
