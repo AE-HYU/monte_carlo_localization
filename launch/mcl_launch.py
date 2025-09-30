@@ -11,10 +11,6 @@ Usage:
   # To change map, launch with map_name:='your_map'
   Example:       ros2 launch particle_filter_cpp mcl_launch.py mod:=real map_name:='my_custom_map'
 
-  # To change MCL update trigger (default: odom)
-  Update modes:  ros2 launch particle_filter_cpp mcl_launch.py update_from:=odom   # Update on odometry
-                 ros2 launch particle_filter_cpp mcl_launch.py update_from:=lidar  # Update on lidar
-                 ros2 launch particle_filter_cpp mcl_launch.py update_from:=timer  # Update on timer
 """
 
 from launch import LaunchDescription
@@ -29,7 +25,6 @@ import os
 def generate_launch_description():
     # Get package share directory  
     from ament_index_python.packages import get_package_share_directory
-    pkg_share_dir = get_package_share_directory('particle_filter_cpp')
     pkg_share = FindPackageShare('particle_filter_cpp')
     
     # === LAUNCH ARGUMENTS ===
@@ -51,11 +46,6 @@ def generate_launch_description():
         description='Launch RViz visualization'
     )
 
-    update_from_arg = DeclareLaunchArgument(
-        'update_from',
-        default_value='odom',
-        description='MCL update trigger: odom, lidar, or timer'
-    )
     
     # === CONFIGURATION ===
     # Try to find source config first, fallback to install config
@@ -112,8 +102,6 @@ def generate_launch_description():
             "'true' if '", LaunchConfiguration('mod'), "' == 'sim' else 'false'"
         ]),
 
-        # MCL update trigger
-        'update_from': LaunchConfiguration('update_from')
     }
     
     # === COMMON PARAMETERS ===
@@ -200,7 +188,6 @@ def generate_launch_description():
         mode_arg,
         map_name_arg,
         use_rviz_arg,
-        update_from_arg,
         config_arg,
         
         # Nodes

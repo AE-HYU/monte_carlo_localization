@@ -393,9 +393,6 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         lidar_initialized_ = true;
     }
 
-    // // Trigger MCL update based on update_from parameter
-    //     update();
-    // }
 }
 
 /**
@@ -1141,7 +1138,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &base_link_pose, const rcl
             // Get odometry from tf (odom to base_link) at lidar timestamp
             double odom_x, odom_y, odom_yaw;
             try {
-                auto odom_transform = tf_buffer_->lookupTransform(ODOM_FRAME, BASE_FRAME, stamp, tf2::durationFromSec(0.1));
+                auto odom_transform = tf_buffer_->lookupTransform(ODOM_FRAME, BASE_FRAME, stamp, tf2::durationFromSec(0.03));
                 odom_x = odom_transform.transform.translation.x;
                 odom_y = odom_transform.transform.translation.y;
                 odom_yaw = utils::geometry::quaternion_to_yaw(odom_transform.transform.rotation);
@@ -1348,11 +1345,11 @@ Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time&
     try {
         // Get odom->base_link transform at current lidar timestamp
         auto current_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, current_lidar_stamp, tf2::durationFromSec(0.1));
+            ODOM_FRAME, BASE_FRAME, current_lidar_stamp, tf2::durationFromSec(0.03));
 
         // Get odom->base_link transform at previous lidar timestamp
         auto previous_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp, tf2::durationFromSec(0.1));
+            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp, tf2::durationFromSec(0.03));
 
         // Extract poses
         Eigen::Vector3d current_pose(
