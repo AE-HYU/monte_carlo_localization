@@ -131,11 +131,13 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Threading setup - no startup throttling like old working version
     if (USE_PARALLEL_RAYCASTING) {
-        if (NUM_THREADS <= 0) {
-            int hw = static_cast<int>(std::thread::hardware_concurrency());
+        int hw = static_cast<int>(std::thread::hardware_concurrency());
+        if (NUM_THREADS == 0) {
             // executor 워커 2개 쓴다고 가정하고 여유 1개 남김
-            int suggested = std::max(1, hw - 3);
-            NUM_THREADS = suggested;
+            NUM_THREADS = std::max(1, hw - 3);
+        }
+        else if (NUM_THREADS > 0) {
+            NUM_THREADS = std::min(NUM_THREADS, hw - 3);
         }
         omp_set_num_threads(NUM_THREADS);
     }
