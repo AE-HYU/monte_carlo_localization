@@ -1198,8 +1198,19 @@ void ParticleFilter::visualize(const Eigen::Vector3d &base_link_pose, const rclc
  */
 void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
 {
-    // Publish particles directly without offset transformation (same as inferred_pose)
-    auto pa = utils::particles_to_pose_array(particles_to_pub);
+    // Convert particles from laser frame to base_link frame for visualization
+    Eigen::MatrixXd base_particles(particles_to_pub.rows(), 3);
+    
+    for (int i = 0; i < particles_to_pub.rows(); ++i) {
+        Eigen::Vector3d laser_particle(particles_to_pub(i, 0), particles_to_pub(i, 1), particles_to_pub(i, 2));
+        Eigen::Vector3d base_particle = apply_tf_offset(laser_particle);
+        
+        base_particles(i, 0) = base_particle[0];
+        base_particles(i, 1) = base_particle[1]; 
+        base_particles(i, 2) = base_particle[2];
+    }
+    
+    auto pa = utils::particles_to_pose_array(base_particles);
     pa.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
     pa.header.frame_id = "map";
     particle_pub_->publish(pa);
