@@ -55,7 +55,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     this->declare_parameter("odom_topic", "/odom");
     this->declare_parameter("publish_odom", true);
     this->declare_parameter("viz", true);
-    this->declare_parameter("timer_frequency", 100.0);
+    this->declare_parameter("timer_frequency", 35.0);
     
     // Performance
     this->declare_parameter("use_parallel_raycasting", true);
@@ -126,10 +126,6 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     has_new_lidar_data_ = false;
     last_lidar_time_ = rclcpp::Time(0);
     mcl_processing_time_ = 0.0;
-
-    // Initialize pose vectors
-    last_pose_ = Eigen::Vector3d::Zero();
-    odometry_data_ = Eigen::Vector3d::Zero();
     
     // Simple state tracking
 
@@ -375,36 +371,19 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
  */
 void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    // Store pose data
-    Eigen::Vector3d position(msg->pose.pose.position.x, msg->pose.pose.position.y,
-                             utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
-
-    // Protect all shared variables with mutex
+    // Protect shared velocity variables with mutex
     {
         std::lock_guard<std::mutex> lock(odom_lock_);
 
-        // Store velocity information
-        current_velocity_ = msg->twist.twist.linear.x;  // 속도는 필요한대서 각자 가져다 쓰는게 더 좋지않나...
+        // Store velocity information for publishing
+        current_velocity_ = msg->twist.twist.linear.x;
         current_angular_vel_ = msg->twist.twist.angular.z;
 
-        if (last_pose_.norm() > 0)
-        {
-            // Transform global displacement to robot-local coordinates
-            Eigen::Matrix2d rot = utils::geometry::rotation_matrix(-last_pose_[2]);
-            Eigen::Vector2d delta = position.head<2>() - last_pose_.head<2>();
-            Eigen::Vector2d local_delta = rot * delta;
-
-            // Use the motion directly for MCL update
-            odometry_data_ = Eigen::Vector3d(local_delta[0], local_delta[1], position[2] - last_pose_[2]);
-        }
-        else
-        {
+        // Mark odometry as initialized
+        if (!odom_initialized_) {
             RCLCPP_INFO(this->get_logger(), "Odometry initialized");
             odom_initialized_ = true;
         }
-
-        // Update last pose AFTER delta calculation
-        last_pose_ = position;
     }
 }
 
@@ -972,22 +951,29 @@ void ParticleFilter::timer_update()
 
     // 센서 데이터 빠르게 복사
     {
-        std::lock_guard<std::mutex> lidar_lock(lidar_lock_);
+        std::lock_guard<std::mutex> lock(lidar_lock_);
+        // if (!has_new_lidar_data_) {
+        //     // No new LiDAR data since last update
+        //     RCLCPP_WARN(this->get_logger(), "MCL update skipped - no new LiDAR data");
+        //     return;
+        // }
+        has_new_lidar_data_ = false;
         observation = downsampled_ranges_;
         lidar_timestamp = last_lidar_time_;
     }
 
     {
-        std::lock_guard<std::mutex> odom_lock(odom_lock_);
-        action = odometry_data_;
-        odometry_data_ = Eigen::Vector3d::Zero();
+        std::lock_guard<std::mutex> lock(odom_lock_);
         velocity = current_velocity_;
         angular_vel = current_angular_vel_;
     }
 
-    // 2. MCL 상태 락 확보 및 실행
+    // 2. Calculate odometry motion between lidar frames using TF (outside of locks)
+    action = calculate_lidar_frame_motion(lidar_timestamp);
+
+    // 3. MCL 상태 락 확보 및 실행
     if (!state_lock_.try_lock()) {
-        RCLCPP_DEBUG(this->get_logger(), "MCL update skipped - previous update still running");
+        RCLCPP_INFO(this->get_logger(), "MCL update skipped - previous update still running");
         return;
     }
 
@@ -995,10 +981,10 @@ void ParticleFilter::timer_update()
     static int current_iters = 0;
     ++current_iters;
 
-    // 3. MCL 알고리즘 실행 (state_lock_ 보호 하에)
+    // 4. MCL 알고리즘 실행 (state_lock_ 보호 하에)
     MCL(action, observation);
 
-    // 4. 결과 계산 및 좌표 변환
+    // 5. 결과 계산 및 좌표 변환
     Eigen::Vector3d final_pose_laser = expected_pose();
     Eigen::Vector3d final_pose_base = apply_tf_offset(final_pose_laser);
 
@@ -1009,8 +995,8 @@ void ParticleFilter::timer_update()
 
     if (current_iters % 10 == 0)
     {
-        RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)",
-                    current_iters, final_pose_base[0], final_pose_base[1], final_pose_base[2]);
+        // RCLCPP_INFO(this->get_logger(), "MCL iteration %d, pose: (%.3f, %.3f, %.3f)",
+        //             current_iters, final_pose_base[0], final_pose_base[1], final_pose_base[2]);
     }
 
     if (current_iters % 100 == 0)
@@ -1121,11 +1107,14 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &base_link_pose, const rcl
             map_to_odom.transform.translation.y = 0.0;
             map_to_odom.transform.translation.z = 0.0;
             map_to_odom.transform.rotation = utils::geometry::yaw_to_quaternion(0.0);
+            RCLCPP_WARN(this->get_logger(), "Odom not initialized, publishing identity map->odom transform");
         }
         pub_tf_->sendTransform(map_to_odom);
     }
 
     if (PUBLISH_ODOM_BASE_TF && odom_initialized_ && base_link_pose.norm() > 0) {
+        RCLCPP_INFO(this->get_logger(), "Publishing odom->base_link TF at [%.3f, %.3f, %.3f]",
+                    base_link_pose[0], base_link_pose[1], base_link_pose[2]);
         geometry_msgs::msg::TransformStamped odom_to_base;
         odom_to_base.header.stamp = stamp;
         odom_to_base.header.frame_id = ODOM_FRAME;
@@ -1302,6 +1291,63 @@ Eigen::Vector3d ParticleFilter::apply_tf_offset(const Eigen::Vector3d& pose_in_l
             pose_in_laser_frame[1] - offset_x * sin_theta,
             pose_in_laser_frame[2]
         );
+    }
+}
+
+/**
+ * @brief Calculates odometry motion between consecutive lidar frames using TF
+ */
+Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp)
+{
+    // Static variable to store the last lidar timestamp
+    static rclcpp::Time last_processed_lidar_stamp = rclcpp::Time(0);
+
+    // If this is the first call, just initialize and return zero motion
+    if (last_processed_lidar_stamp.nanoseconds() == 0) {
+        last_processed_lidar_stamp = current_lidar_stamp;
+        return Eigen::Vector3d::Zero();
+    }
+
+    try {
+        // Get odom->base_link transform at current lidar timestamp
+        auto current_transform = tf_buffer_->lookupTransform(
+            ODOM_FRAME, BASE_FRAME, current_lidar_stamp);
+
+        // Get odom->base_link transform at previous lidar timestamp
+        auto previous_transform = tf_buffer_->lookupTransform(
+            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp);
+
+        // Extract poses
+        Eigen::Vector3d current_pose(
+            current_transform.transform.translation.x,
+            current_transform.transform.translation.y,
+            utils::geometry::quaternion_to_yaw(current_transform.transform.rotation)
+        );
+
+        Eigen::Vector3d previous_pose(
+            previous_transform.transform.translation.x,
+            previous_transform.transform.translation.y,
+            utils::geometry::quaternion_to_yaw(previous_transform.transform.rotation)
+        );
+
+        // Calculate global displacement
+        Eigen::Vector2d delta_global = current_pose.head<2>() - previous_pose.head<2>();
+        double delta_theta = current_pose[2] - previous_pose[2];
+
+        // Transform global displacement to robot-local coordinates using previous pose
+        Eigen::Matrix2d rot = utils::geometry::rotation_matrix(-previous_pose[2]);
+        Eigen::Vector2d delta_local = rot * delta_global;
+
+        // Update last processed timestamp
+        last_processed_lidar_stamp = current_lidar_stamp;
+
+        // Return motion in robot frame: [forward, lateral, rotation]
+        return Eigen::Vector3d(delta_local[0], delta_local[1], delta_theta);
+
+    } catch (tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(),
+            "Could not get transform for lidar frame motion calculation: %s", ex.what());
+        return Eigen::Vector3d::Zero();
     }
 }
 

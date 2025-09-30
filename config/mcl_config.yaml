@@ -16,23 +16,23 @@ particle_filter:
     publish_odom_base_tf: false        # Let odom stack handle this
 
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.02          # Forward motion noise (m)
-    motion_dispersion_y: 0.02          # Lateral motion noise (m)
-    motion_dispersion_theta: 0.05      # Rotation noise (rad) # ~3 degrees
+    motion_dispersion_x: 0.1          # Forward motion noise (m)
+    motion_dispersion_y: 0.1          # Lateral motion noise (m)
+    motion_dispersion_theta: 0.15      # Rotation noise (rad) # ~3 degrees
 
     # === ROBOT GEOMETRY ===
     wheelbase: 0.324                   # Distance between axles (m)
 
     # === SENSOR MODEL ===
-    z_hit: 0.80                        # Weight for correct measurements
-    z_short: 0.01                      # Weight for short readings
-    z_max: 0.07                        # Weight for max range readings
-    z_rand: 0.12                       # Weight for random noise
-    sigma_hit: 8.0                     # Measurement noise std dev
+    z_hit: 0.87                        # Weight for correct measurements
+    z_short: 0.03                      # Weight for short readings
+    z_max: 0.05                        # Weight for max range readings
+    z_rand: 0.05                       # Weight for random noise
+    sigma_hit: 0.5                     # Measurement noise std dev
 
     # === RAY CASTING ===
     angle_step: 18                     # Laser downsampling factor
-    squash_factor: 2.2                 # Weight normalization power
+    squash_factor: 1.0                 # Weight normalization power
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
 
@@ -41,7 +41,7 @@ particle_filter:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 40.0              # Timer frequency (Hz) - publishing only now
+    timer_frequency: 30.0              # Timer frequency (Hz) - publishing only now
     update_from: "odom"                # MCL update trigger: "odom", "lidar", or "timer"
 
     # === TF FRAME NAMES ===

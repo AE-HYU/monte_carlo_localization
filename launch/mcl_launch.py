@@ -79,7 +79,7 @@ def generate_launch_description():
         print(f"[MCL Launch] Using INSTALL config: {default_config_file}")
     
     config_arg = DeclareLaunchArgument(
-        'config_file',
+        'config_file', 
         default_value=default_config_file,
         description='Path to MCL configuration file'
     )
@@ -109,7 +109,7 @@ def generate_launch_description():
             "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
         ]),
         'publish_odom_base_tf': PythonExpression([
-            "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
+            "'true' if '", LaunchConfiguration('mod'), "' == 'sim' else 'false'"
         ]),
 
         # MCL update trigger

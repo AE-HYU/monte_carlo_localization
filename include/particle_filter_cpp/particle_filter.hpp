@@ -76,6 +76,7 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- TF UTILITIES ---------------------------------
     Eigen::Vector3d apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame);
+    Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp);
 
     // --------------------------------- RAY CASTING ---------------------------------
     std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);
@@ -116,8 +117,6 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- PARTICLE FILTER STATE ---------------------------------
     Eigen::MatrixXd particles_;
     std::vector<double> weights_;
-    Eigen::Vector3d odometry_data_;
-    Eigen::Vector3d last_pose_;
 
     // --------------------------------- SENSOR DATA ---------------------------------
     std::vector<float> downsampled_angles_;
