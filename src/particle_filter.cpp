@@ -1202,21 +1202,24 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, 
     Eigen::MatrixXd offset_particles = particles_to_pub;
 
     try {
-        // Get TF transform once for all particles (static transform)
-        auto transform = tf_buffer_->lookupTransform(BASE_FRAME, LASER_FRAME, tf2::TimePointZero);
+        // Get TF transform from laser to base_link (what we actually need)
+        auto transform = tf_buffer_->lookupTransform(LASER_FRAME, BASE_FRAME, tf2::TimePointZero);
         double offset_x = transform.transform.translation.x;
         double offset_y = transform.transform.translation.y;
 
-        // Apply same offset to all particles
+        // Apply offset considering each particle's orientation in map frame
         for (int i = 0; i < offset_particles.rows(); ++i) {
-            double cos_theta = std::cos(offset_particles(i, 2));
-            double sin_theta = std::sin(offset_particles(i, 2));
+            double particle_theta = offset_particles(i, 2);
+            double cos_theta = std::cos(particle_theta);
+            double sin_theta = std::sin(particle_theta);
 
-            double new_x = offset_particles(i, 0) - offset_x * cos_theta + offset_y * sin_theta;
-            double new_y = offset_particles(i, 1) - offset_x * sin_theta - offset_y * cos_theta;
+            // Transform offset from laser frame to map frame using particle's orientation
+            double map_offset_x = offset_x * cos_theta - offset_y * sin_theta;
+            double map_offset_y = offset_x * sin_theta + offset_y * cos_theta;
 
-            offset_particles(i, 0) = new_x;
-            offset_particles(i, 1) = new_y;
+            offset_particles(i, 0) += map_offset_x;
+            offset_particles(i, 1) += map_offset_y;
+            // theta remains the same since there's no rotation between frames
         }
     }
     catch (tf2::TransformException &ex) {
@@ -1227,13 +1230,22 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, 
             warning_shown = true;
         }
 
-        double default_offset_x = 0.28;
-        for (int i = 0; i < offset_particles.rows(); ++i) {
-            double cos_theta = std::cos(offset_particles(i, 2));
-            double sin_theta = std::sin(offset_particles(i, 2));
+        // Default F1Tenth offset: laser is 0.28m forward from base_link
+        // So laser->base_link offset is (-0.28, 0, 0)
+        double default_offset_x = -0.28;
+        double default_offset_y = 0.0;
 
-            offset_particles(i, 0) -= default_offset_x * cos_theta;
-            offset_particles(i, 1) -= default_offset_x * sin_theta;
+        for (int i = 0; i < offset_particles.rows(); ++i) {
+            double particle_theta = offset_particles(i, 2);
+            double cos_theta = std::cos(particle_theta);
+            double sin_theta = std::sin(particle_theta);
+
+            // Transform offset from laser frame to map frame using particle's orientation
+            double map_offset_x = default_offset_x * cos_theta - default_offset_y * sin_theta;
+            double map_offset_y = default_offset_x * sin_theta + default_offset_y * cos_theta;
+
+            offset_particles(i, 0) += map_offset_x;
+            offset_particles(i, 1) += map_offset_y;
         }
     }
 
