@@ -1139,7 +1139,7 @@ void ParticleFilter::publish_tf(const Eigen::Vector3d &base_link_pose, const rcl
             // Get odometry from tf (odom to base_link) at lidar timestamp
             double odom_x, odom_y, odom_yaw;
             try {
-                auto odom_transform = tf_buffer_->lookupTransform(ODOM_FRAME, BASE_FRAME, stamp);
+                auto odom_transform = tf_buffer_->lookupTransform(ODOM_FRAME, BASE_FRAME, stamp, tf2::durationFromSec(0.1));
                 odom_x = odom_transform.transform.translation.x;
                 odom_y = odom_transform.transform.translation.y;
                 odom_yaw = utils::geometry::quaternion_to_yaw(odom_transform.transform.rotation);
@@ -1260,58 +1260,19 @@ void ParticleFilter::visualize(const Eigen::Vector3d &base_link_pose, const rclc
  */
 void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
 {
-    // Apply vehicle frame offset to all particles
-    Eigen::MatrixXd offset_particles = particles_to_pub;
-
-    try {
-        // Get TF transform from laser to base_link (what we actually need)
-        auto transform = tf_buffer_->lookupTransform(LASER_FRAME, BASE_FRAME, tf2::TimePointZero);
-        double offset_x = transform.transform.translation.x;
-        double offset_y = transform.transform.translation.y;
-
-        // Apply offset considering each particle's orientation in map frame
-        for (int i = 0; i < offset_particles.rows(); ++i) {
-            double particle_theta = offset_particles(i, 2);
-            double cos_theta = std::cos(particle_theta);
-            double sin_theta = std::sin(particle_theta);
-
-            // Transform offset from laser frame to map frame using particle's orientation
-            double map_offset_x = offset_x * cos_theta - offset_y * sin_theta;
-            double map_offset_y = offset_x * sin_theta + offset_y * cos_theta;
-
-            offset_particles(i, 0) += map_offset_x;
-            offset_particles(i, 1) += map_offset_y;
-            // theta remains the same since there's no rotation between frames
-        }
+    // Convert particles from laser frame to base_link frame for visualization
+    Eigen::MatrixXd base_particles(particles_to_pub.rows(), 3);
+    
+    for (int i = 0; i < particles_to_pub.rows(); ++i) {
+        Eigen::Vector3d laser_particle(particles_to_pub(i, 0), particles_to_pub(i, 1), particles_to_pub(i, 2));
+        Eigen::Vector3d base_particle = apply_tf_offset(laser_particle);
+        
+        base_particles(i, 0) = base_particle[0];
+        base_particles(i, 1) = base_particle[1]; 
+        base_particles(i, 2) = base_particle[2];
     }
-    catch (tf2::TransformException &ex) {
-        // Fallback: use default F1Tenth offset
-        static bool warning_shown = false;
-        if (!warning_shown) {
-            RCLCPP_WARN(this->get_logger(), "TF lookup failed for particles, using default offset: %s", ex.what());
-            warning_shown = true;
-        }
-
-        // Default F1Tenth offset: laser is 0.28m forward from base_link
-        // So laser->base_link offset is (-0.28, 0, 0)
-        double default_offset_x = -0.28;
-        double default_offset_y = 0.0;
-
-        for (int i = 0; i < offset_particles.rows(); ++i) {
-            double particle_theta = offset_particles(i, 2);
-            double cos_theta = std::cos(particle_theta);
-            double sin_theta = std::sin(particle_theta);
-
-            // Transform offset from laser frame to map frame using particle's orientation
-            double map_offset_x = default_offset_x * cos_theta - default_offset_y * sin_theta;
-            double map_offset_y = default_offset_x * sin_theta + default_offset_y * cos_theta;
-
-            offset_particles(i, 0) += map_offset_x;
-            offset_particles(i, 1) += map_offset_y;
-        }
-    }
-
-    auto pa = utils::particles_to_pose_array(offset_particles);
+    
+    auto pa = utils::particles_to_pose_array(base_particles);
     pa.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
     pa.header.frame_id = "map";
     particle_pub_->publish(pa);
@@ -1385,11 +1346,11 @@ Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time&
     try {
         // Get odom->base_link transform at current lidar timestamp
         auto current_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
+            ODOM_FRAME, BASE_FRAME, current_lidar_stamp, tf2::durationFromSec(0.1));
 
         // Get odom->base_link transform at previous lidar timestamp
         auto previous_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp);
+            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp, tf2::durationFromSec(0.1));
 
         // Extract poses
         Eigen::Vector3d current_pose(

@@ -95,7 +95,7 @@ def generate_launch_description():
         
         # TF frame names
         'odom_frame': PythonExpression([
-            "'ego_racecar/odom' if '", LaunchConfiguration('mod'), "' == 'sim' else 'odom'"
+            "'map' if '", LaunchConfiguration('mod'), "' == 'sim' else 'odom'"
         ]),
         'base_frame': PythonExpression([
             "'ego_racecar/base_link' if '", LaunchConfiguration('mod'), "' == 'sim' else 'base_link'"
