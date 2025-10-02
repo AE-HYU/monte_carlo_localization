@@ -25,95 +25,8 @@ namespace particle_filter_cpp
 ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), normal_dist_(0.0, 1.0)
 {
-    // === PARAMETER DECLARATIONS ===
-    // Core algorithm parameters
-    this->declare_parameter("angle_step", 18);
-    this->declare_parameter("max_particles", 4000);
-    this->declare_parameter("max_viz_particles", 60);
-    this->declare_parameter("squash_factor", 2.2);
-    this->declare_parameter("max_range", 12.0);
-    this->declare_parameter("max_pose_range", 10000.0);
-    
-    // Sensor model parameters
-    this->declare_parameter("z_short", 0.01);
-    this->declare_parameter("z_max", 0.07);
-    this->declare_parameter("z_rand", 0.12);
-    this->declare_parameter("z_hit", 0.80);
-    this->declare_parameter("sigma_hit", 8.0);
-    
-    // Motion model parameters
-    this->declare_parameter("motion_dispersion_x", 0.02);
-    this->declare_parameter("motion_dispersion_y", 0.01);
-    this->declare_parameter("motion_dispersion_theta", 0.05);
-
-    // Robot geometry
-    this->declare_parameter("wheelbase", 0.324);
-
-    
-    // ROS interface
-    this->declare_parameter("scan_topic", "/scan");
-    this->declare_parameter("odom_topic", "/odom");
-    this->declare_parameter("publish_odom", true);
-    this->declare_parameter("viz", true);
-    this->declare_parameter("timer_frequency", 35.0);
-    
-    // Performance
-    this->declare_parameter("use_parallel_raycasting", true);
-    this->declare_parameter("num_threads", 0); // 0 = auto-detect
-
-    // TF frames
-    this->declare_parameter("map_frame", "map");
-    this->declare_parameter("odom_frame", "odom");
-    this->declare_parameter("base_frame", "base_link"); 
-    this->declare_parameter("laser_frame", "laser");
-    
-    // TF publishing control
-    this->declare_parameter("publish_map_odom_tf", true);
-    this->declare_parameter("publish_odom_base_tf", true);
-
-    // === PARAMETER RETRIEVAL ===
-    // Core algorithm parameters
-    ANGLE_STEP = this->get_parameter("angle_step").as_int();
-    MAX_PARTICLES = this->get_parameter("max_particles").as_int();
-    MAX_VIZ_PARTICLES = this->get_parameter("max_viz_particles").as_int();
-    INV_SQUASH_FACTOR = 1.0 / this->get_parameter("squash_factor").as_double();
-    MAX_RANGE_METERS = this->get_parameter("max_range").as_double();
-    MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
-
-    // Sensor model parameters
-    Z_SHORT = this->get_parameter("z_short").as_double();
-    Z_MAX = this->get_parameter("z_max").as_double();
-    Z_RAND = this->get_parameter("z_rand").as_double();
-    Z_HIT = this->get_parameter("z_hit").as_double();
-    SIGMA_HIT = this->get_parameter("sigma_hit").as_double();
-
-    // Motion model parameters
-    MOTION_DISPERSION_X = this->get_parameter("motion_dispersion_x").as_double();
-    MOTION_DISPERSION_Y = this->get_parameter("motion_dispersion_y").as_double();
-    MOTION_DISPERSION_THETA = this->get_parameter("motion_dispersion_theta").as_double();
-
-    // Robot geometry
-    WHEELBASE = this->get_parameter("wheelbase").as_double();
-
-    // ROS interface
-    PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
-    DO_VIZ = this->get_parameter("viz").as_bool();
-    TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
-    RCLCPP_INFO(this->get_logger(), "Loaded timer_frequency: %.1f Hz", TIMER_FREQUENCY);
-
-    // Performance
-    USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
-    NUM_THREADS = this->get_parameter("num_threads").as_int();
-
-    // TF frames
-    MAP_FRAME = this->get_parameter("map_frame").as_string();
-    ODOM_FRAME = this->get_parameter("odom_frame").as_string();
-    BASE_FRAME = this->get_parameter("base_frame").as_string();
-    LASER_FRAME = this->get_parameter("laser_frame").as_string();
-
-    // TF publishing control
-    PUBLISH_MAP_ODOM_TF = this->get_parameter("publish_map_odom_tf").as_bool();
-    PUBLISH_ODOM_BASE_TF = this->get_parameter("publish_odom_base_tf").as_bool();
+    // Initialize and validate parameters
+    initParameters();
 
     // State initialization
     MAX_RANGE_PX_ = 0;
@@ -238,6 +151,191 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
     RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
+}
+
+// ================================================================================================
+// PARAMETER INITIALIZATION & VALIDATION
+// ================================================================================================
+
+/**
+ * @brief Initialize and validate all parameters with semantic checks
+ */
+void ParticleFilter::initParameters()
+{
+    // === PARAMETER DECLARATIONS ===
+    // Core algorithm parameters
+    this->declare_parameter("angle_step", 18);
+    this->declare_parameter("max_particles", 4000);
+    this->declare_parameter("min_particles", 500);
+    this->declare_parameter("max_viz_particles", 60);
+    this->declare_parameter("squash_factor", 2.2);
+    this->declare_parameter("max_range", 12.0);
+    this->declare_parameter("max_pose_range", 10000.0);
+
+    // Sensor model parameters (sum must equal 1.0 - auto-normalized if not)
+    this->declare_parameter("z_short", 0.01);
+    this->declare_parameter("z_max", 0.07);
+    this->declare_parameter("z_rand", 0.07);
+    this->declare_parameter("z_hit", 0.85);
+    this->declare_parameter("sigma_hit", 5.0);
+
+    // Motion model parameters
+    this->declare_parameter("motion_dispersion_x", 0.02);
+    this->declare_parameter("motion_dispersion_y", 0.01);
+    this->declare_parameter("motion_dispersion_theta", 0.05);
+
+    // Robot geometry
+    this->declare_parameter("wheelbase", 0.324);
+
+    // ROS interface
+    this->declare_parameter("scan_topic", "/scan");
+    this->declare_parameter("odom_topic", "/odom");
+    this->declare_parameter("publish_odom", true);
+    this->declare_parameter("viz", true);
+    this->declare_parameter("timer_frequency", 35.0);
+
+    // Performance
+    this->declare_parameter("use_parallel_raycasting", true);
+    this->declare_parameter("num_threads", 0); // 0 = auto-detect
+
+    // TF frames
+    this->declare_parameter("map_frame", "map");
+    this->declare_parameter("odom_frame", "odom");
+    this->declare_parameter("base_frame", "base_link");
+    this->declare_parameter("laser_frame", "laser");
+
+    // TF publishing control
+    this->declare_parameter("publish_map_odom_tf", true);
+    this->declare_parameter("publish_odom_base_tf", true);
+
+    // === PARAMETER RETRIEVAL ===
+    // Core algorithm parameters
+    ANGLE_STEP = this->get_parameter("angle_step").as_int();
+    MAX_PARTICLES = this->get_parameter("max_particles").as_int();
+    MIN_PARTICLES = this->get_parameter("min_particles").as_int();
+    MAX_VIZ_PARTICLES = this->get_parameter("max_viz_particles").as_int();
+    INV_SQUASH_FACTOR = 1.0 / this->get_parameter("squash_factor").as_double();
+    MAX_RANGE_METERS = this->get_parameter("max_range").as_double();
+    MAX_POSE_RANGE = this->get_parameter("max_pose_range").as_double();
+
+    // Sensor model parameters
+    Z_SHORT = this->get_parameter("z_short").as_double();
+    Z_MAX = this->get_parameter("z_max").as_double();
+    Z_RAND = this->get_parameter("z_rand").as_double();
+    Z_HIT = this->get_parameter("z_hit").as_double();
+    SIGMA_HIT = this->get_parameter("sigma_hit").as_double();
+
+    // Motion model parameters
+    MOTION_DISPERSION_X = this->get_parameter("motion_dispersion_x").as_double();
+    MOTION_DISPERSION_Y = this->get_parameter("motion_dispersion_y").as_double();
+    MOTION_DISPERSION_THETA = this->get_parameter("motion_dispersion_theta").as_double();
+
+    // Robot geometry
+    WHEELBASE = this->get_parameter("wheelbase").as_double();
+
+    // ROS interface
+    PUBLISH_ODOM = this->get_parameter("publish_odom").as_bool();
+    DO_VIZ = this->get_parameter("viz").as_bool();
+    TIMER_FREQUENCY = this->get_parameter("timer_frequency").as_double();
+
+    // Performance
+    USE_PARALLEL_RAYCASTING = this->get_parameter("use_parallel_raycasting").as_bool();
+    NUM_THREADS = this->get_parameter("num_threads").as_int();
+
+    // TF frames
+    MAP_FRAME = this->get_parameter("map_frame").as_string();
+    ODOM_FRAME = this->get_parameter("odom_frame").as_string();
+    BASE_FRAME = this->get_parameter("base_frame").as_string();
+    LASER_FRAME = this->get_parameter("laser_frame").as_string();
+
+    // TF publishing control
+    PUBLISH_MAP_ODOM_TF = this->get_parameter("publish_map_odom_tf").as_bool();
+    PUBLISH_ODOM_BASE_TF = this->get_parameter("publish_odom_base_tf").as_bool();
+
+    // === SEMANTIC VALIDATION ===
+
+    // Validate particle counts
+    if (MAX_PARTICLES < 0) {
+        RCLCPP_WARN(get_logger(),
+            "max_particles is negative (%d), using default 2000", MAX_PARTICLES);
+        MAX_PARTICLES = 2000;
+    }
+
+    if (MIN_PARTICLES < 0) {
+        RCLCPP_WARN(get_logger(),
+            "min_particles is negative (%d), using default 500", MIN_PARTICLES);
+        MIN_PARTICLES = 500;
+    }
+
+    if (MIN_PARTICLES > MAX_PARTICLES) {
+        RCLCPP_WARN(get_logger(),
+            "min_particles (%d) > max_particles (%d), setting max = min",
+            MIN_PARTICLES, MAX_PARTICLES);
+        MAX_PARTICLES = MIN_PARTICLES;
+    }
+
+    // Validate angle step
+    if (ANGLE_STEP <= 0) {
+        RCLCPP_ERROR(get_logger(),
+            "angle_step must be positive, got %d. Using default 18", ANGLE_STEP);
+        ANGLE_STEP = 18;
+    }
+
+    // Validate sensor model weights sum to 1.0
+    double sum = Z_HIT + Z_SHORT + Z_MAX + Z_RAND;
+    if (std::abs(sum - 1.0) > 0.01) {
+        RCLCPP_WARN(get_logger(),
+            "Sensor model weights sum to %.3f (expected 1.0), normalizing...", sum);
+        Z_HIT /= sum;
+        Z_SHORT /= sum;
+        Z_MAX /= sum;
+        Z_RAND /= sum;
+        RCLCPP_INFO(get_logger(),
+            "Normalized: z_hit=%.3f, z_short=%.3f, z_max=%.3f, z_rand=%.3f",
+            Z_HIT, Z_SHORT, Z_MAX, Z_RAND);
+    }
+
+    // Validate sigma_hit
+    if (SIGMA_HIT <= 0.0) {
+        RCLCPP_WARN(get_logger(),
+            "sigma_hit must be positive, got %.3f. Using default 8.0", SIGMA_HIT);
+        SIGMA_HIT = 8.0;
+    }
+
+    // Validate motion dispersion parameters
+    if (MOTION_DISPERSION_X < 0.0) {
+        RCLCPP_WARN(get_logger(),
+            "motion_dispersion_x negative, using absolute value");
+        MOTION_DISPERSION_X = std::abs(MOTION_DISPERSION_X);
+    }
+    if (MOTION_DISPERSION_Y < 0.0) {
+        RCLCPP_WARN(get_logger(),
+            "motion_dispersion_y negative, using absolute value");
+        MOTION_DISPERSION_Y = std::abs(MOTION_DISPERSION_Y);
+    }
+    if (MOTION_DISPERSION_THETA < 0.0) {
+        RCLCPP_WARN(get_logger(),
+            "motion_dispersion_theta negative, using absolute value");
+        MOTION_DISPERSION_THETA = std::abs(MOTION_DISPERSION_THETA);
+    }
+
+    // Validate max range
+    if (MAX_RANGE_METERS <= 0.0) {
+        RCLCPP_WARN(get_logger(),
+            "max_range must be positive, got %.3f. Using default 12.0", MAX_RANGE_METERS);
+        MAX_RANGE_METERS = 12.0;
+    }
+
+    // Validate timer frequency
+    if (TIMER_FREQUENCY <= 0.0) {
+        RCLCPP_WARN(get_logger(),
+            "timer_frequency must be positive, got %.3f. Using default 35.0", TIMER_FREQUENCY);
+        TIMER_FREQUENCY = 35.0;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+        "Parameters validated - Particles: [%d-%d], AngleStep: %d, Frequency: %.1f Hz",
+        MIN_PARTICLES, MAX_PARTICLES, ANGLE_STEP, TIMER_FREQUENCY);
 }
 
 // ================================================================================================

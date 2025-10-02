@@ -53,6 +53,7 @@ class ParticleFilter : public rclcpp::Node
     Eigen::Vector3d expected_pose();
 
     // --------------------------------- INITIALIZATION ---------------------------------
+    void initParameters();  // Parameter validation with semantic checks
     void initialize_global();
     void initialize_particles_pose(const Eigen::Vector3d &pose);
     void precompute_sensor_model();
@@ -87,6 +88,7 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
     int ANGLE_STEP;
     int MAX_PARTICLES;
+    int MIN_PARTICLES;  // Minimum particle count for adaptive resampling
     int MAX_VIZ_PARTICLES;
     double INV_SQUASH_FACTOR;
     double MAX_RANGE_METERS;

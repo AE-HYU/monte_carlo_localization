@@ -7,6 +7,7 @@ particle_filter:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
     max_particles: 2000                # Maximum number of particles
+    min_particles: 500                 # Minimum number of particles (for adaptive resampling)
     max_viz_particles: 100              # Visualization downsampling
     max_range: 10.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
