@@ -38,7 +38,10 @@ class ParticleFilter : public rclcpp::Node
     explicit ParticleFilter(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
     ~ParticleFilter();
 
-  private:
+    // ================================================================================================
+    // PUBLIC MEMBERS - Accessible by external modules (parameter_manager, map_manager, etc.)
+    // ================================================================================================
+
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
     void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation);
     void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);

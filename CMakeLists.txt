@@ -55,15 +55,24 @@ set(dependencies
 
 # Create particle filter library 
 add_library(${PROJECT_NAME}_lib SHARED
-  src/particle_filter.cpp
+  src/monte_carlo_localization.cpp
+  src/parameter_manager.cpp
+  src/map_manager.cpp
+  src/initialization.cpp
+  src/visualization.cpp
   src/utils.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
 
 # Create executable for particle filter
-add_executable(particle_filter_node 
-  src/particle_filter.cpp
+add_executable(particle_filter_node
+  src/monte_carlo_localization.cpp
+  src/parameter_manager.cpp
+  src/map_manager.cpp
+  src/initialization.cpp
+  src/visualization.cpp
+  src/utils.cpp
 )
 
 target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)

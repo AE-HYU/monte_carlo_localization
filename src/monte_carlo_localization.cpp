@@ -1,0 +1,712 @@
+// ================================================================================================
+// MONTE CARLO LOCALIZATION - Core MCL Algorithm Implementation
+// ================================================================================================
+// Modular implementation with external modules for parameter, map, initialization, visualization
+// ================================================================================================
+
+#include "particle_filter_cpp/particle_filter.hpp"
+#include "particle_filter_cpp/parameter_manager.hpp"
+#include "particle_filter_cpp/map_manager.hpp"
+#include "particle_filter_cpp/initialization.hpp"
+#include "particle_filter_cpp/visualization.hpp"
+#include "particle_filter_cpp/utils.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <omp.h>
+
+namespace particle_filter_cpp
+{
+
+// ================================================================================================
+// CONSTRUCTOR & DESTRUCTOR
+// ================================================================================================
+
+ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
+    : Node("particle_filter", options), rng_(std::random_device{}()), normal_dist_(0.0, 1.0)
+{
+    // Initialize and validate parameters using parameter_manager module
+    parameter_manager::initParameters(this);
+
+    // Initialize state
+    map_initialized_ = false;
+    lidar_initialized_ = false;
+    odom_initialized_ = false;
+    first_sensor_update_ = true;
+    has_new_lidar_data_ = false;
+    mcl_processing_time_ = 0.0;
+    current_velocity_ = 0.0;
+    current_angular_vel_ = 0.0;
+
+    // Initialize laser offset with default (will be loaded from TF)
+    laser_offset_x_ = 0.28;
+    laser_offset_y_ = 0.0;
+
+    // Initialize particles and weights
+    particles_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
+    weights_.resize(MAX_PARTICLES, 1.0 / MAX_PARTICLES);
+    proposal_distribution_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
+    local_deltas_ = Eigen::MatrixXd::Zero(MAX_PARTICLES, 3);
+
+    // Setup OpenMP threading
+    if (USE_PARALLEL_RAYCASTING) {
+        if (NUM_THREADS <= 0) {
+            NUM_THREADS = std::max(1, static_cast<int>(std::thread::hardware_concurrency()) - 1);
+        }
+        omp_set_num_threads(NUM_THREADS);
+    }
+
+    // Create callback groups for threading
+    sensor_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    compute_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    auto sensor_sub_options = rclcpp::SubscriptionOptions();
+    sensor_sub_options.callback_group = sensor_group_;
+
+    // ROS2 Publishers
+    particle_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("/pf/viz/particles", 10);
+    pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/pf/viz/inferred_pose", 10);
+    odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/pf/pose/odom", 10);
+    map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(10).transient_local());
+
+    // ROS2 Subscribers
+    std::string scan_topic = this->get_parameter("scan_topic").as_string();
+    std::string odom_topic = this->get_parameter("odom_topic").as_string();
+
+    laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
+        scan_topic, 10,
+        std::bind(&ParticleFilter::lidarCB, this, std::placeholders::_1),
+        sensor_sub_options);
+
+    odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        odom_topic, 10,
+        std::bind(&ParticleFilter::odomCB, this, std::placeholders::_1),
+        sensor_sub_options);
+
+    pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        "/initialpose", 10,
+        std::bind(&ParticleFilter::clicked_pose, this, std::placeholders::_1));
+
+    click_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+        "/clicked_point", 10,
+        std::bind(&ParticleFilter::clicked_point, this, std::placeholders::_1));
+
+    // Map client and TF
+    map_client_ = this->create_client<nav_msgs::srv::GetMap>("/map_server/map");
+    pub_tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+
+    // Try to get laser-baselink offset from static TF
+    try {
+        rclcpp::sleep_for(std::chrono::milliseconds(100));
+
+        auto static_tf = tf_buffer_->lookupTransform(
+            BASE_FRAME, LASER_FRAME, tf2::TimePointZero, tf2::durationFromSec(1.0));
+
+        laser_offset_x_ = static_tf.transform.translation.x;
+        laser_offset_y_ = static_tf.transform.translation.y;
+
+        RCLCPP_INFO(this->get_logger(),
+            "Loaded laser offset from static TF: [%.3f, %.3f]m",
+            laser_offset_x_, laser_offset_y_);
+    } catch (tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(),
+            "Could not get static TF %s->%s: %s. Using default offset [%.3f, %.3f]m",
+            BASE_FRAME.c_str(), LASER_FRAME.c_str(), ex.what(),
+            laser_offset_x_, laser_offset_y_);
+    }
+
+    // Timers
+    update_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(static_cast<int>(1000.0 / TIMER_FREQUENCY)),
+        std::bind(&ParticleFilter::timer_update, this),
+        compute_group_);
+
+    map_loader_timer_ = this->create_wall_timer(
+        std::chrono::seconds(1),
+        [this]() { map_manager::try_load_map(this); });
+
+    // Register dynamic parameter callback
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter> &parameters) {
+            return parameter_manager::dynamicParametersCallback(this, parameters);
+        });
+
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
+        TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
+        USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
+    RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
+    RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
+}
+
+ParticleFilter::~ParticleFilter()
+{
+    RCLCPP_INFO(this->get_logger(), "Shutting down particle filter");
+
+    // Cancel all timers explicitly for clean shutdown
+    if (update_timer_) update_timer_->cancel();
+    if (map_loader_timer_) map_loader_timer_->cancel();
+
+    // Other resources (smart pointers, Eigen matrices) are cleaned up automatically via RAII
+}
+
+// ================================================================================================
+// ROS2 CALLBACKS
+// ================================================================================================
+
+void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+{
+    std::lock_guard<std::mutex> lock(lidar_lock_);
+
+    if (!lidar_initialized_) {
+        int num_ranges = msg->ranges.size();
+        int downsampled_size = num_ranges / ANGLE_STEP;
+        downsampled_angles_.resize(downsampled_size);
+        downsampled_ranges_.resize(downsampled_size);
+
+        for (int i = 0; i < downsampled_size; ++i) {
+            downsampled_angles_[i] = msg->angle_min + (i * ANGLE_STEP) * msg->angle_increment;
+        }
+
+        lidar_initialized_ = true;
+        RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
+    }
+
+    // Downsample ranges
+    int downsampled_size = downsampled_angles_.size();
+    for (int i = 0; i < downsampled_size; ++i) {
+        int idx = i * ANGLE_STEP;
+        downsampled_ranges_[i] = (idx < static_cast<int>(msg->ranges.size()))
+                                     ? msg->ranges[idx]
+                                     : msg->range_max;
+    }
+
+    last_lidar_time_ = msg->header.stamp;
+    has_new_lidar_data_ = true;
+}
+
+void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+    std::lock_guard<std::mutex> lock(odom_lock_);
+
+    current_velocity_ = msg->twist.twist.linear.x;
+    current_angular_vel_ = msg->twist.twist.angular.z;
+
+    if (!odom_initialized_) {
+        odom_initialized_ = true;
+        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+    }
+}
+
+void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+{
+    if (!map_initialized_)
+        return;
+
+    // Extract pose from RViz message
+    Eigen::Vector3d base_pose(
+        msg->pose.pose.position.x,
+        msg->pose.pose.position.y,
+        utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation));
+
+    // Convert base_link to laser frame by adding offset rotated by heading
+    double cos_theta = std::cos(base_pose[2]);
+    double sin_theta = std::sin(base_pose[2]);
+    Eigen::Vector3d laser_pose(
+        base_pose[0] + (laser_offset_x_ * cos_theta - laser_offset_y_ * sin_theta),
+        base_pose[1] + (laser_offset_x_ * sin_theta + laser_offset_y_ * cos_theta),
+        base_pose[2]);
+
+    RCLCPP_INFO(this->get_logger(), "Pose initialized from RViz at base_link [%.3f, %.3f, %.3f] -> laser [%.3f, %.3f, %.3f]",
+        base_pose[0], base_pose[1], base_pose[2],
+        laser_pose[0], laser_pose[1], laser_pose[2]);
+
+    // Initialize particles around laser pose
+    initialization::initialize_particles_pose(this, laser_pose);
+}
+
+void ParticleFilter::clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg)
+{
+    if (!map_initialized_)
+        return;
+
+    Eigen::Vector3d pose(msg->point.x, msg->point.y, 0.0);
+    initialization::initialize_particles_pose(this, pose);
+}
+
+// ================================================================================================
+// MAIN UPDATE LOOP
+// ================================================================================================
+
+void ParticleFilter::timer_update()
+{
+    auto timer_start = std::chrono::high_resolution_clock::now();
+
+    if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
+    {
+        static int wait_count = 0;
+        if (++wait_count % 50 == 0) {
+            RCLCPP_WARN(this->get_logger(),
+                "Still waiting for initialization (%d attempts) - LiDAR: %s, Odom: %s, Map: %s",
+                wait_count,
+                lidar_initialized_ ? "OK" : "NO",
+                odom_initialized_ ? "OK" : "NO",
+                map_initialized_ ? "OK" : "NO");
+        }
+        return;
+    }
+
+    // Copy sensor data with minimal lock time
+    std::vector<float> observation;
+    Eigen::Vector3d action;
+    rclcpp::Time lidar_timestamp;
+
+    {
+        std::lock_guard<std::mutex> lock(lidar_lock_);
+        if (!has_new_lidar_data_) {
+            return;
+        }
+        has_new_lidar_data_ = false;
+        observation = downsampled_ranges_;
+        lidar_timestamp = last_lidar_time_;
+    }
+
+    // Calculate odometry motion
+    action = calculate_lidar_frame_motion(lidar_timestamp);
+
+    // Execute MCL with state lock
+    if (!state_lock_.try_lock()) {
+        RCLCPP_INFO(this->get_logger(), "MCL update skipped - previous update still running");
+        return;
+    }
+
+    auto mcl_start = std::chrono::high_resolution_clock::now();
+    MCL(action, observation);
+    auto mcl_end = std::chrono::high_resolution_clock::now();
+
+    mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+
+    Eigen::Vector3d final_pose_laser = expected_pose();
+    state_lock_.unlock();
+
+    // Convert laser frame to base_link
+    Eigen::Vector3d final_pose_base = utils::transforms::apply_laser_to_base_offset(
+        final_pose_laser, laser_offset_x_, laser_offset_y_);
+
+    // Publish TF and visualization
+    visualization::publish_tf(this, final_pose_base, lidar_timestamp);
+    visualization::visualize(this, final_pose_base, lidar_timestamp);
+
+    // Performance logging (periodic)
+    static int update_count = 0;
+    if (++update_count % 100 == 0) {
+        auto timer_end = std::chrono::high_resolution_clock::now();
+        double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
+        
+        std::string msg = "MCL update #" + std::to_string(update_count) + 
+                         " - Total: " + std::to_string(total_time) + "ms, " +
+                         "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
+                         "Pose: [" + std::to_string(final_pose_base[0]) + ", " +
+                         std::to_string(final_pose_base[1]) + ", " +
+                         std::to_string(final_pose_base[2]) + "]";
+        RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+    }
+}
+
+Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp)
+{
+    static rclcpp::Time last_processed_lidar_stamp = rclcpp::Time(0);
+
+    if (last_processed_lidar_stamp.nanoseconds() == 0) {
+        last_processed_lidar_stamp = current_lidar_stamp;
+        return Eigen::Vector3d::Zero();
+    }
+
+    try {
+        auto current_transform = tf_buffer_->lookupTransform(
+            ODOM_FRAME, BASE_FRAME, current_lidar_stamp, tf2::durationFromSec(0.03));
+
+        auto previous_transform = tf_buffer_->lookupTransform(
+            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp, tf2::durationFromSec(0.03));
+
+        Eigen::Vector3d current_pose(
+            current_transform.transform.translation.x,
+            current_transform.transform.translation.y,
+            utils::geometry::quaternion_to_yaw(current_transform.transform.rotation)
+        );
+
+        Eigen::Vector3d previous_pose(
+            previous_transform.transform.translation.x,
+            previous_transform.transform.translation.y,
+            utils::geometry::quaternion_to_yaw(previous_transform.transform.rotation)
+        );
+
+        Eigen::Vector3d motion = utils::transforms::calculate_lidar_frame_motion(current_pose, previous_pose);
+        
+        last_processed_lidar_stamp = current_lidar_stamp;
+        return motion;
+
+    } catch (tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(),
+            "Could not get transform for lidar frame motion calculation: %s", ex.what());
+        return Eigen::Vector3d::Zero();
+    }
+}
+
+/**
+ * @brief Applies motion model to particles with Gaussian noise
+ */
+void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
+{
+    // Vectorized motion model implementation
+    // Transform the action into the coordinate space of each particle
+
+    // Pre-compute trigonometric values for all particles (vectorized approach)
+    Eigen::VectorXd cos_thetas = proposal_dist.col(2).array().cos();
+    Eigen::VectorXd sin_thetas = proposal_dist.col(2).array().sin();
+
+    // Apply motion transformation: local → global coordinates (vectorized)
+    Eigen::VectorXd global_dx = cos_thetas * action[0] - sin_thetas * action[1];
+    Eigen::VectorXd global_dy = sin_thetas * action[0] + cos_thetas * action[1];
+
+    // Apply displacement
+    proposal_dist.col(0) += global_dx;
+    proposal_dist.col(1) += global_dy;
+    proposal_dist.col(2).array() += action[2];
+
+    // Add Gaussian noise - generate all noise values at once
+    std::vector<double> noise_x_values(MAX_PARTICLES);
+    std::vector<double> noise_y_values(MAX_PARTICLES);
+    std::vector<double> noise_theta_values(MAX_PARTICLES);
+
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            noise_x_values[i] = normal_dist_(rng_) * MOTION_DISPERSION_X;
+            noise_y_values[i] = normal_dist_(rng_) * MOTION_DISPERSION_Y;
+            noise_theta_values[i] = normal_dist_(rng_) * MOTION_DISPERSION_THETA;
+        }
+    }
+
+    // Apply noise without lock
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        proposal_dist(i, 0) += noise_x_values[i];
+        proposal_dist(i, 1) += noise_y_values[i];
+        proposal_dist(i, 2) += noise_theta_values[i];
+    }
+
+}
+
+/**
+ * @brief Evaluates sensor model likelihood using beam model and lookup table
+ */
+void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
+                                  std::vector<double> &weights)
+{
+    const int num_rays = downsampled_angles_.size();
+    const int total_queries = num_rays * MAX_PARTICLES;
+
+    // === INITIALIZATION: First-time memory allocation ===
+    initialize_sensor_arrays(num_rays, total_queries);
+
+    // === RAY QUERY GENERATION ===
+    auto query_start = std::chrono::high_resolution_clock::now();
+    generate_ray_queries(proposal_dist, num_rays);
+    timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - query_start).count();
+
+    // === RAY CASTING ===
+    ranges_ = calc_range_many(queries_);
+
+    // === WEIGHT CALCULATION ===
+    auto sensor_eval_start = std::chrono::high_resolution_clock::now();
+    calculate_particle_weights(obs, num_rays, weights);
+    timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - sensor_eval_start).count();
+}
+
+/**
+ * @brief Initializes arrays for sensor model computation
+ */
+void ParticleFilter::initialize_sensor_arrays(int num_rays, int total_queries)
+{
+    if (first_sensor_update_) {
+        queries_ = Eigen::MatrixXd::Zero(total_queries, 3);
+        ranges_.resize(total_queries);
+
+        // Pre-allocate sensor model vectors
+        obs_px_.resize(num_rays);
+        ranges_px_.resize(total_queries);
+
+        // Pre-compute tiled angles for efficiency
+        tiled_angles_.resize(total_queries);
+        for (int i = 0; i < MAX_PARTICLES; ++i) {
+            std::copy(downsampled_angles_.begin(), downsampled_angles_.end(),
+                     tiled_angles_.begin() + i * num_rays);
+        }
+        first_sensor_update_ = false;
+    }
+}
+
+/**
+ * @brief Generates ray queries for batch ray casting
+ */
+void ParticleFilter::generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays)
+{
+    for (int i = 0; i < MAX_PARTICLES; ++i) {
+        const int base_idx = i * num_rays;
+        const double x = proposal_dist(i, 0);
+        const double y = proposal_dist(i, 1);
+        const double theta = proposal_dist(i, 2);
+
+        for (int j = 0; j < num_rays; ++j) {
+            const int idx = base_idx + j;
+            queries_(idx, 0) = x;
+            queries_(idx, 1) = y;
+            queries_(idx, 2) = theta + downsampled_angles_[j];
+        }
+    }
+}
+
+/**
+ * @brief Calculates particle weights using sensor model lookup table
+ */
+void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, int num_rays,
+                                               std::vector<double> &weights)
+{
+    // Thread-safe access to map resolution
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+    if (!local_map) return;
+    double resolution = local_map->info.resolution;
+
+    // Convert observations to pixel units (pre-allocated)
+    for (size_t i = 0; i < obs.size(); ++i) {
+        obs_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX_), obs[i] / resolution);
+    }
+
+    // Convert expected ranges to pixel units (pre-allocated)
+    for (size_t i = 0; i < ranges_.size(); ++i) {
+        ranges_px_[i] = std::min(static_cast<double>(MAX_RANGE_PX_), ranges_[i] / resolution);
+    }
+
+    // Compute particle weights using pre-computed sensor model lookup table
+    for (int i = 0; i < MAX_PARTICLES; ++i) {
+        double weight = 1.0;
+        const int base_idx = i * num_rays;
+
+        for (int j = 0; j < num_rays; ++j) {
+            const int obs_idx = std::max(0, std::min(static_cast<int>(std::round(obs_px_[j])), MAX_RANGE_PX_));
+            const int range_idx = std::max(0, std::min(static_cast<int>(std::round(ranges_px_[base_idx + j])), MAX_RANGE_PX_));
+
+            weight *= sensor_model_table_(obs_idx, range_idx);
+        }
+
+        // Apply squash factor AFTER computing the product - optimized
+        if (weight > 0.0) {
+            weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
+        } else {
+            weights[i] = 0.0;
+        }
+    }
+}
+
+// ================================================================================================
+// RAY CASTING
+// ================================================================================================
+/**
+ * @brief Performs batch ray casting for multiple queries
+ */
+std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &queries)
+{
+    auto raycast_start = std::chrono::high_resolution_clock::now();
+
+    std::vector<float> results(queries.rows());
+
+    // Get map once for all ray casting operations
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+
+    if (!local_map || !map_initialized_) {
+        std::fill(results.begin(), results.end(), MAX_RANGE_METERS);
+        return results;
+    }
+
+    if (USE_PARALLEL_RAYCASTING) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map);
+        }
+    } else {
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map);
+        }
+    }
+
+    auto raycast_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
+
+    return results;
+}
+
+/**
+ * @brief Casts single ray to find obstacle distance
+ */
+float ParticleFilter::cast_ray(double x, double y, double angle,
+                               const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map)
+{
+    if (!local_map)
+        return MAX_RANGE_METERS;
+
+    double resolution = local_map->info.resolution;
+    double origin_x = local_map->info.origin.position.x;
+    double origin_y = local_map->info.origin.position.y;
+
+    double dx = std::cos(angle) * resolution;
+    double dy = std::sin(angle) * resolution;
+
+    for (int step = 0; step < MAX_RANGE_PX_; ++step)
+    {
+        x += dx;
+        y += dy;
+
+        // World to grid coordinate transformation
+        int grid_x = static_cast<int>((x - origin_x) / resolution);
+        int grid_y = static_cast<int>((y - origin_y) / resolution);
+
+        // Map boundary collision
+        if (grid_x < 0 || grid_x >= static_cast<int>(local_map->info.width) || grid_y < 0 ||
+            grid_y >= static_cast<int>(local_map->info.height))
+        {
+            return step * resolution;
+        }
+
+        // Check for obstacles
+        int map_idx = grid_y * local_map->info.width + grid_x;
+        if (map_idx >= 0 && map_idx < static_cast<int>(local_map->data.size()))
+        {
+            if (local_map->data[map_idx] > 50)
+            {
+                return step * resolution;
+            }
+        }
+    }
+
+    return MAX_RANGE_METERS;
+}
+
+/**
+ * @brief Executes complete MCL cycle: resample, predict, update weights
+ */
+void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
+{
+    auto mcl_start = std::chrono::high_resolution_clock::now();
+    
+    // 1. Multinomial resampling - generate all indices at once
+    auto resample_start = std::chrono::high_resolution_clock::now();
+    std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
+    std::vector<int> resample_indices(MAX_PARTICLES);
+
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            resample_indices[i] = particle_dist(rng_);
+        }
+    }
+
+    // Copy particles without lock
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        proposal_distribution_.row(i) = particles_.row(resample_indices[i]);
+    }
+    auto resample_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
+
+    // 2. Motion prediction
+    auto motion_start = std::chrono::high_resolution_clock::now();
+    motion_model(proposal_distribution_, action);
+    auto motion_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
+
+    // 3. Sensor likelihood evaluation
+    sensor_model(proposal_distribution_, observation, weights_);
+
+    // 4. Weight normalization with particle diversity check
+    double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
+    if (sum_weights > 0)
+    {
+        for (double &w : weights_)
+        {
+            w /= sum_weights;
+        }
+
+        // Simple resampling without emergency recovery
+    }
+
+    // 5. Update particle set - using efficient swap
+    particles_.swap(proposal_distribution_);
+    
+    auto mcl_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+    timing_stats_.measurement_count++;
+}
+
+/**
+ * @brief Computes weighted mean pose from particles
+ */
+Eigen::Vector3d ParticleFilter::expected_pose()
+{
+    Eigen::Vector3d pose = Eigen::Vector3d::Zero();
+    double sum_sin = 0.0, sum_cos = 0.0;
+
+    // Weighted mean for x, y
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        pose[0] += weights_[i] * particles_(i, 0);  // x
+        pose[1] += weights_[i] * particles_(i, 1);  // y
+
+        // Circular mean for angles
+        sum_sin += weights_[i] * std::sin(particles_(i, 2));
+        sum_cos += weights_[i] * std::cos(particles_(i, 2));
+    }
+
+    // Final angle calculation
+    pose[2] = std::atan2(sum_sin, sum_cos);
+
+    return pose;
+}
+
+} // namespace particle_filter_cpp
+
+// ================================================================================================
+// PROGRAM ENTRY POINT
+// ================================================================================================
+int main(int argc, char *argv[])
+{
+    rclcpp::init(argc, argv);
+    
+    auto node = std::make_shared<particle_filter_cpp::ParticleFilter>();
+    
+    // Use MultiThreadedExecutor for parallel callback processing
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    
+    RCLCPP_INFO(node->get_logger(), "Monte Carlo Localization node started - spinning...");
+    executor.spin();
+    
+    rclcpp::shutdown();
+    return 0;
+}

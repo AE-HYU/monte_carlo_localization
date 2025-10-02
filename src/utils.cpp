@@ -61,6 +61,45 @@ Eigen::Matrix2d rotation_matrix(double angle)
 } // namespace geometry
 
 
+// --------------------------------- TRANSFORMS NAMESPACE ---------------------------------
+namespace transforms
+{
+
+// Apply static laser-to-base_link offset using cached values
+Eigen::Vector3d apply_laser_to_base_offset(const Eigen::Vector3d& pose_in_laser_frame,
+                                            double laser_offset_x, double laser_offset_y)
+{
+    // Transform: base_link = laser - offset rotated by particle heading
+    double cos_theta = std::cos(pose_in_laser_frame[2]);
+    double sin_theta = std::sin(pose_in_laser_frame[2]);
+
+    // Rotate offset by particle heading and subtract from laser position
+    return Eigen::Vector3d(
+        pose_in_laser_frame[0] - (laser_offset_x * cos_theta - laser_offset_y * sin_theta),
+        pose_in_laser_frame[1] - (laser_offset_x * sin_theta + laser_offset_y * cos_theta),
+        pose_in_laser_frame[2]  // Heading unchanged
+    );
+}
+
+// Calculate motion between two poses (for lidar frame motion calculation)
+Eigen::Vector3d calculate_lidar_frame_motion(const Eigen::Vector3d& current_pose,
+                                              const Eigen::Vector3d& previous_pose)
+{
+    // Calculate global displacement
+    Eigen::Vector2d delta_global = current_pose.head<2>() - previous_pose.head<2>();
+    double delta_theta = current_pose[2] - previous_pose[2];
+
+    // Transform global displacement to robot-local coordinates using previous pose
+    Eigen::Matrix2d rot = geometry::rotation_matrix(-previous_pose[2]);
+    Eigen::Vector2d delta_local = rot * delta_global;
+
+    // Return motion in robot frame: [forward, lateral, rotation]
+    return Eigen::Vector3d(delta_local[0], delta_local[1], delta_theta);
+}
+
+} // namespace transforms
+
+
 // --------------------------------- VALIDATION NAMESPACE ---------------------------------
 namespace validation
 {

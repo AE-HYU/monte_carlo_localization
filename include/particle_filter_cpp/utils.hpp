@@ -33,6 +33,17 @@ namespace geometry
 } // namespace geometry
 
 
+// --------------------------------- TRANSFORMS NAMESPACE ---------------------------------
+namespace transforms
+{
+  // Coordinate frame transformations
+  Eigen::Vector3d apply_laser_to_base_offset(const Eigen::Vector3d& pose_in_laser_frame,
+                                              double laser_offset_x, double laser_offset_y);
+
+  Eigen::Vector3d calculate_lidar_frame_motion(const Eigen::Vector3d& current_pose,
+                                                const Eigen::Vector3d& previous_pose);
+} // namespace transforms
+
 // --------------------------------- VALIDATION NAMESPACE ---------------------------------
 namespace validation
 {
