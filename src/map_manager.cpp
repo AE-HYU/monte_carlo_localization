@@ -4,13 +4,13 @@
 // Extracted from particle_filter.cpp for better code organization
 // ================================================================================================
 
-#include "particle_filter_cpp/map_manager.hpp"
-#include "particle_filter_cpp/particle_filter.hpp"
-#include "particle_filter_cpp/initialization.hpp"
+#include "mcl_pkg/map_manager.hpp"
+#include "mcl_pkg/mcl.hpp"
+#include "mcl_pkg/initialization.hpp"
 #include <chrono>
 #include <cmath>
 
-namespace particle_filter_cpp {
+namespace mcl_pkg {
 namespace map_manager {
 
 // ================================================================================================
@@ -19,7 +19,7 @@ namespace map_manager {
 /**
  * @brief Loads occupancy grid map from map server and extracts free space (BLOCKING - legacy)
  */
-void get_omap(ParticleFilter* node)
+void get_omap(MCL* node)
 {
     RCLCPP_INFO(node->get_logger(), "Requesting map from map server...");
 
@@ -60,7 +60,7 @@ void get_omap(ParticleFilter* node)
 /**
  * @brief Non-blocking async map loading - AMCL style graceful initialization
  */
-void try_load_map(ParticleFilter* node)
+void try_load_map(MCL* node)
 {
     // Already loaded - stop timer
     if (node->map_initialized_) {
@@ -127,7 +127,7 @@ void try_load_map(ParticleFilter* node)
 /**
  * @brief Precomputes sensor model lookup table for fast likelihood evaluation
  */
-void precompute_sensor_model(ParticleFilter* node)
+void precompute_sensor_model(MCL* node)
 {
     nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
     {
@@ -195,4 +195,4 @@ void precompute_sensor_model(ParticleFilter* node)
 }
 
 } // namespace map_manager
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg

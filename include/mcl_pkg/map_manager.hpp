@@ -9,11 +9,11 @@
 #include <nav_msgs/srv/get_map.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 
 // Forward declaration
-class ParticleFilter;
+class MCL;
 
 namespace map_manager
 {
@@ -26,7 +26,7 @@ namespace map_manager
  *
  * @param node Pointer to ParticleFilter node
  */
-void get_omap(ParticleFilter* node);
+void get_omap(MCL* node);
 
 /**
  * @brief Asynchronously try to load map (non-blocking)
@@ -36,7 +36,7 @@ void get_omap(ParticleFilter* node);
  *
  * @param node Pointer to ParticleFilter node
  */
-void try_load_map(ParticleFilter* node);
+void try_load_map(MCL* node);
 
 /**
  * @brief Precompute sensor model lookup table for all ranges
@@ -51,9 +51,9 @@ void try_load_map(ParticleFilter* node);
  *
  * @param node Pointer to ParticleFilter node
  */
-void precompute_sensor_model(ParticleFilter* node);
+void precompute_sensor_model(MCL* node);
 
 } // namespace map_manager
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 #endif // PARTICLE_FILTER_CPP__MAP_MANAGER_HPP_

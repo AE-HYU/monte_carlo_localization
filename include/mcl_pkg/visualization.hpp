@@ -8,11 +8,11 @@
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Dense>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 
 // Forward declaration
-class ParticleFilter;
+class MCL;
 
 namespace visualization
 {
@@ -20,19 +20,19 @@ namespace visualization
 /**
  * @brief Publish map->odom TF transform
  */
-void publish_tf(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
+void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
 
 /**
  * @brief Publish visualization data for RViz (pose, particles)
  */
-void visualize(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
+void visualize(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
 
 /**
  * @brief Publish particle array for RViz
  */
-void publish_particles(ParticleFilter* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp);
+void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp);
 
 } // namespace visualization
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 #endif

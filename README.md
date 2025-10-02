@@ -6,17 +6,17 @@ High-performance particle filter localization for F1TENTH with unified real/simu
 
 ```bash
 # Build
-colcon build --packages-select particle_filter_cpp
+colcon build --packages-select mcl_pkg
 source install/setup.bash
 
 # Real car
-ros2 launch particle_filter_cpp mcl_launch.py mod:=real
+ros2 launch mcl_pkg mcl_launch.py mod:=real
 
 # Simulation
-ros2 launch particle_filter_cpp mcl_launch.py mod:=sim
+ros2 launch mcl_pkg mcl_launch.py mod:=sim
 
 # Bag playback
-ros2 launch particle_filter_cpp mcl_launch.py mod:=bag
+ros2 launch mcl_pkg mcl_launch.py mod:=bag
 
 # To change map, launch with map_name:='your_map'
 ```

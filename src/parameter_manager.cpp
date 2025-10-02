@@ -2,17 +2,17 @@
 // PARAMETER MANAGER - Parameter initialization, validation, and dynamic reconfiguration
 // ================================================================================================
 
-#include "particle_filter_cpp/parameter_manager.hpp"
-#include "particle_filter_cpp/particle_filter.hpp"
+#include "mcl_pkg/parameter_manager.hpp"
+#include "mcl_pkg/mcl.hpp"
 
 #include <cmath>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 namespace parameter_manager
 {
 
-void initParameters(ParticleFilter* node)
+void initParameters(MCL* node)
 {
     // === PARAMETER DECLARATIONS ===
     // Core algorithm parameters
@@ -189,7 +189,7 @@ void initParameters(ParticleFilter* node)
 }
 
 rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
-    ParticleFilter* node,
+    MCL* node,
     const std::vector<rclcpp::Parameter> &parameters)
 {
     rcl_interfaces::msg::SetParametersResult result;
@@ -281,4 +281,4 @@ rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
 }
 
 } // namespace parameter_manager
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg

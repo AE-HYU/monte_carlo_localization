@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>particle_filter_cpp</name>
-  <version>0.0.0</version>
-  <description>C++ Particle Filter for Robot Localization using Monte Carlo Localization</description>
+  <name>mcl_pkg</name>
+  <version>1.0.0</version>
+  <description>Monte Carlo Localization (MCL) Package for Robot Localization</description>
   <maintainer email="journeyofbabo@gmail.com">Jisang Yun</maintainer>
   <license>MIT</license>
 

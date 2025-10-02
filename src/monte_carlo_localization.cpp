@@ -4,26 +4,26 @@
 // Modular implementation with external modules for parameter, map, initialization, visualization
 // ================================================================================================
 
-#include "particle_filter_cpp/particle_filter.hpp"
-#include "particle_filter_cpp/parameter_manager.hpp"
-#include "particle_filter_cpp/map_manager.hpp"
-#include "particle_filter_cpp/initialization.hpp"
-#include "particle_filter_cpp/visualization.hpp"
-#include "particle_filter_cpp/utils.hpp"
+#include "mcl_pkg/mcl.hpp"
+#include "mcl_pkg/parameter_manager.hpp"
+#include "mcl_pkg/map_manager.hpp"
+#include "mcl_pkg/initialization.hpp"
+#include "mcl_pkg/visualization.hpp"
+#include "mcl_pkg/utils.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <omp.h>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 
 // ================================================================================================
 // CONSTRUCTOR & DESTRUCTOR
 // ================================================================================================
 
-ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
+MCL::MCL(const rclcpp::NodeOptions &options)
     : Node("particle_filter", options), rng_(std::random_device{}()), normal_dist_(0.0, 1.0)
 {
     // Initialize and validate parameters using parameter_manager module
@@ -86,7 +86,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
         scan_topic, lidar_qos,
-        std::bind(&ParticleFilter::lidarCB, this, std::placeholders::_1),
+        std::bind(&MCL::lidarCB, this, std::placeholders::_1),
         lidar_opts);
 
     // Odom: Regular QoS with some buffering
@@ -96,7 +96,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
         odom_topic, odom_qos,
-        std::bind(&ParticleFilter::odomCB, this, std::placeholders::_1),
+        std::bind(&MCL::odomCB, this, std::placeholders::_1),
         odom_opts);
 
     // Initialization callbacks: Use compute_group to prevent concurrent execution with MCL
@@ -105,12 +105,12 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", rclcpp::QoS(1),
-        std::bind(&ParticleFilter::clicked_pose, this, std::placeholders::_1),
+        std::bind(&MCL::clicked_pose, this, std::placeholders::_1),
         init_opts);
 
     click_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
         "/clicked_point", rclcpp::QoS(1),
-        std::bind(&ParticleFilter::clicked_point, this, std::placeholders::_1),
+        std::bind(&MCL::clicked_point, this, std::placeholders::_1),
         init_opts);
 
     // Map client and TF
@@ -142,7 +142,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Timers
     update_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(static_cast<int>(1000.0 / TIMER_FREQUENCY)),
-        std::bind(&ParticleFilter::timer_update, this),
+        std::bind(&MCL::timer_update, this),
         compute_group_);
 
     map_loader_timer_ = this->create_wall_timer(
@@ -151,7 +151,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     map_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(200),
-        std::bind(&ParticleFilter::publish_map_periodically, this),
+        std::bind(&MCL::publish_map_periodically, this),
         compute_group_);
 
     // Register dynamic parameter callback
@@ -167,7 +167,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
 }
 
-ParticleFilter::~ParticleFilter()
+MCL::~MCL()
 {
     RCLCPP_INFO(this->get_logger(), "Shutting down particle filter");
 
@@ -183,7 +183,7 @@ ParticleFilter::~ParticleFilter()
 // ROS2 CALLBACKS
 // ================================================================================================
 
-void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+void MCL::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
     std::lock_guard<std::mutex> lock(lidar_lock_);
 
@@ -214,7 +214,7 @@ void ParticleFilter::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
     has_new_lidar_data_ = true;
 }
 
-void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
+void MCL::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
     std::lock_guard<std::mutex> lock(odom_lock_);
 
@@ -227,7 +227,7 @@ void ParticleFilter::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     }
 }
 
-void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+void MCL::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
     if (!map_initialized_)
         return;
@@ -254,7 +254,7 @@ void ParticleFilter::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceSt
     initialization::initialize_particles_pose(this, laser_pose);
 }
 
-void ParticleFilter::clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg)
+void MCL::clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg)
 {
     if (!map_initialized_)
         return;
@@ -267,7 +267,7 @@ void ParticleFilter::clicked_point(const geometry_msgs::msg::PointStamped::Share
 // MAIN UPDATE LOOP
 // ================================================================================================
 
-void ParticleFilter::timer_update()
+void MCL::timer_update()
 {
     auto timer_start = std::chrono::high_resolution_clock::now();
 
@@ -310,7 +310,7 @@ void ParticleFilter::timer_update()
     }
 
     auto mcl_start = std::chrono::high_resolution_clock::now();
-    MCL(action, observation);
+    run_mcl(action, observation);
     auto mcl_end = std::chrono::high_resolution_clock::now();
 
     mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
@@ -342,7 +342,7 @@ void ParticleFilter::timer_update()
     }
 }
 
-Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp)
+Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp)
 {
     static rclcpp::Time last_processed_lidar_stamp = rclcpp::Time(0);
 
@@ -385,7 +385,7 @@ Eigen::Vector3d ParticleFilter::calculate_lidar_frame_motion(const rclcpp::Time&
 /**
  * @brief Applies motion model to particles with Gaussian noise
  */
-void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
+void MCL::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
     // Vectorized motion model implementation
     // Transform the action into the coordinate space of each particle
@@ -431,7 +431,7 @@ void ParticleFilter::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::V
 /**
  * @brief Evaluates sensor model likelihood using beam model and lookup table
  */
-void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
+void MCL::sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                                   std::vector<double> &weights)
 {
     const int num_rays = downsampled_angles_.size();
@@ -459,7 +459,7 @@ void ParticleFilter::sensor_model(const Eigen::MatrixXd &proposal_dist, const st
 /**
  * @brief Initializes arrays for sensor model computation
  */
-void ParticleFilter::initialize_sensor_arrays(int num_rays, int total_queries)
+void MCL::initialize_sensor_arrays(int num_rays, int total_queries)
 {
     if (first_sensor_update_) {
         queries_ = Eigen::MatrixXd::Zero(total_queries, 3);
@@ -482,7 +482,7 @@ void ParticleFilter::initialize_sensor_arrays(int num_rays, int total_queries)
 /**
  * @brief Generates ray queries for batch ray casting
  */
-void ParticleFilter::generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays)
+void MCL::generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays)
 {
     for (int i = 0; i < MAX_PARTICLES; ++i) {
         const int base_idx = i * num_rays;
@@ -502,7 +502,7 @@ void ParticleFilter::generate_ray_queries(const Eigen::MatrixXd &proposal_dist, 
 /**
  * @brief Calculates particle weights using sensor model lookup table
  */
-void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, int num_rays,
+void MCL::calculate_particle_weights(const std::vector<float> &obs, int num_rays,
                                                std::vector<double> &weights)
 {
     // Thread-safe access to map resolution
@@ -551,7 +551,7 @@ void ParticleFilter::calculate_particle_weights(const std::vector<float> &obs, i
 /**
  * @brief Performs batch ray casting for multiple queries
  */
-std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &queries)
+std::vector<float> MCL::calc_range_many(const Eigen::MatrixXd &queries)
 {
     auto raycast_start = std::chrono::high_resolution_clock::now();
 
@@ -591,7 +591,7 @@ std::vector<float> ParticleFilter::calc_range_many(const Eigen::MatrixXd &querie
 /**
  * @brief Casts single ray to find obstacle distance
  */
-float ParticleFilter::cast_ray(double x, double y, double angle,
+float MCL::cast_ray(double x, double y, double angle,
                                const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map)
 {
     if (!local_map)
@@ -637,7 +637,7 @@ float ParticleFilter::cast_ray(double x, double y, double angle,
 /**
  * @brief Executes complete MCL cycle: resample, predict, update weights
  */
-void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float> &observation)
+void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -694,7 +694,7 @@ void ParticleFilter::MCL(const Eigen::Vector3d &action, const std::vector<float>
 /**
  * @brief Computes weighted mean pose from particles
  */
-Eigen::Vector3d ParticleFilter::expected_pose()
+Eigen::Vector3d MCL::expected_pose()
 {
     Eigen::Vector3d pose = Eigen::Vector3d::Zero();
     double sum_sin = 0.0, sum_cos = 0.0;
@@ -720,7 +720,7 @@ Eigen::Vector3d ParticleFilter::expected_pose()
 // MAP PUBLISHING
 // ================================================================================================
 
-void ParticleFilter::publish_map_periodically()
+void MCL::publish_map_periodically()
 {
     if (!map_initialized_ || !map_pub_)
         return;
@@ -731,7 +731,7 @@ void ParticleFilter::publish_map_periodically()
     }
 }
 
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 // ================================================================================================
 // PROGRAM ENTRY POINT
@@ -740,7 +740,7 @@ int main(int argc, char *argv[])
 {
     rclcpp::init(argc, argv);
     
-    auto node = std::make_shared<particle_filter_cpp::ParticleFilter>();
+    auto node = std::make_shared<mcl_pkg::MCL>();
     
     // Use MultiThreadedExecutor for parallel callback processing
     rclcpp::executors::MultiThreadedExecutor executor;

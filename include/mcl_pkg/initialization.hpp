@@ -8,11 +8,11 @@
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Dense>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 
 // Forward declaration
-class ParticleFilter;
+class MCL;
 
 namespace initialization
 {
@@ -20,14 +20,14 @@ namespace initialization
 /**
  * @brief Initialize particles uniformly across free space in map
  */
-void initialize_global(ParticleFilter* node);
+void initialize_global(MCL* node);
 
 /**
  * @brief Initialize particles around a given pose with Gaussian noise
  */
-void initialize_particles_pose(ParticleFilter* node, const Eigen::Vector3d &pose);
+void initialize_particles_pose(MCL* node, const Eigen::Vector3d &pose);
 
 } // namespace initialization
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 #endif

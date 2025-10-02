@@ -2,18 +2,18 @@
 // INITIALIZATION - Particle initialization functions
 // ================================================================================================
 
-#include "particle_filter_cpp/initialization.hpp"
-#include "particle_filter_cpp/particle_filter.hpp"
-#include "particle_filter_cpp/utils.hpp"
+#include "mcl_pkg/initialization.hpp"
+#include "mcl_pkg/mcl.hpp"
+#include "mcl_pkg/utils.hpp"
 
 #include <random>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 namespace initialization
 {
 
-void initialize_particles_pose(ParticleFilter* node, const Eigen::Vector3d &pose)
+void initialize_particles_pose(MCL* node, const Eigen::Vector3d &pose)
 {
     RCLCPP_INFO(node->get_logger(), "Initializing particles at [%.3f, %.3f, %.3f]", 
                 pose[0], pose[1], pose[2]);
@@ -52,7 +52,7 @@ void initialize_particles_pose(ParticleFilter* node, const Eigen::Vector3d &pose
     }
 }
 
-void initialize_global(ParticleFilter* node)
+void initialize_global(MCL* node)
 {
     if (!node->map_initialized_)
         return;
@@ -135,4 +135,4 @@ void initialize_global(ParticleFilter* node)
 }
 
 } // namespace initialization
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg

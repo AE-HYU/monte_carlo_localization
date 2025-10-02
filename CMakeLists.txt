@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(particle_filter_cpp)
+project(mcl_pkg)
 
 # Set C++ standard
 if(NOT CMAKE_CXX_STANDARD)
@@ -65,8 +65,8 @@ add_library(${PROJECT_NAME}_lib SHARED
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
 
-# Create executable for particle filter
-add_executable(particle_filter_node
+# Create executable for MCL node
+add_executable(mcl_node
   src/monte_carlo_localization.cpp
   src/parameter_manager.cpp
   src/map_manager.cpp
@@ -75,24 +75,24 @@ add_executable(particle_filter_node
   src/utils.cpp
 )
 
-target_link_libraries(particle_filter_node ${PROJECT_NAME}_lib)
-ament_target_dependencies(particle_filter_node ${dependencies})
+target_link_libraries(mcl_node ${PROJECT_NAME}_lib)
+ament_target_dependencies(mcl_node ${dependencies})
 
 # Link OpenMP
 if(OpenMP_CXX_FOUND)
     target_link_libraries(${PROJECT_NAME}_lib OpenMP::OpenMP_CXX)
-    target_link_libraries(particle_filter_node OpenMP::OpenMP_CXX)
+    target_link_libraries(mcl_node OpenMP::OpenMP_CXX)
 endif()
 
 # No external ray casting library - using built-in implementation
 
 # Create component library for composition
-rclcpp_components_register_nodes(${PROJECT_NAME}_lib "particle_filter_cpp::ParticleFilter")
+rclcpp_components_register_nodes(${PROJECT_NAME}_lib "mcl_pkg::MCL")
 
 # Install targets
 install(TARGETS
   ${PROJECT_NAME}_lib
-  particle_filter_node
+  mcl_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

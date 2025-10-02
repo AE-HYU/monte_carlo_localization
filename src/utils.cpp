@@ -5,7 +5,7 @@
 // for Monte Carlo Localization
 // ================================================================================================
 
-#include "particle_filter_cpp/utils.hpp"
+#include "mcl_pkg/utils.hpp"
 
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -14,7 +14,7 @@
 #include <cmath>
 #include <numeric>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 namespace utils
 {
@@ -176,4 +176,4 @@ geometry_msgs::msg::PoseArray particles_to_pose_array(const Eigen::MatrixXd& par
 }
 
 } // namespace utils
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg

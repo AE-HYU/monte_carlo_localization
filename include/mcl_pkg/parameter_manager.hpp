@@ -7,11 +7,11 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 
 // Forward declaration
-class ParticleFilter;
+class MCL;
 
 namespace parameter_manager
 {
@@ -26,7 +26,7 @@ namespace parameter_manager
  *
  * @param node Pointer to ParticleFilter node
  */
-void initParameters(ParticleFilter* node);
+void initParameters(MCL* node);
 
 /**
  * @brief Handle runtime parameter changes with validation
@@ -43,10 +43,10 @@ void initParameters(ParticleFilter* node);
  * @return Result indicating success/failure with reason
  */
 rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
-    ParticleFilter* node,
+    MCL* node,
     const std::vector<rclcpp::Parameter> &parameters);
 
 } // namespace parameter_manager
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 #endif // PARTICLE_FILTER_CPP__PARAMETER_MANAGER_HPP_

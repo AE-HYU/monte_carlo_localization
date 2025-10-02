@@ -4,12 +4,12 @@ Unified MCL Launch File
 Supports real hardware, simulation, and bag playback modes
 
 Usage:
-  Real car:      ros2 launch particle_filter_cpp mcl_launch.py mod:=real
-  Simulation:    ros2 launch particle_filter_cpp mcl_launch.py mod:=sim
-  Bag playback:  ros2 launch particle_filter_cpp mcl_launch.py mod:=bag
+  Real car:      ros2 launch mcl_pkg mcl_launch.py mod:=real
+  Simulation:    ros2 launch mcl_pkg mcl_launch.py mod:=sim
+  Bag playback:  ros2 launch mcl_pkg mcl_launch.py mod:=bag
 
   # To change map, launch with map_name:='your_map'
-  Example:       ros2 launch particle_filter_cpp mcl_launch.py mod:=real map_name:='my_custom_map'
+  Example:       ros2 launch mcl_pkg mcl_launch.py mod:=real map_name:='my_custom_map'
 
 """
 
@@ -23,9 +23,9 @@ import os
 
 
 def generate_launch_description():
-    # Get package share directory  
+    # Get package share directory
     from ament_index_python.packages import get_package_share_directory
-    pkg_share = FindPackageShare('particle_filter_cpp')
+    pkg_share = FindPackageShare('mcl_pkg')
     
     # === LAUNCH ARGUMENTS ===
     mode_arg = DeclareLaunchArgument(
@@ -50,13 +50,13 @@ def generate_launch_description():
     # === CONFIGURATION ===
     # Try to find source config first, fallback to install config
     install_config_file = os.path.join(
-        get_package_share_directory('particle_filter_cpp'),
+        get_package_share_directory('mcl_pkg'),
         'config',
         'mcl_config.yaml'
     )
-    
+
     # Look for source config relative to install directory
-    install_dir = get_package_share_directory('particle_filter_cpp')
+    install_dir = get_package_share_directory('mcl_pkg')
     potential_source_config = os.path.join(install_dir, '..', '..', '..', '..', 'src', 'perception_ws', 'monte_carlo_localization', 'config', 'mcl_config.yaml')
     potential_source_config = os.path.abspath(potential_source_config)
     
@@ -137,14 +137,14 @@ def generate_launch_description():
         ]
     )
     
-    # === PARTICLE FILTER NODE ===
-    particle_filter_node = TimerAction(
+    # === MCL NODE ===
+    mcl_node = TimerAction(
         period=3.0,  # Allow map server and simulator to initialize
         actions=[
             Node(
-                package='particle_filter_cpp',
-                executable='particle_filter_node',
-                name='particle_filter',
+                package='mcl_pkg',
+                executable='mcl_node',
+                name='mcl',
                 output='screen',
                 parameters=[
                     LaunchConfiguration('config_file'),
@@ -192,6 +192,6 @@ def generate_launch_description():
         # Nodes
         map_server_node,
         lifecycle_manager_node,
-        particle_filter_node,
+        mcl_node,
         rviz_node,
     ])

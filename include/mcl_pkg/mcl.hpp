@@ -1,11 +1,11 @@
 // ================================================================================================
-// PARTICLE FILTER HEADER - Monte Carlo Localization (MCL) Class Definition
+// MONTE CARLO LOCALIZATION (MCL) - Main Class Definition
 // ================================================================================================
 // Features: Multinomial resampling, velocity motion model, beam sensor model, ray casting
 // ================================================================================================
 
-#ifndef PARTICLE_FILTER_CPP__PARTICLE_FILTER_HPP_
-#define PARTICLE_FILTER_CPP__PARTICLE_FILTER_HPP_
+#ifndef MCL_PKG__MCL_HPP_
+#define MCL_PKG__MCL_HPP_
 
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -27,23 +27,23 @@
 #include <random>
 #include <vector>
 
-#include "particle_filter_cpp/utils.hpp"
+#include "mcl_pkg/utils.hpp"
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 
-class ParticleFilter : public rclcpp::Node
+class MCL : public rclcpp::Node
 {
   public:
-    explicit ParticleFilter(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
-    ~ParticleFilter();
+    explicit MCL(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
+    ~MCL();
 
     // ================================================================================================
     // PUBLIC MEMBERS - Accessible by external modules (parameter_manager, map_manager, etc.)
     // ================================================================================================
 
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
-    void MCL(const Eigen::Vector3d &action, const std::vector<float> &observation);
+    void run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation);
     void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
@@ -214,6 +214,6 @@ class ParticleFilter : public rclcpp::Node
 
 };
 
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 #endif // PARTICLE_FILTER_CPP__PARTICLE_FILTER_HPP_

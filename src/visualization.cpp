@@ -2,9 +2,9 @@
 // VISUALIZATION - TF publishing and RViz visualization
 // ================================================================================================
 
-#include "particle_filter_cpp/visualization.hpp"
-#include "particle_filter_cpp/particle_filter.hpp"
-#include "particle_filter_cpp/utils.hpp"
+#include "mcl_pkg/visualization.hpp"
+#include "mcl_pkg/mcl.hpp"
+#include "mcl_pkg/utils.hpp"
 
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Transform.h>
@@ -12,12 +12,12 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 namespace visualization
 {
 
-void publish_tf(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
+void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
     if (!node->PUBLISH_MAP_ODOM_TF) {
         return;
@@ -74,7 +74,7 @@ void publish_tf(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, con
     }
 }
 
-void visualize(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
+void visualize(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
     if (!node->DO_VIZ)
         return;
@@ -126,7 +126,7 @@ void visualize(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, cons
     }
 }
 
-void publish_particles(ParticleFilter* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
+void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
 {
     geometry_msgs::msg::PoseArray particle_array;
     particle_array.header.stamp = stamp;
@@ -158,4 +158,4 @@ void publish_particles(ParticleFilter* node, const Eigen::MatrixXd &particles_to
 }
 
 } // namespace visualization
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg

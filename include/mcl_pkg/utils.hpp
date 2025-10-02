@@ -14,7 +14,7 @@
 #include <geometry_msgs/msg/quaternion.hpp>
 #include <vector>
 
-namespace particle_filter_cpp
+namespace mcl_pkg
 {
 namespace utils
 {
@@ -78,6 +78,6 @@ geometry_msgs::msg::PoseArray particles_to_pose_array(const Eigen::MatrixXd &par
 
 
 } // namespace utils
-} // namespace particle_filter_cpp
+} // namespace mcl_pkg
 
 #endif // PARTICLE_FILTER_CPP__UTILS_HPP_
