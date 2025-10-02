@@ -36,6 +36,7 @@ class ParticleFilter : public rclcpp::Node
 {
   public:
     explicit ParticleFilter(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
+    ~ParticleFilter();
 
   private:
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------

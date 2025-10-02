@@ -184,6 +184,20 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
 }
 
+/**
+ * @brief Destructor - Clean shutdown of timers
+ */
+ParticleFilter::~ParticleFilter()
+{
+    RCLCPP_INFO(this->get_logger(), "Shutting down particle filter");
+
+    // Cancel all timers explicitly for clean shutdown
+    if (update_timer_) update_timer_->cancel();
+    if (map_loader_timer_) map_loader_timer_->cancel();
+
+    // Other resources (smart pointers, Eigen matrices) are cleaned up automatically via RAII
+}
+
 // ================================================================================================
 // PARAMETER INITIALIZATION & VALIDATION
 // ================================================================================================
