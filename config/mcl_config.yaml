@@ -3,7 +3,7 @@
 # ================================================================================================
 # This configuration file sets parameters for the Monte Carlo Localization node and the map server.
 
-particle_filter:
+mcl:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
     max_particles: 2000                # Maximum number of particles

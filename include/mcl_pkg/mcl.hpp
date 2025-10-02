@@ -216,4 +216,4 @@ class MCL : public rclcpp::Node
 
 } // namespace mcl_pkg
 
-#endif // PARTICLE_FILTER_CPP__PARTICLE_FILTER_HPP_
+#endif // MCL_PKG__MCL_HPP_

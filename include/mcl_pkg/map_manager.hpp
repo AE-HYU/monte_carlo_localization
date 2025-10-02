@@ -2,8 +2,8 @@
 // MAP MANAGER - Map loading and sensor model precomputation
 // ================================================================================================
 
-#ifndef PARTICLE_FILTER_CPP__MAP_MANAGER_HPP_
-#define PARTICLE_FILTER_CPP__MAP_MANAGER_HPP_
+#ifndef MCL_PKG__MAP_MANAGER_HPP_
+#define MCL_PKG__MAP_MANAGER_HPP_
 
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/srv/get_map.hpp>
@@ -56,4 +56,4 @@ void precompute_sensor_model(MCL* node);
 } // namespace map_manager
 } // namespace mcl_pkg
 
-#endif // PARTICLE_FILTER_CPP__MAP_MANAGER_HPP_
+#endif // MCL_PKG__MAP_MANAGER_HPP_

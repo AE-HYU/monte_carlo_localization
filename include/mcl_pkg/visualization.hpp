@@ -2,8 +2,8 @@
 // VISUALIZATION - TF publishing and RViz visualization
 // ================================================================================================
 
-#ifndef PARTICLE_FILTER_CPP__VISUALIZATION_HPP_
-#define PARTICLE_FILTER_CPP__VISUALIZATION_HPP_
+#ifndef MCL_PKG__VISUALIZATION_HPP_
+#define MCL_PKG__VISUALIZATION_HPP_
 
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Dense>
@@ -35,4 +35,4 @@ void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const
 } // namespace visualization
 } // namespace mcl_pkg
 
-#endif
+#endif // MCL_PKG__VISUALIZATION_HPP_

@@ -5,8 +5,8 @@
 // and performance monitoring tools for Monte Carlo Localization
 // ================================================================================================
 
-#ifndef PARTICLE_FILTER_CPP__UTILS_HPP_
-#define PARTICLE_FILTER_CPP__UTILS_HPP_
+#ifndef MCL_PKG__UTILS_HPP_
+#define MCL_PKG__UTILS_HPP_
 
 #include <Eigen/Dense>
 #include <functional>
@@ -80,4 +80,4 @@ geometry_msgs::msg::PoseArray particles_to_pose_array(const Eigen::MatrixXd &par
 } // namespace utils
 } // namespace mcl_pkg
 
-#endif // PARTICLE_FILTER_CPP__UTILS_HPP_
+#endif // MCL_PKG__UTILS_HPP_

@@ -2,8 +2,8 @@
 // INITIALIZATION - Particle initialization functions
 // ================================================================================================
 
-#ifndef PARTICLE_FILTER_CPP__INITIALIZATION_HPP_
-#define PARTICLE_FILTER_CPP__INITIALIZATION_HPP_
+#ifndef MCL_PKG__INITIALIZATION_HPP_
+#define MCL_PKG__INITIALIZATION_HPP_
 
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Dense>

@@ -2,8 +2,8 @@
 // PARAMETER MANAGER - Parameter initialization, validation, and dynamic reconfiguration
 // ================================================================================================
 
-#ifndef PARTICLE_FILTER_CPP__PARAMETER_MANAGER_HPP_
-#define PARTICLE_FILTER_CPP__PARAMETER_MANAGER_HPP_
+#ifndef MCL_PKG__PARAMETER_MANAGER_HPP_
+#define MCL_PKG__PARAMETER_MANAGER_HPP_
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -49,4 +49,4 @@ rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
 } // namespace parameter_manager
 } // namespace mcl_pkg
 
-#endif // PARTICLE_FILTER_CPP__PARAMETER_MANAGER_HPP_
+#endif // MCL_PKG__PARAMETER_MANAGER_HPP_
