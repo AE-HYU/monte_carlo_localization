@@ -914,7 +914,8 @@ void ParticleFilter::initialize_global()
         // Calculate expected pose from initialized particles
         Eigen::Vector3d initial_pose = expected_pose();
 
-        RCLCPP_INFO(this->get_logger(), "Initialized %d particles globally at [%.3f, %.3f, %.3f]",
+        RCLCPP_INFO(this->get_logger(),
+                    "Global initialization complete - %d particles at pose: [%.3f, %.3f, %.3f]",
                     MAX_PARTICLES, initial_pose[0], initial_pose[1], initial_pose[2]);
     }
 }
@@ -1275,11 +1276,15 @@ void ParticleFilter::timer_update()
 
     if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
     {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-            "Waiting for initialization - LiDAR: %s, Odom: %s, Map: %s",
-            lidar_initialized_ ? "OK" : "NO",
-            odom_initialized_ ? "OK" : "NO",
-            map_initialized_ ? "OK" : "NO");
+        static int wait_count = 0;
+        if (++wait_count % 50 == 0) {  // Every 5 seconds at 10Hz
+            RCLCPP_WARN(this->get_logger(),
+                "Still waiting for initialization (%d attempts) - LiDAR: %s, Odom: %s, Map: %s",
+                wait_count,
+                lidar_initialized_ ? "OK" : "NO",
+                odom_initialized_ ? "OK" : "NO",
+                map_initialized_ ? "OK" : "NO");
+        }
         return;
     }
 
