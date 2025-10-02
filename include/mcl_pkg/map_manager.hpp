@@ -24,7 +24,7 @@ namespace map_manager
  * Blocking call that waits for map server and loads map.
  * Used for backwards compatibility.
  *
- * @param node Pointer to ParticleFilter node
+ * @param node Pointer to MCL node
  */
 void get_omap(MCL* node);
 
@@ -34,7 +34,7 @@ void get_omap(MCL* node);
  * Called periodically by timer until map is successfully loaded.
  * Enables graceful startup without dependencies.
  *
- * @param node Pointer to ParticleFilter node
+ * @param node Pointer to MCL node
  */
 void try_load_map(MCL* node);
 
@@ -49,7 +49,7 @@ void try_load_map(MCL* node);
  *
  * Lookup table indexed by: [observed_range_px][true_range_px]
  *
- * @param node Pointer to ParticleFilter node
+ * @param node Pointer to MCL node
  */
 void precompute_sensor_model(MCL* node);
 

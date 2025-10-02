@@ -24,7 +24,7 @@ namespace parameter_manager
  * - Automatic normalization of sensor model weights (must sum to 1.0)
  * - Frame name validation
  *
- * @param node Pointer to ParticleFilter node
+ * @param node Pointer to MCL node
  */
 void initParameters(MCL* node);
 
@@ -38,7 +38,7 @@ void initParameters(MCL* node);
  *
  * Automatically regenerates sensor model lookup table when needed.
  *
- * @param node Pointer to ParticleFilter node
+ * @param node Pointer to MCL node
  * @param parameters Vector of parameter changes
  * @return Result indicating success/failure with reason
  */
