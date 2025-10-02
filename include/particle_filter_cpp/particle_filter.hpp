@@ -94,7 +94,6 @@ class ParticleFilter : public rclcpp::Node
     double MAX_RANGE_METERS;
     bool PUBLISH_ODOM;
     bool PUBLISH_MAP_ODOM_TF;
-    bool PUBLISH_ODOM_BASE_TF;
     bool DO_VIZ;
     double TIMER_FREQUENCY;
     bool USE_PARALLEL_RAYCASTING;
@@ -186,6 +185,10 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- VELOCITY TRACKING ---------------------------------
     double current_velocity_;          // Current linear velocity (m/s)
     double current_angular_vel_;       // Current angular velocity (rad/s)
+
+    // --------------------------------- LASER-BASELINK OFFSET ---------------------------------
+    double laser_offset_x_;            // Laser offset from base_link (forward, m)
+    double laser_offset_y_;            // Laser offset from base_link (lateral, m)
 
     // --------------------------------- PERFORMANCE PROFILING ---------------------------------
     utils::performance::TimingStats timing_stats_;

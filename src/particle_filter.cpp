@@ -39,7 +39,11 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     has_new_lidar_data_ = false;
     last_lidar_time_ = rclcpp::Time(0);
     mcl_processing_time_ = 0.0;
-    
+
+    // Initialize laser-baselink offset from static TF
+    laser_offset_x_ = 0.28;  // Default F1Tenth value
+    laser_offset_y_ = 0.0;
+
     // Simple state tracking
 
     // Threading setup - no startup throttling like old working version
@@ -86,6 +90,27 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     pub_tf_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+
+    // Try to get laser-baselink offset from static TF
+    try {
+        // Wait briefly for static transforms to be available
+        rclcpp::sleep_for(std::chrono::milliseconds(100));
+
+        auto static_tf = tf_buffer_->lookupTransform(
+            BASE_FRAME, LASER_FRAME, tf2::TimePointZero, tf2::durationFromSec(1.0));
+
+        laser_offset_x_ = static_tf.transform.translation.x;
+        laser_offset_y_ = static_tf.transform.translation.y;
+
+        RCLCPP_INFO(this->get_logger(),
+            "Loaded laser offset from static TF: [%.3f, %.3f]m",
+            laser_offset_x_, laser_offset_y_);
+    } catch (tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(),
+            "Could not get static TF %s->%s: %s. Using default offset [%.3f, %.3f]m",
+            BASE_FRAME.c_str(), LASER_FRAME.c_str(), ex.what(),
+            laser_offset_x_, laser_offset_y_);
+    }
 
     // Subscribers
     auto scan_topic = this->get_parameter("scan_topic").as_string();
@@ -206,7 +231,6 @@ void ParticleFilter::initParameters()
 
     // TF publishing control
     this->declare_parameter("publish_map_odom_tf", true);
-    this->declare_parameter("publish_odom_base_tf", true);
 
     // === PARAMETER RETRIEVAL ===
     // Core algorithm parameters
@@ -250,7 +274,6 @@ void ParticleFilter::initParameters()
 
     // TF publishing control
     PUBLISH_MAP_ODOM_TF = this->get_parameter("publish_map_odom_tf").as_bool();
-    PUBLISH_ODOM_BASE_TF = this->get_parameter("publish_odom_base_tf").as_bool();
 
     // === SEMANTIC VALIDATION ===
 
@@ -1279,79 +1302,71 @@ void ParticleFilter::publish_map_periodically()
 // OUTPUT & VISUALIZATION
 // ================================================================================================
 /**
- * @brief Publishes TF transforms for map-odom-base_link chain
+ * @brief Publishes TF transforms for map-odom-base_link chain using TF2 library
  */
 void ParticleFilter::publish_tf(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
-    // base_link_pose is already in base_link frame (no conversion needed)
+    // Standard ROS2 localization: Only publish map->odom transform
+    // Odom stack handles odom->base_link
 
-    // === TF TRANSFORM PUBLISHING ===
-    // Real mode: Publish map->odom and odom->base_link
-    // Sim mode:  Don't publish TF (simulator handles map->base_link directly)
-    
-    if (PUBLISH_MAP_ODOM_TF) {
-        geometry_msgs::msg::TransformStamped map_to_odom;
-        map_to_odom.header.stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
-        map_to_odom.header.frame_id = MAP_FRAME;
-        map_to_odom.child_frame_id = ODOM_FRAME;
+    if (!PUBLISH_MAP_ODOM_TF) {
+        return;
+    }
 
-        if (odom_initialized_ && base_link_pose.norm() > 0) {
-            // Calculate map->odom transform: T_map_odom = T_map_base * T_base_odom^(-1)
-            double mcl_x = base_link_pose[0], mcl_y = base_link_pose[1], mcl_yaw = base_link_pose[2];
+    // Use provided timestamp or fallback to current time
+    rclcpp::Time tf_stamp = (stamp.nanoseconds() != 0) ? stamp : this->get_clock()->now();
 
-            // Get odometry from tf (odom to base_link) at lidar timestamp
-            double odom_x, odom_y, odom_yaw;
-            try {
-                auto odom_transform = tf_buffer_->lookupTransform(ODOM_FRAME, BASE_FRAME, stamp, tf2::durationFromSec(0.03));
-                odom_x = odom_transform.transform.translation.x;
-                odom_y = odom_transform.transform.translation.y;
-                odom_yaw = utils::geometry::quaternion_to_yaw(odom_transform.transform.rotation);
-            } catch (tf2::TransformException& ex) {
-                RCLCPP_WARN(this->get_logger(), "Could not get odom->base_link transform: %s. Using current pose fallback.", ex.what());
-                odom_x = base_link_pose[0];
-                odom_y = base_link_pose[1];
-                odom_yaw = base_link_pose[2];
-            }
+    if (!odom_initialized_ || base_link_pose.norm() <= 0) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "Cannot publish TF - odom not initialized or invalid pose");
+        return;
+    }
 
-            // Inverse odom transform
-            double cos_odom_inv = std::cos(-odom_yaw), sin_odom_inv = std::sin(-odom_yaw);
-            double inv_odom_x = -(odom_x * cos_odom_inv - odom_y * sin_odom_inv);
-            double inv_odom_y = -(odom_x * sin_odom_inv + odom_y * cos_odom_inv);
-            double inv_odom_yaw = -odom_yaw;
+    try {
+        // === TF2 LIBRARY APPROACH ===
+        // Calculate: T_map_odom = T_map_base * T_base_odom^(-1)
 
-            // Compose transforms
-            double cos_mcl = std::cos(mcl_yaw), sin_mcl = std::sin(mcl_yaw);
-            map_to_odom.transform.translation.x = mcl_x + inv_odom_x * cos_mcl - inv_odom_y * sin_mcl;
-            map_to_odom.transform.translation.y = mcl_y + inv_odom_x * sin_mcl + inv_odom_y * cos_mcl;
-            map_to_odom.transform.translation.z = 0.0;
-            map_to_odom.transform.rotation = utils::geometry::yaw_to_quaternion(
-                utils::geometry::normalize_angle(mcl_yaw + inv_odom_yaw));
-        } else {
-            // Identity transform fallback
-            map_to_odom.transform.translation.x = 0.0;
-            map_to_odom.transform.translation.y = 0.0;
-            map_to_odom.transform.translation.z = 0.0;
-            map_to_odom.transform.rotation = utils::geometry::yaw_to_quaternion(0.0);
-            RCLCPP_WARN(this->get_logger(), "Odom not initialized, publishing identity map->odom transform");
+        // Step 1: Create MCL's map->base_link transform
+        tf2::Transform map_to_base;
+        tf2::Quaternion q;
+        q.setRPY(0, 0, base_link_pose[2]);
+        map_to_base.setOrigin(tf2::Vector3(base_link_pose[0], base_link_pose[1], 0.0));
+        map_to_base.setRotation(q);
+
+        // Step 2: Get odom->base_link transform from TF tree
+        geometry_msgs::msg::TransformStamped odom_to_base_msg;
+        tf2::Transform odom_to_base;
+
+        try {
+            odom_to_base_msg = tf_buffer_->lookupTransform(
+                ODOM_FRAME, BASE_FRAME, tf_stamp, tf2::durationFromSec(0.05));
+            tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
+        } catch (tf2::TransformException &ex) {
+            // FALLBACK for simulation: Assume map = odom (identity map->odom)
+            // This means odom->base = map->base (use MCL's pose in odom frame)
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                "TF lookup failed, assuming map=odom (simulation mode): %s", ex.what());
+
+            // odom->base = map->base when map = odom
+            odom_to_base = map_to_base;
         }
-        pub_tf_->sendTransform(map_to_odom);
-    }
 
-    if (PUBLISH_ODOM_BASE_TF && odom_initialized_ && base_link_pose.norm() > 0) {
-        RCLCPP_INFO(this->get_logger(), "Publishing odom->base_link TF at [%.3f, %.3f, %.3f]",
-                    base_link_pose[0], base_link_pose[1], base_link_pose[2]);
-        geometry_msgs::msg::TransformStamped odom_to_base;
-        odom_to_base.header.stamp = stamp;
-        odom_to_base.header.frame_id = ODOM_FRAME;
-        odom_to_base.child_frame_id = BASE_FRAME;
-        odom_to_base.transform.translation.x = base_link_pose[0];
-        odom_to_base.transform.translation.y = base_link_pose[1];
-        odom_to_base.transform.translation.z = 0.0;
-        odom_to_base.transform.rotation = utils::geometry::yaw_to_quaternion(base_link_pose[2]);
-        pub_tf_->sendTransform(odom_to_base);
-    }
+        // Step 3: Compute map->odom = map->base * (odom->base)^(-1)
+        tf2::Transform map_to_odom = map_to_base * odom_to_base.inverse();
 
-    // Odometry publishing moved to timer_update for controlled frequency
+        // Step 4: Publish the transform
+        geometry_msgs::msg::TransformStamped map_to_odom_msg;
+        map_to_odom_msg.header.stamp = tf_stamp;
+        map_to_odom_msg.header.frame_id = MAP_FRAME;
+        map_to_odom_msg.child_frame_id = ODOM_FRAME;
+        map_to_odom_msg.transform = tf2::toMsg(map_to_odom);
+
+        pub_tf_->sendTransform(map_to_odom_msg);
+
+    } catch (const std::exception &ex) {
+        RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "Unexpected error in TF publishing: %s", ex.what());
+    }
 }
 
 /**
@@ -1447,49 +1462,22 @@ void ParticleFilter::publish_particles(const Eigen::MatrixXd &particles_to_pub, 
 // TF UTILITIES
 // ================================================================================================
 /**
- * @brief Applies TF offset from laser frame to base_link frame
+ * @brief Applies static TF offset from laser frame to base_link frame
+ * Note: Particles are in map frame with laser coordinates - apply fixed offset only
  */
 Eigen::Vector3d ParticleFilter::apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame)
 {
-    try {
-        // Create pose in laser frame
-        geometry_msgs::msg::PoseStamped laser_pose;
-        laser_pose.header.frame_id = LASER_FRAME;
-        laser_pose.pose.position.x = pose_in_laser_frame[0];
-        laser_pose.pose.position.y = pose_in_laser_frame[1];
-        laser_pose.pose.position.z = 0.0;
-        laser_pose.pose.orientation = utils::geometry::yaw_to_quaternion(pose_in_laser_frame[2]);
+    // Apply static offset loaded from TF at initialization
+    // Transform: base_link = laser - offset rotated by particle heading
+    double cos_theta = std::cos(pose_in_laser_frame[2]);
+    double sin_theta = std::sin(pose_in_laser_frame[2]);
 
-        // Transform to base_link frame using TF system
-        geometry_msgs::msg::PoseStamped base_pose;
-        tf_buffer_->transform(laser_pose, base_pose, BASE_FRAME);
-
-        // Convert back to Eigen::Vector3d
-        return Eigen::Vector3d(
-            base_pose.pose.position.x,
-            base_pose.pose.position.y,
-            utils::geometry::quaternion_to_yaw(base_pose.pose.orientation)
-        );
-    }
-    catch (tf2::TransformException &ex) {
-        // Fallback: use default F1Tenth offset if TF lookup fails
-        static bool warning_shown = false;
-        if (!warning_shown) {
-            RCLCPP_WARN(this->get_logger(), "TF transform failed, using default F1Tenth offset (0.27m): %s", ex.what());
-            warning_shown = true;
-        }
-
-        // Manual offset calculation as fallback
-        double offset_x = 0.28;  // Default F1Tenth lidar offset
-        double cos_theta = std::cos(pose_in_laser_frame[2]);
-        double sin_theta = std::sin(pose_in_laser_frame[2]);
-
-        return Eigen::Vector3d(
-            pose_in_laser_frame[0] - offset_x * cos_theta,
-            pose_in_laser_frame[1] - offset_x * sin_theta,
-            pose_in_laser_frame[2]
-        );
-    }
+    // Rotate offset by particle heading and subtract from laser position
+    return Eigen::Vector3d(
+        pose_in_laser_frame[0] - (laser_offset_x_ * cos_theta - laser_offset_y_ * sin_theta),
+        pose_in_laser_frame[1] - (laser_offset_x_ * sin_theta + laser_offset_y_ * cos_theta),
+        pose_in_laser_frame[2]  // Heading unchanged
+    );
 }
 
 /**

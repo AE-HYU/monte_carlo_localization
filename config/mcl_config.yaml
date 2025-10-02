@@ -13,8 +13,11 @@ particle_filter:
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
 
     # === TF CONTROL ===
-    publish_map_odom_tf: true          # Publish map->odom transform
-    publish_odom_base_tf: false        # Let odom stack handle this
+    # NOTE: Overridden by launch file based on mod argument
+    # mod:=sim → false (simulator handles TF)
+    # mod:=real → true (MCL publishes map->odom)
+    # mod:=bag → true (MCL publishes map->odom)
+    publish_map_odom_tf: true          # Publish map->odom transform (default for real robot)
 
     # === MOTION MODEL NOISE ===
     motion_dispersion_x: 0.015          # Forward motion noise (m)

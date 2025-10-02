@@ -95,12 +95,11 @@ def generate_launch_description():
         ]),
         
         # TF publishing control
+        # Simulation: MCL doesn't publish TF (simulator handles map->base_link)
+        # Real robot: MCL publishes map->odom (odom stack handles odom->base_link)
         'publish_map_odom_tf': PythonExpression([
             "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
-        ]),
-        'publish_odom_base_tf': PythonExpression([
-            "'true' if '", LaunchConfiguration('mod'), "' == 'sim' else 'false'"
-        ]),
+        ])
 
     }
     
