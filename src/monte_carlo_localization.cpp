@@ -635,13 +635,34 @@ float MCL::cast_ray(double x, double y, double angle,
 }
 
 /**
- * @brief Executes complete MCL cycle: resample, predict, update weights
+ * @brief Executes complete MCL cycle: predict, update, normalize, resample
  */
 void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
-    // 1. Multinomial resampling - generate all indices at once
+    // 1. Motion prediction - apply motion model to current particles
+    auto motion_start = std::chrono::high_resolution_clock::now();
+    // Copy particles to proposal distribution for motion prediction
+    proposal_distribution_ = particles_;
+    motion_model(proposal_distribution_, action);
+    auto motion_end = std::chrono::high_resolution_clock::now();
+    timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
+
+    // 2. Sensor likelihood evaluation
+    sensor_model(proposal_distribution_, observation, weights_);
+
+    // 3. Weight normalization
+    double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
+    if (sum_weights > 0)
+    {
+        for (double &w : weights_)
+        {
+            w /= sum_weights;
+        }
+    }
+
+    // 4. Multinomial resampling - generate all indices at once
     auto resample_start = std::chrono::high_resolution_clock::now();
     std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
     std::vector<int> resample_indices(MAX_PARTICLES);
@@ -654,37 +675,17 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
         }
     }
 
-    // Copy particles without lock
+    // Copy resampled particles to main particle set
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        proposal_distribution_.row(i) = particles_.row(resample_indices[i]);
+        particles_.row(i) = proposal_distribution_.row(resample_indices[i]);
     }
+    
+    // Reset weights to uniform after resampling
+    std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
+    
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
-
-    // 2. Motion prediction
-    auto motion_start = std::chrono::high_resolution_clock::now();
-    motion_model(proposal_distribution_, action);
-    auto motion_end = std::chrono::high_resolution_clock::now();
-    timing_stats_.motion_model_time += std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
-
-    // 3. Sensor likelihood evaluation
-    sensor_model(proposal_distribution_, observation, weights_);
-
-    // 4. Weight normalization with particle diversity check
-    double sum_weights = std::accumulate(weights_.begin(), weights_.end(), 0.0);
-    if (sum_weights > 0)
-    {
-        for (double &w : weights_)
-        {
-            w /= sum_weights;
-        }
-
-        // Simple resampling without emergency recovery
-    }
-
-    // 5. Update particle set - using efficient swap
-    particles_.swap(proposal_distribution_);
     
     auto mcl_end = std::chrono::high_resolution_clock::now();
     timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
