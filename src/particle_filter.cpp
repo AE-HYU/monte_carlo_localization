@@ -164,7 +164,7 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Map service client
     map_client_ = this->create_client<nav_msgs::srv::GetMap>("/map_server/map");
 
-    // ========== AMCL-STYLE ASYNC MAP LOADING ==========
+    // ========== ASYNC MAP LOADING ==========
     // Instead of blocking on map loading, start async timer
     // This allows the node to start even if map server is not ready
     map_loader_timer_ = this->create_wall_timer(
@@ -172,10 +172,16 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::bind(&ParticleFilter::try_load_map, this),
         compute_group_);
 
+    // ========== DYNAMIC PARAMETER RECONFIGURATION ==========
+    // Register callback for runtime parameter changes
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&ParticleFilter::dynamicParametersCallback, this, std::placeholders::_1));
+
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
     RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
+    RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
 }
 
 // ================================================================================================
@@ -359,6 +365,108 @@ void ParticleFilter::initParameters()
     RCLCPP_INFO(this->get_logger(),
         "Parameters validated - Particles: [%d-%d], AngleStep: %d, Frequency: %.1f Hz",
         MIN_PARTICLES, MAX_PARTICLES, ANGLE_STEP, TIMER_FREQUENCY);
+}
+
+// ================================================================================================
+// DYNAMIC PARAMETER RECONFIGURATION
+// ================================================================================================
+
+/**
+ * @brief Callback for runtime parameter changes
+ */
+rcl_interfaces::msg::SetParametersResult
+ParticleFilter::dynamicParametersCallback(const std::vector<rclcpp::Parameter> &parameters)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    result.reason = "success";
+
+    for (const auto &param : parameters) {
+        const std::string &name = param.get_name();
+
+        // Skip nested parameters (e.g., "qos_overrides.xxx")
+        if (name.find('.') != std::string::npos) {
+            continue;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Parameter change request: %s", name.c_str());
+
+        // Motion model parameters
+        if (name == "motion_dispersion_x") {
+            MOTION_DISPERSION_X = std::abs(param.as_double());
+            RCLCPP_INFO(this->get_logger(), "Updated motion_dispersion_x: %.3f", MOTION_DISPERSION_X);
+        }
+        else if (name == "motion_dispersion_y") {
+            MOTION_DISPERSION_Y = std::abs(param.as_double());
+            RCLCPP_INFO(this->get_logger(), "Updated motion_dispersion_y: %.3f", MOTION_DISPERSION_Y);
+        }
+        else if (name == "motion_dispersion_theta") {
+            MOTION_DISPERSION_THETA = std::abs(param.as_double());
+            RCLCPP_INFO(this->get_logger(), "Updated motion_dispersion_theta: %.3f", MOTION_DISPERSION_THETA);
+        }
+
+        // Sensor model parameters
+        else if (name == "z_hit" || name == "z_short" || name == "z_max" || name == "z_rand") {
+            // Update sensor model weights
+            if (name == "z_hit") Z_HIT = param.as_double();
+            else if (name == "z_short") Z_SHORT = param.as_double();
+            else if (name == "z_max") Z_MAX = param.as_double();
+            else if (name == "z_rand") Z_RAND = param.as_double();
+
+            // Validate and normalize
+            double sum = Z_HIT + Z_SHORT + Z_MAX + Z_RAND;
+            if (std::abs(sum - 1.0) > 0.01) {
+                Z_HIT /= sum;
+                Z_SHORT /= sum;
+                Z_MAX /= sum;
+                Z_RAND /= sum;
+                RCLCPP_WARN(this->get_logger(),
+                    "Sensor weights normalized: z_hit=%.3f, z_short=%.3f, z_max=%.3f, z_rand=%.3f",
+                    Z_HIT, Z_SHORT, Z_MAX, Z_RAND);
+            }
+
+            // Recompute sensor model lookup table
+            if (map_initialized_) {
+                precompute_sensor_model();
+                RCLCPP_INFO(this->get_logger(), "Sensor model updated");
+            }
+        }
+        else if (name == "sigma_hit") {
+            if (param.as_double() > 0) {
+                SIGMA_HIT = param.as_double();
+                if (map_initialized_) {
+                    precompute_sensor_model();
+                }
+                RCLCPP_INFO(this->get_logger(), "Updated sigma_hit: %.3f", SIGMA_HIT);
+            } else {
+                result.successful = false;
+                result.reason = "sigma_hit must be positive";
+            }
+        }
+
+        // Max range
+        else if (name == "max_range") {
+            if (param.as_double() > 0) {
+                MAX_RANGE_METERS = param.as_double();
+                if (map_initialized_) {
+                    MAX_RANGE_PX_ = static_cast<int>(MAX_RANGE_METERS / map_msg_->info.resolution);
+                    precompute_sensor_model();
+                }
+                RCLCPP_INFO(this->get_logger(), "Updated max_range: %.3f", MAX_RANGE_METERS);
+            } else {
+                result.successful = false;
+                result.reason = "max_range must be positive";
+            }
+        }
+
+        // Visualization
+        else if (name == "viz") {
+            DO_VIZ = param.as_bool();
+            RCLCPP_INFO(this->get_logger(), "Updated viz: %s", DO_VIZ ? "true" : "false");
+        }
+    }
+
+    return result;
 }
 
 // ================================================================================================

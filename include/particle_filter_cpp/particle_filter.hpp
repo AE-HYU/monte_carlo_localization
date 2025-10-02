@@ -64,6 +64,10 @@ class ParticleFilter : public rclcpp::Node
     void clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
     void clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg);
 
+    // Dynamic parameter reconfiguration
+    rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
+        const std::vector<rclcpp::Parameter> &parameters);
+
     // --------------------------------- MAP MANAGEMENT ---------------------------------
     void get_omap();
     void try_load_map();  // Non-blocking async map loading
@@ -200,6 +204,9 @@ class ParticleFilter : public rclcpp::Node
     // --------------------------------- CALLBACK GROUPS FOR THREADING ---------------------------------
     rclcpp::CallbackGroup::SharedPtr sensor_group_;   // LiDAR, Odom 등 센서 콜백
     rclcpp::CallbackGroup::SharedPtr compute_group_;  // timer_update 등 무거운 콜백
+
+    // --------------------------------- DYNAMIC RECONFIGURATION ---------------------------------
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
 };
 
