@@ -226,23 +226,25 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     // Map service client
     map_client_ = this->create_client<nav_msgs::srv::GetMap>("/map_server/map");
 
-    // Load map
-    get_omap();
-    initialize_global();
-
-
-
+    // ========== AMCL-STYLE ASYNC MAP LOADING ==========
+    // Instead of blocking on map loading, start async timer
+    // This allows the node to start even if map server is not ready
+    map_loader_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(500),
+        std::bind(&ParticleFilter::try_load_map, this),
+        compute_group_);
 
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
+    RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
 }
 
 // ================================================================================================
 // MAP LOADING & PREPROCESSING
 // ================================================================================================
 /**
- * @brief Loads occupancy grid map from map server and extracts free space
+ * @brief Loads occupancy grid map from map server and extracts free space (BLOCKING - legacy)
  */
 void ParticleFilter::get_omap()
 {
@@ -280,6 +282,70 @@ void ParticleFilter::get_omap()
     {
         RCLCPP_ERROR(this->get_logger(), "Failed to get map from map server");
     }
+}
+
+/**
+ * @brief Non-blocking async map loading - AMCL style graceful initialization
+ */
+void ParticleFilter::try_load_map()
+{
+    // Already loaded - stop timer
+    if (map_initialized_) {
+        if (map_loader_timer_) {
+            map_loader_timer_->cancel();
+            RCLCPP_INFO(this->get_logger(), "Map loading complete - timer stopped");
+        }
+        return;
+    }
+
+    // Check if map service is ready (non-blocking)
+    if (!map_client_->service_is_ready()) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+            "Waiting for map server to be available...");
+        return;
+    }
+
+    // Send async request
+    RCLCPP_INFO(this->get_logger(), "Map service available - requesting map...");
+    auto request = std::make_shared<nav_msgs::srv::GetMap::Request>();
+
+    map_client_->async_send_request(request,
+        [this](rclcpp::Client<nav_msgs::srv::GetMap>::SharedFuture future) {
+            try {
+                // Get map data
+                map_msg_ = std::make_shared<nav_msgs::msg::OccupancyGrid>(future.get()->map);
+
+                MAX_RANGE_PX_ = static_cast<int>(MAX_RANGE_METERS / map_msg_->info.resolution);
+
+                // Precompute sensor model
+                precompute_sensor_model();
+
+                // Publish map for RViz
+                if (map_pub_) {
+                    map_pub_->publish(*map_msg_);
+                }
+
+                // Mark as initialized
+                map_initialized_ = true;
+
+                // Initialize particles globally after map is ready
+                initialize_global();
+
+                RCLCPP_INFO(this->get_logger(),
+                    "Map loaded successfully (%dx%d @ %.3fm/px) - MCL ready",
+                    map_msg_->info.width, map_msg_->info.height, map_msg_->info.resolution);
+
+                // Stop the loading timer
+                if (map_loader_timer_) {
+                    map_loader_timer_->cancel();
+                }
+
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(this->get_logger(),
+                    "Failed to load map: %s - will retry...", e.what());
+                // Timer will automatically retry
+            }
+        });
 }
 
 // ================================================================================================

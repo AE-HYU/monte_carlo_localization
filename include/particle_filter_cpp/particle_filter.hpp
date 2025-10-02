@@ -65,6 +65,7 @@ class ParticleFilter : public rclcpp::Node
 
     // --------------------------------- MAP MANAGEMENT ---------------------------------
     void get_omap();
+    void try_load_map();  // Non-blocking async map loading
 
     // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
     void publish_tf(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
@@ -167,6 +168,7 @@ class ParticleFilter : public rclcpp::Node
     // Timers
     rclcpp::TimerBase::SharedPtr update_timer_;
     rclcpp::TimerBase::SharedPtr map_timer_;
+    rclcpp::TimerBase::SharedPtr map_loader_timer_;  // Async map loading timer
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
