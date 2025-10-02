@@ -51,14 +51,18 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
 
     // Setup OpenMP threading
     if (USE_PARALLEL_RAYCASTING) {
-        if (NUM_THREADS <= 0) {
-            NUM_THREADS = std::max(1, static_cast<int>(std::thread::hardware_concurrency()) - 1);
+        int hw = static_cast<int>(std::thread::hardware_concurrency());
+        if (NUM_THREADS == 0) {
+            // Reserve 2 threads for executor workers and 1 for system
+            NUM_THREADS = std::max(1, hw - 3);
+        } else if (NUM_THREADS > 0) {
+            NUM_THREADS = std::min(NUM_THREADS, hw - 3);
         }
         omp_set_num_threads(NUM_THREADS);
     }
 
     // Create callback groups for threading
-    sensor_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    sensor_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     compute_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     auto sensor_sub_options = rclcpp::SubscriptionOptions();
@@ -74,23 +78,40 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
     std::string scan_topic = this->get_parameter("scan_topic").as_string();
     std::string odom_topic = this->get_parameter("odom_topic").as_string();
 
+    // LiDAR: Use SensorDataQoS (best_effort + volatile) with buffer size 1
+    rclcpp::SensorDataQoS lidar_qos;
+    lidar_qos.keep_last(1);
+    rclcpp::SubscriptionOptions lidar_opts;
+    lidar_opts.callback_group = sensor_group_;
+
     laser_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-        scan_topic, 10,
+        scan_topic, lidar_qos,
         std::bind(&ParticleFilter::lidarCB, this, std::placeholders::_1),
-        sensor_sub_options);
+        lidar_opts);
+
+    // Odom: Regular QoS with some buffering
+    rclcpp::QoS odom_qos(10);
+    rclcpp::SubscriptionOptions odom_opts;
+    odom_opts.callback_group = sensor_group_;
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        odom_topic, 10,
+        odom_topic, odom_qos,
         std::bind(&ParticleFilter::odomCB, this, std::placeholders::_1),
-        sensor_sub_options);
+        odom_opts);
+
+    // Initialization callbacks: Use compute_group to prevent concurrent execution with MCL
+    rclcpp::SubscriptionOptions init_opts;
+    init_opts.callback_group = compute_group_;
 
     pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/initialpose", 10,
-        std::bind(&ParticleFilter::clicked_pose, this, std::placeholders::_1));
+        "/initialpose", rclcpp::QoS(1),
+        std::bind(&ParticleFilter::clicked_pose, this, std::placeholders::_1),
+        init_opts);
 
     click_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
-        "/clicked_point", 10,
-        std::bind(&ParticleFilter::clicked_point, this, std::placeholders::_1));
+        "/clicked_point", rclcpp::QoS(1),
+        std::bind(&ParticleFilter::clicked_point, this, std::placeholders::_1),
+        init_opts);
 
     // Map client and TF
     map_client_ = this->create_client<nav_msgs::srv::GetMap>("/map_server/map");
@@ -128,6 +149,11 @@ ParticleFilter::ParticleFilter(const rclcpp::NodeOptions &options)
         std::chrono::seconds(1),
         [this]() { map_manager::try_load_map(this); });
 
+    map_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(200),
+        std::bind(&ParticleFilter::publish_map_periodically, this),
+        compute_group_);
+
     // Register dynamic parameter callback
     param_callback_handle_ = this->add_on_set_parameters_callback(
         [this](const std::vector<rclcpp::Parameter> &parameters) {
@@ -148,6 +174,7 @@ ParticleFilter::~ParticleFilter()
     // Cancel all timers explicitly for clean shutdown
     if (update_timer_) update_timer_->cancel();
     if (map_loader_timer_) map_loader_timer_->cancel();
+    if (map_timer_) map_timer_->cancel();
 
     // Other resources (smart pointers, Eigen matrices) are cleaned up automatically via RAII
 }
@@ -687,6 +714,21 @@ Eigen::Vector3d ParticleFilter::expected_pose()
     pose[2] = std::atan2(sum_sin, sum_cos);
 
     return pose;
+}
+
+// ================================================================================================
+// MAP PUBLISHING
+// ================================================================================================
+
+void ParticleFilter::publish_map_periodically()
+{
+    if (!map_initialized_ || !map_pub_)
+        return;
+
+    std::lock_guard<std::mutex> lock(map_lock_);
+    if (map_msg_) {
+        map_pub_->publish(*map_msg_);
+    }
 }
 
 } // namespace particle_filter_cpp

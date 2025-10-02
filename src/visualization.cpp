@@ -103,10 +103,6 @@ void visualize(ParticleFilter* node, const Eigen::Vector3d &base_link_pose, cons
     if (node->particle_pub_)
     {
         std::lock_guard<std::mutex> lock(node->state_lock_);
-        int particle_count = node->particles_.rows();
-        RCLCPP_INFO_THROTTLE(node->get_logger(), *node->get_clock(), 5000,
-            "Publishing %d particles (subscribers: %zu)",
-            particle_count, node->particle_pub_->get_subscription_count());
         publish_particles(node, node->particles_, viz_stamp);
     }
 
