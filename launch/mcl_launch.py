@@ -163,7 +163,7 @@ def generate_launch_description():
     # Sim mode:  Simulator provides map->base_link->laser, MCL only does localization
     
     # === RVIZ NODE ===
-    rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'particle_filter.rviz'])
+    rviz_config = PathJoinSubstitution([pkg_share, 'rviz', 'mcl.rviz'])
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
