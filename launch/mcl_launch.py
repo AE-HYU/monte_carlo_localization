@@ -84,6 +84,9 @@ def generate_launch_description():
         ]),
         
         # TF frame names
+        'map_frame': PythonExpression([
+            "'mcl_map' if '", LaunchConfiguration('mod'), "' == 'sim' else 'map'"
+        ]),
         'odom_frame': PythonExpression([
             "'map' if '", LaunchConfiguration('mod'), "' == 'sim' else 'odom'"
         ]),
@@ -93,13 +96,11 @@ def generate_launch_description():
         'laser_frame': PythonExpression([
             "'ego_racecar/laser' if '", LaunchConfiguration('mod'), "' == 'sim' else 'laser'"
         ]),
-        
+
         # TF publishing control
-        # Simulation: MCL doesn't publish TF (simulator handles map->base_link)
+        # Simulation: MCL publishes mcl_map->map (for visualization/comparison)
         # Real robot: MCL publishes map->odom (odom stack handles odom->base_link)
-        'publish_map_odom_tf': PythonExpression([
-            "'false' if '", LaunchConfiguration('mod'), "' == 'sim' else 'true'"
-        ])
+        'publish_map_odom_tf': True  # Always publish for visualization
 
     }
     
