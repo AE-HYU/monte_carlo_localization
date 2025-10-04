@@ -308,46 +308,64 @@ void MCL::timer_update()
         return;
     }
 
-    // Copy sensor data with minimal lock time
+    // Check for new LiDAR data and copy if available
+    bool has_new_data = false;
     std::vector<float> observation;
     Eigen::Vector3d action;
     rclcpp::Time lidar_timestamp;
+    static rclcpp::Time latest_sensor_time = rclcpp::Time(0);
 
     {
         std::lock_guard<std::mutex> lock(lidar_lock_);
-        if (!has_new_lidar_data_) {
-            return;
+        has_new_data = has_new_lidar_data_;
+        if (has_new_data) {
+            has_new_lidar_data_ = false;
+            observation = downsampled_ranges_;
+            lidar_timestamp = last_lidar_time_;
+            latest_sensor_time = lidar_timestamp;  // Update latest timestamp
         }
-        has_new_lidar_data_ = false;
-        observation = downsampled_ranges_;
-        lidar_timestamp = last_lidar_time_;
     }
 
-    // Calculate odometry motion
-    action = calculate_lidar_frame_motion(lidar_timestamp);
+    // Update MCL only when new LiDAR data is available
+    if (has_new_data) {
+        // Calculate odometry motion
+        action = calculate_lidar_frame_motion(lidar_timestamp);
 
-    // Execute MCL with state lock
-    if (!state_lock_.try_lock()) {
-        RCLCPP_INFO(this->get_logger(), "MCL update skipped - previous update still running");
-        return;
+        // Execute MCL with state lock
+        if (!state_lock_.try_lock()) {
+            RCLCPP_INFO(this->get_logger(), "MCL update skipped - previous update still running");
+            // Don't return - still publish TF with current pose
+        } else {
+            auto mcl_start = std::chrono::high_resolution_clock::now();
+            run_mcl(action, observation);
+            auto mcl_end = std::chrono::high_resolution_clock::now();
+
+            mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+            state_lock_.unlock();
+        }
     }
 
-    auto mcl_start = std::chrono::high_resolution_clock::now();
-    run_mcl(action, observation);
-    auto mcl_end = std::chrono::high_resolution_clock::now();
-
-    mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
-
-    Eigen::Vector3d final_pose_laser = expected_pose();
+    // Always publish TF with latest estimated pose (even without new LiDAR)
+    state_lock_.lock();
+    Eigen::Vector3d current_pose_laser = expected_pose();
     state_lock_.unlock();
 
     // Convert laser frame to base_link
-    Eigen::Vector3d final_pose_base = utils::transforms::apply_laser_to_base_offset(
-        final_pose_laser, laser_offset_x_, laser_offset_y_);
+    Eigen::Vector3d current_pose_base = utils::transforms::apply_laser_to_base_offset(
+        current_pose_laser, laser_offset_x_, laser_offset_y_);
 
-    // Publish TF and visualization
-    visualization::publish_tf(this, final_pose_base, lidar_timestamp);
-    visualization::visualize(this, final_pose_base, lidar_timestamp);
+    // Publish TF at timer frequency with latest sensor timestamp
+    // Use latest sensor time instead of this->now() to avoid sim_time issues
+    rclcpp::Time tf_time = (latest_sensor_time.nanoseconds() > 0) ? latest_sensor_time : this->now();
+    visualization::publish_tf(this, current_pose_base, tf_time);
+
+    // Publish visualization only when MCL was updated
+    // if (has_new_data) {
+    //     visualization::visualize(this, current_pose_base, lidar_timestamp);
+    // }
+  
+    visualization::visualize(this, current_pose_base, lidar_timestamp);
+ 
 
     // Performance logging (periodic)
     static int update_count = 0;
@@ -369,9 +387,9 @@ void MCL::timer_update()
             msg += " (LikelihoodField: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
         }
 
-        msg += ", Pose: [" + std::to_string(final_pose_base[0]) + ", " +
-               std::to_string(final_pose_base[1]) + ", " +
-               std::to_string(final_pose_base[2]) + "]";
+        msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
+               std::to_string(current_pose_base[1]) + ", " +
+               std::to_string(current_pose_base[2]) + "]";
 
         RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
 

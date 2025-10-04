@@ -53,7 +53,7 @@ mcl:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 30.0              # Timer frequency (Hz) - publishing only now
+    timer_frequency: 50.0              # Timer frequency (Hz) - TF publishing rate (higher than LiDAR for smooth tracking)
 
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame
