@@ -649,60 +649,118 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
     double origin_x = local_map->info.origin.position.x;
     double origin_y = local_map->info.origin.position.y;
 
-    // Evaluate each particle
-    for (int i = 0; i < MAX_PARTICLES; ++i) {
-        double weight = 1.0;
-        const double px = proposal_dist(i, 0);
-        const double py = proposal_dist(i, 1);
-        const double ptheta = proposal_dist(i, 2);
+    // Evaluate each particle (parallelize with OpenMP)
+    if (USE_PARALLEL_RAYCASTING) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < MAX_PARTICLES; ++i) {
+            double weight = 1.0;
+            const double px = proposal_dist(i, 0);
+            const double py = proposal_dist(i, 1);
+            const double ptheta = proposal_dist(i, 2);
 
-        // Precompute particle rotation once per particle
-        const double cos_theta = std::cos(ptheta);
-        const double sin_theta = std::sin(ptheta);
+            // Precompute particle rotation once per particle
+            const double cos_theta = std::cos(ptheta);
+            const double sin_theta = std::sin(ptheta);
 
-        for (int j = 0; j < num_rays; ++j) {
-            const float obs_range = obs[j];
+            for (int j = 0; j < num_rays; ++j) {
+                const float obs_range = obs[j];
 
-            // Skip invalid measurements
-            if (obs_range >= MAX_RANGE_METERS || obs_range <= 0.0f) {
-                continue;
+                // Skip invalid measurements
+                if (obs_range >= MAX_RANGE_METERS || obs_range <= 0.0f) {
+                    continue;
+                }
+
+                // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
+                const double local_x = obs_range * cos_table_[j];
+                const double local_y = obs_range * sin_table_[j];
+                const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
+                const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
+
+                // Convert to grid coordinates
+                int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
+                int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
+
+                // Check bounds
+                if (grid_x < 0 || grid_x >= distance_field_width_ ||
+                    grid_y < 0 || grid_y >= distance_field_height_) {
+                    continue;
+                }
+
+                // Look up distance to nearest obstacle
+                int idx = grid_y * distance_field_width_ + grid_x;
+                float dist = distance_field_[idx];
+
+                // Lookup Gaussian likelihood from precomputed table
+                int table_idx = std::min(static_cast<int>(dist / likelihood_table_resolution_),
+                                         likelihood_table_size_ - 1);
+                double prob = likelihood_lookup_table_[table_idx];
+
+                // Accumulate probability
+                weight *= (prob + 0.01);
             }
 
-            // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
-            // Apply rotation: endpoint = particle_pos + R(ptheta) * [obs_range * cos(ray_angle), obs_range * sin(ray_angle)]
-            const double local_x = obs_range * cos_table_[j];
-            const double local_y = obs_range * sin_table_[j];
-            const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
-            const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
-
-            // Convert to grid coordinates
-            int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
-            int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
-
-            // Check bounds
-            if (grid_x < 0 || grid_x >= distance_field_width_ ||
-                grid_y < 0 || grid_y >= distance_field_height_) {
-                continue;
+            // Apply squash factor
+            if (weight > 0.0) {
+                weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
+            } else {
+                weights[i] = 0.0;
             }
-
-            // Look up distance to nearest obstacle
-            int idx = grid_y * distance_field_width_ + grid_x;
-            float dist = distance_field_[idx];
-
-            // Lookup Gaussian likelihood from precomputed table
-            int table_idx = std::min(static_cast<int>(dist / likelihood_table_resolution_),
-                                     likelihood_table_size_ - 1);
-            double prob = likelihood_lookup_table_[table_idx];
-
-            // Accumulate probability (multiply in log space would be more stable)
-            weight *= (prob + 0.01);  // Add small constant to avoid zero
         }
+    } else {
+        // Sequential version
+        for (int i = 0; i < MAX_PARTICLES; ++i) {
+            double weight = 1.0;
+            const double px = proposal_dist(i, 0);
+            const double py = proposal_dist(i, 1);
+            const double ptheta = proposal_dist(i, 2);
 
-        // Apply squash factor
-        if (weight > 0.0) {
-            weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
-        } else {
-            weights[i] = 0.0;
+            // Precompute particle rotation once per particle
+            const double cos_theta = std::cos(ptheta);
+            const double sin_theta = std::sin(ptheta);
+
+            for (int j = 0; j < num_rays; ++j) {
+                const float obs_range = obs[j];
+
+                // Skip invalid measurements
+                if (obs_range >= MAX_RANGE_METERS || obs_range <= 0.0f) {
+                    continue;
+                }
+
+                // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
+                const double local_x = obs_range * cos_table_[j];
+                const double local_y = obs_range * sin_table_[j];
+                const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
+                const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
+
+                // Convert to grid coordinates
+                int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
+                int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
+
+                // Check bounds
+                if (grid_x < 0 || grid_x >= distance_field_width_ ||
+                    grid_y < 0 || grid_y >= distance_field_height_) {
+                    continue;
+                }
+
+                // Look up distance to nearest obstacle
+                int idx = grid_y * distance_field_width_ + grid_x;
+                float dist = distance_field_[idx];
+
+                // Lookup Gaussian likelihood from precomputed table
+                int table_idx = std::min(static_cast<int>(dist / likelihood_table_resolution_),
+                                         likelihood_table_size_ - 1);
+                double prob = likelihood_lookup_table_[table_idx];
+
+                // Accumulate probability
+                weight *= (prob + 0.01);
+            }
+
+            // Apply squash factor
+            if (weight > 0.0) {
+                weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
+            } else {
+                weights[i] = 0.0;
+            }
         }
     }
 }
