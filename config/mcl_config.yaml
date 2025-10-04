@@ -6,10 +6,10 @@
 mcl:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 2000                # Maximum number of particles
+    max_particles: 1000                # Maximum number of particles
     min_particles: 500                 # Minimum number of particles (for adaptive resampling)
-    max_viz_particles: 100              # Visualization downsampling
-    max_range: 10.0                    # Laser max range (m)
+    max_viz_particles: 60              # Visualization downsampling
+    max_range: 9.0                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
 
     # === TF CONTROL ===
@@ -20,9 +20,9 @@ mcl:
     publish_map_odom_tf: true          # Publish map->odom transform (default for real robot)
 
     # === MOTION MODEL NOISE ===
-    motion_dispersion_x: 0.015          # Forward motion noise (m)
+    motion_dispersion_x: 0.010          # Forward motion noise (m)
     motion_dispersion_y: 0.01          # Lateral motion noise (m)
-    motion_dispersion_theta: 0.08      # Rotation noise (rad)
+    motion_dispersion_theta: 0.05      # Rotation noise (rad)
 
     # === ROBOT GEOMETRY ===
     wheelbase: 0.324                   # Distance between axles (m)
@@ -35,7 +35,7 @@ mcl:
     sigma_hit: 5.0                     # Measurement noise std dev
 
     # === RAY CASTING ===
-    angle_step: 18                     # Laser downsampling factor
+    angle_step: 15                     # Laser downsampling factor
     squash_factor: 1.2                 # Weight normalization power
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads
