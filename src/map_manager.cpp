@@ -48,8 +48,14 @@ void get_omap(MCL* node)
             node->map_pub_->publish(*node->map_msg_);
         }
 
-        // Generate sensor model lookup table
+        // Generate sensor model lookup table (beam model)
         precompute_sensor_model(node);
+
+        // Generate distance field and lookup table (likelihood field model)
+        if (node->SENSOR_MODEL_TYPE == "likelihood_field") {
+            precompute_distance_field(node);
+            node->precompute_likelihood_lookup_table();
+        }
     }
     else
     {
@@ -90,8 +96,14 @@ void try_load_map(MCL* node)
 
                 node->MAX_RANGE_PX_ = static_cast<int>(node->MAX_RANGE_METERS / node->map_msg_->info.resolution);
 
-                // Precompute sensor model
+                // Precompute sensor model (beam model)
                 precompute_sensor_model(node);
+
+                // Precompute distance field and lookup table (likelihood field model)
+                if (node->SENSOR_MODEL_TYPE == "likelihood_field") {
+                    precompute_distance_field(node);
+                    node->precompute_likelihood_lookup_table();
+                }
 
                 // Publish map for RViz
                 if (node->map_pub_) {
@@ -191,7 +203,170 @@ void precompute_sensor_model(MCL* node)
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    RCLCPP_INFO(node->get_logger(), "Sensor model ready (%ld ms)", duration.count());
+    RCLCPP_INFO(node->get_logger(), "Beam sensor model ready (%ld ms)", duration.count());
+}
+
+/**
+ * @brief Precomputes distance field using efficient two-pass distance transform
+ * Based on chamfer distance transform - O(N) complexity instead of O(N*M)
+ */
+void precompute_distance_field(MCL* node)
+{
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(node->map_lock_);
+        local_map = node->map_msg_;
+    }
+
+    if (!local_map || local_map->info.resolution <= 0.0)
+    {
+        RCLCPP_ERROR(node->get_logger(), "Invalid map for distance field computation");
+        return;
+    }
+
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    int width = local_map->info.width;
+    int height = local_map->info.height;
+    double resolution = local_map->info.resolution;
+
+    // Initialize distance field
+    node->distance_field_.assign(width * height, 0.0f);
+    node->distance_field_width_ = width;
+    node->distance_field_height_ = height;
+    node->distance_field_resolution_ = resolution;
+
+    // Initialize with binary: 0 for obstacles, large value for free space
+    const float INF = 9999.0f;
+    int obstacle_count = 0;
+
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            int idx = y * width + x;
+            // Occupied cells (>50) or unknown cells (-1/255) are obstacles
+            if (local_map->data[idx] > 50 || local_map->data[idx] < 0)
+            {
+                node->distance_field_[idx] = 0.0f;
+                obstacle_count++;
+            }
+            else
+            {
+                node->distance_field_[idx] = INF;
+            }
+        }
+    }
+
+    // Forward pass: scan from top-left to bottom-right
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            int idx = y * width + x;
+
+            if (node->distance_field_[idx] > 0.0f)
+            {
+                // Check left neighbor
+                if (x > 0)
+                {
+                    int left_idx = y * width + (x - 1);
+                    float dist = node->distance_field_[left_idx] + 1.0f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+
+                // Check top neighbor
+                if (y > 0)
+                {
+                    int top_idx = (y - 1) * width + x;
+                    float dist = node->distance_field_[top_idx] + 1.0f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+
+                // Check top-left diagonal
+                if (x > 0 && y > 0)
+                {
+                    int diag_idx = (y - 1) * width + (x - 1);
+                    float dist = node->distance_field_[diag_idx] + 1.414f;  // sqrt(2)
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+
+                // Check top-right diagonal
+                if (x < width - 1 && y > 0)
+                {
+                    int diag_idx = (y - 1) * width + (x + 1);
+                    float dist = node->distance_field_[diag_idx] + 1.414f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+            }
+        }
+    }
+
+    // Backward pass: scan from bottom-right to top-left
+    for (int y = height - 1; y >= 0; --y)
+    {
+        for (int x = width - 1; x >= 0; --x)
+        {
+            int idx = y * width + x;
+
+            if (node->distance_field_[idx] > 0.0f)
+            {
+                // Check right neighbor
+                if (x < width - 1)
+                {
+                    int right_idx = y * width + (x + 1);
+                    float dist = node->distance_field_[right_idx] + 1.0f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+
+                // Check bottom neighbor
+                if (y < height - 1)
+                {
+                    int bottom_idx = (y + 1) * width + x;
+                    float dist = node->distance_field_[bottom_idx] + 1.0f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+
+                // Check bottom-right diagonal
+                if (x < width - 1 && y < height - 1)
+                {
+                    int diag_idx = (y + 1) * width + (x + 1);
+                    float dist = node->distance_field_[diag_idx] + 1.414f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+
+                // Check bottom-left diagonal
+                if (x > 0 && y < height - 1)
+                {
+                    int diag_idx = (y + 1) * width + (x - 1);
+                    float dist = node->distance_field_[diag_idx] + 1.414f;
+                    if (dist < node->distance_field_[idx])
+                        node->distance_field_[idx] = dist;
+                }
+            }
+        }
+    }
+
+    // Convert pixel distances to meters
+    for (size_t i = 0; i < node->distance_field_.size(); ++i)
+    {
+        node->distance_field_[i] *= resolution;
+    }
+
+    node->distance_field_initialized_ = true;
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    RCLCPP_INFO(node->get_logger(),
+                "Distance field computed (%ld ms) - %d obstacles, %dx%d cells",
+                duration.count(), obstacle_count, width, height);
 }
 
 } // namespace map_manager

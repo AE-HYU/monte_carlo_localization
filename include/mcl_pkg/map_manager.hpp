@@ -53,6 +53,17 @@ void try_load_map(MCL* node);
  */
 void precompute_sensor_model(MCL* node);
 
+/**
+ * @brief Precompute distance field for likelihood field sensor model
+ *
+ * Generates a distance transform of the map where each cell contains
+ * the distance to the nearest obstacle. Used for faster sensor model
+ * evaluation without ray casting.
+ *
+ * @param node Pointer to MCL node
+ */
+void precompute_distance_field(MCL* node);
+
 } // namespace map_manager
 } // namespace mcl_pkg
 

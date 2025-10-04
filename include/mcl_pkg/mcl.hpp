@@ -48,11 +48,18 @@ class MCL : public rclcpp::Node
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
 
-    // Sensor model helper functions
+    // Sensor model helper functions (beam model)
     void initialize_sensor_arrays(int num_rays, int total_queries);
     void generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays);
     void calculate_particle_weights(const std::vector<float> &obs, int num_rays,
                                    std::vector<double> &weights);
+
+    // Likelihood field sensor model
+    void precompute_distance_field();
+    void precompute_likelihood_lookup_table();
+    void likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
+                                       const std::vector<float> &obs,
+                                       std::vector<double> &weights);
 
     Eigen::Vector3d expected_pose();
 
@@ -109,7 +116,9 @@ class MCL : public rclcpp::Node
     double MAX_POSE_RANGE;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
+    std::string SENSOR_MODEL_TYPE;  // "beam" or "likelihood_field"
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
+    double LIKELIHOOD_SIGMA;  // Sigma for likelihood field model (meters)
 
     // --------------------------------- MOTION MODEL PARAMETERS ---------------------------------
     double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;
@@ -145,6 +154,22 @@ class MCL : public rclcpp::Node
     // --------------------------------- SENSOR MODEL OPTIMIZATION ---------------------------------
     Eigen::MatrixXd sensor_model_table_;
     int MAX_RANGE_PX_;
+
+    // Distance field for likelihood field sensor model
+    std::vector<float> distance_field_;  // Precomputed distance to nearest obstacle (meters)
+    int distance_field_width_;           // Width of distance field (pixels)
+    int distance_field_height_;          // Height of distance field (pixels)
+    double distance_field_resolution_;   // Resolution of distance field (meters/pixel)
+    bool distance_field_initialized_;    // Whether distance field is ready
+
+    // Gaussian likelihood lookup table for likelihood field model
+    std::vector<double> likelihood_lookup_table_;  // Precomputed Gaussian values
+    double likelihood_table_resolution_;           // Distance resolution for lookup (meters)
+    int likelihood_table_size_;                    // Size of lookup table
+
+    // Precomputed cos/sin for likelihood field endpoint calculation
+    std::vector<double> cos_table_;  // cos(downsampled_angles_[i])
+    std::vector<double> sin_table_;  // sin(downsampled_angles_[i])
 
     // --------------------------------- PERFORMANCE CACHES ---------------------------------
     Eigen::MatrixXd local_deltas_;

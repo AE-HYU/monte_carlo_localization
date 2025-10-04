@@ -28,11 +28,19 @@ mcl:
     wheelbase: 0.324                   # Distance between axles (m)
 
     # === SENSOR MODEL ===
+    # sensor_model_type: "beam"                      # "beam" or "likelihood_field"
+    sensor_model_type: "likelihood_field"          # "beam" or "likelihood_field"
+
+
+    # Beam model parameters (used when sensor_model_type: "beam")
     z_hit: 0.85                        # Weight for correct measurements
     z_short: 0.01                      # Weight for short readings
     z_max: 0.07                        # Weight for max range readings
     z_rand: 0.07                       # Weight for random noise
     sigma_hit: 5.0                     # Measurement noise std dev
+
+    # Likelihood field model parameters (used when sensor_model_type: "likelihood_field")
+    likelihood_sigma: 0.1              # Distance field Gaussian sigma (meters)
 
     # === RAY CASTING ===
     angle_step: 15                     # Laser downsampling factor

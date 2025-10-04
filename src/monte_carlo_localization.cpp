@@ -39,6 +39,16 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     current_velocity_ = 0.0;
     current_angular_vel_ = 0.0;
 
+    // Initialize distance field (likelihood field model)
+    distance_field_initialized_ = false;
+    distance_field_width_ = 0;
+    distance_field_height_ = 0;
+    distance_field_resolution_ = 0.0;
+
+    // Initialize likelihood lookup table
+    likelihood_table_resolution_ = 0.01;  // 1cm resolution
+    likelihood_table_size_ = 0;
+
     // Initialize laser offset with default (will be loaded from TF)
     laser_offset_x_ = 0.28;
     laser_offset_y_ = 0.0;
@@ -197,8 +207,21 @@ void MCL::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
             downsampled_angles_[i] = msg->angle_min + (i * ANGLE_STEP) * msg->angle_increment;
         }
 
+        // Precompute cos/sin for likelihood field model
+        if (SENSOR_MODEL_TYPE == "likelihood_field") {
+            cos_table_.resize(downsampled_size);
+            sin_table_.resize(downsampled_size);
+            for (int i = 0; i < downsampled_size; ++i) {
+                cos_table_[i] = std::cos(downsampled_angles_[i]);
+                sin_table_[i] = std::sin(downsampled_angles_[i]);
+            }
+            RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles, cos/sin tables precomputed",
+                        downsampled_angles_.size());
+        } else {
+            RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
+        }
+
         lidar_initialized_ = true;
-        RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
     }
 
     // Downsample ranges
@@ -331,14 +354,29 @@ void MCL::timer_update()
     if (++update_count % 100 == 0) {
         auto timer_end = std::chrono::high_resolution_clock::now();
         double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
-        
-        std::string msg = "MCL update #" + std::to_string(update_count) + 
-                         " - Total: " + std::to_string(total_time) + "ms, " +
-                         "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
-                         "Pose: [" + std::to_string(final_pose_base[0]) + ", " +
-                         std::to_string(final_pose_base[1]) + ", " +
-                         std::to_string(final_pose_base[2]) + "]";
+
+        // Build detailed performance message
+        std::string msg = "MCL #" + std::to_string(update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
+                         "Total: " + std::to_string(total_time) + "ms, " +
+                         "MCL: " + std::to_string(mcl_processing_time_) + "ms";
+
+        // Add sensor model specific breakdown
+        if (SENSOR_MODEL_TYPE == "beam") {
+            msg += " (Query: " + std::to_string(timing_stats_.query_prep_time) + "ms, " +
+                   "Raycast: " + std::to_string(timing_stats_.ray_casting_time) + "ms, " +
+                   "Sensor: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
+        } else {
+            msg += " (LikelihoodField: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
+        }
+
+        msg += ", Pose: [" + std::to_string(final_pose_base[0]) + ", " +
+               std::to_string(final_pose_base[1]) + ", " +
+               std::to_string(final_pose_base[2]) + "]";
+
         RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+
+        // Reset timing stats for next 100 iterations
+        timing_stats_.reset();
     }
 }
 
@@ -429,31 +467,41 @@ void MCL::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &ac
 }
 
 /**
- * @brief Evaluates sensor model likelihood using beam model and lookup table
+ * @brief Evaluates sensor model likelihood - dispatches to beam or likelihood_field model
  */
 void MCL::sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                                   std::vector<double> &weights)
 {
-    const int num_rays = downsampled_angles_.size();
-    const int total_queries = num_rays * MAX_PARTICLES;
+    // Select sensor model based on parameter
+    if (SENSOR_MODEL_TYPE == "likelihood_field") {
+        // Likelihood field model (no ray casting)
+        auto lf_start = std::chrono::high_resolution_clock::now();
+        likelihood_field_sensor_model(proposal_dist, obs, weights);
+        timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - lf_start).count();
+    } else {
+        // Beam model (with ray casting)
+        const int num_rays = downsampled_angles_.size();
+        const int total_queries = num_rays * MAX_PARTICLES;
 
-    // === INITIALIZATION: First-time memory allocation ===
-    initialize_sensor_arrays(num_rays, total_queries);
+        // === INITIALIZATION: First-time memory allocation ===
+        initialize_sensor_arrays(num_rays, total_queries);
 
-    // === RAY QUERY GENERATION ===
-    auto query_start = std::chrono::high_resolution_clock::now();
-    generate_ray_queries(proposal_dist, num_rays);
-    timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(
-        std::chrono::high_resolution_clock::now() - query_start).count();
+        // === RAY QUERY GENERATION ===
+        auto query_start = std::chrono::high_resolution_clock::now();
+        generate_ray_queries(proposal_dist, num_rays);
+        timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - query_start).count();
 
-    // === RAY CASTING ===
-    ranges_ = calc_range_many(queries_);
+        // === RAY CASTING ===
+        ranges_ = calc_range_many(queries_);
 
-    // === WEIGHT CALCULATION ===
-    auto sensor_eval_start = std::chrono::high_resolution_clock::now();
-    calculate_particle_weights(obs, num_rays, weights);
-    timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(
-        std::chrono::high_resolution_clock::now() - sensor_eval_start).count();
+        // === WEIGHT CALCULATION ===
+        auto sensor_eval_start = std::chrono::high_resolution_clock::now();
+        calculate_particle_weights(obs, num_rays, weights);
+        timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - sensor_eval_start).count();
+    }
 }
 
 /**
@@ -537,6 +585,120 @@ void MCL::calculate_particle_weights(const std::vector<float> &obs, int num_rays
         }
 
         // Apply squash factor AFTER computing the product - optimized
+        if (weight > 0.0) {
+            weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
+        } else {
+            weights[i] = 0.0;
+        }
+    }
+}
+
+/**
+ * @brief Precompute Gaussian likelihood lookup table
+ */
+void MCL::precompute_likelihood_lookup_table()
+{
+    // Maximum distance to precompute (meters)
+    const double MAX_DIST = 5.0;
+
+    // Calculate table size based on resolution
+    likelihood_table_size_ = static_cast<int>(MAX_DIST / likelihood_table_resolution_) + 1;
+    likelihood_lookup_table_.resize(likelihood_table_size_);
+
+    // Precompute Gaussian normalizer
+    const double norm_factor = 1.0 / (LIKELIHOOD_SIGMA * std::sqrt(2.0 * M_PI));
+    const double inv_two_sigma_sq = 1.0 / (2.0 * LIKELIHOOD_SIGMA * LIKELIHOOD_SIGMA);
+
+    // Fill lookup table
+    for (int i = 0; i < likelihood_table_size_; ++i)
+    {
+        double dist = i * likelihood_table_resolution_;
+        likelihood_lookup_table_[i] = norm_factor * std::exp(-dist * dist * inv_two_sigma_sq);
+    }
+
+    RCLCPP_INFO(get_logger(),
+                "Likelihood lookup table ready - %d entries, resolution: %.3fm",
+                likelihood_table_size_, likelihood_table_resolution_);
+}
+
+/**
+ * @brief Likelihood field sensor model - no ray casting needed
+ */
+void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
+                                        const std::vector<float> &obs,
+                                        std::vector<double> &weights)
+{
+    if (!distance_field_initialized_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                            "Distance field not initialized, skipping sensor update");
+        std::fill(weights.begin(), weights.end(), 1.0);
+        return;
+    }
+
+    const int num_rays = downsampled_angles_.size();
+
+    // Thread-safe access to map info
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(map_lock_);
+        local_map = map_msg_;
+    }
+    if (!local_map) return;
+
+    double resolution = local_map->info.resolution;
+    double origin_x = local_map->info.origin.position.x;
+    double origin_y = local_map->info.origin.position.y;
+
+    // Evaluate each particle
+    for (int i = 0; i < MAX_PARTICLES; ++i) {
+        double weight = 1.0;
+        const double px = proposal_dist(i, 0);
+        const double py = proposal_dist(i, 1);
+        const double ptheta = proposal_dist(i, 2);
+
+        // Precompute particle rotation once per particle
+        const double cos_theta = std::cos(ptheta);
+        const double sin_theta = std::sin(ptheta);
+
+        for (int j = 0; j < num_rays; ++j) {
+            const float obs_range = obs[j];
+
+            // Skip invalid measurements
+            if (obs_range >= MAX_RANGE_METERS || obs_range <= 0.0f) {
+                continue;
+            }
+
+            // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
+            // Apply rotation: endpoint = particle_pos + R(ptheta) * [obs_range * cos(ray_angle), obs_range * sin(ray_angle)]
+            const double local_x = obs_range * cos_table_[j];
+            const double local_y = obs_range * sin_table_[j];
+            const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
+            const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
+
+            // Convert to grid coordinates
+            int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
+            int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
+
+            // Check bounds
+            if (grid_x < 0 || grid_x >= distance_field_width_ ||
+                grid_y < 0 || grid_y >= distance_field_height_) {
+                continue;
+            }
+
+            // Look up distance to nearest obstacle
+            int idx = grid_y * distance_field_width_ + grid_x;
+            float dist = distance_field_[idx];
+
+            // Lookup Gaussian likelihood from precomputed table
+            int table_idx = std::min(static_cast<int>(dist / likelihood_table_resolution_),
+                                     likelihood_table_size_ - 1);
+            double prob = likelihood_lookup_table_[table_idx];
+
+            // Accumulate probability (multiply in log space would be more stable)
+            weight *= (prob + 0.01);  // Add small constant to avoid zero
+        }
+
+        // Apply squash factor
         if (weight > 0.0) {
             weights[i] = std::exp(INV_SQUASH_FACTOR * std::log(weight));
         } else {

@@ -24,12 +24,18 @@ void initParameters(MCL* node)
     node->declare_parameter("max_range", 12.0);
     node->declare_parameter("max_pose_range", 10000.0);
 
-    // Sensor model parameters (sum must equal 1.0 - auto-normalized if not)
+    // Sensor model parameters
+    node->declare_parameter("sensor_model_type", "beam");  // "beam" or "likelihood_field"
+
+    // Beam model parameters (sum must equal 1.0 - auto-normalized if not)
     node->declare_parameter("z_short", 0.01);
     node->declare_parameter("z_max", 0.07);
     node->declare_parameter("z_rand", 0.07);
     node->declare_parameter("z_hit", 0.85);
     node->declare_parameter("sigma_hit", 5.0);
+
+    // Likelihood field model parameters
+    node->declare_parameter("likelihood_sigma", 0.2);  // Sigma for likelihood field (meters)
 
     // Motion model parameters
     node->declare_parameter("motion_dispersion_x", 0.02);
@@ -70,11 +76,13 @@ void initParameters(MCL* node)
     node->MAX_POSE_RANGE = node->get_parameter("max_pose_range").as_double();
 
     // Sensor model parameters
+    node->SENSOR_MODEL_TYPE = node->get_parameter("sensor_model_type").as_string();
     node->Z_SHORT = node->get_parameter("z_short").as_double();
     node->Z_MAX = node->get_parameter("z_max").as_double();
     node->Z_RAND = node->get_parameter("z_rand").as_double();
     node->Z_HIT = node->get_parameter("z_hit").as_double();
     node->SIGMA_HIT = node->get_parameter("sigma_hit").as_double();
+    node->LIKELIHOOD_SIGMA = node->get_parameter("likelihood_sigma").as_double();
 
     // Motion model parameters
     node->MOTION_DISPERSION_X = node->get_parameter("motion_dispersion_x").as_double();
@@ -103,6 +111,20 @@ void initParameters(MCL* node)
     node->PUBLISH_MAP_ODOM_TF = node->get_parameter("publish_map_odom_tf").as_bool();
 
     // === SEMANTIC VALIDATION ===
+
+    // Validate sensor model type
+    if (node->SENSOR_MODEL_TYPE != "beam" && node->SENSOR_MODEL_TYPE != "likelihood_field") {
+        RCLCPP_WARN(node->get_logger(),
+            "Invalid sensor_model_type '%s', using default 'beam'", node->SENSOR_MODEL_TYPE.c_str());
+        node->SENSOR_MODEL_TYPE = "beam";
+    }
+
+    // Validate likelihood field sigma
+    if (node->LIKELIHOOD_SIGMA <= 0.0) {
+        RCLCPP_WARN(node->get_logger(),
+            "likelihood_sigma must be positive, got %.3f. Using default 0.2", node->LIKELIHOOD_SIGMA);
+        node->LIKELIHOOD_SIGMA = 0.2;
+    }
 
     // Validate particle counts
     if (node->MAX_PARTICLES < 0) {
@@ -184,8 +206,9 @@ void initParameters(MCL* node)
     }
 
     RCLCPP_INFO(node->get_logger(),
-        "Parameters validated - Particles: [%d-%d], AngleStep: %d, Frequency: %.1f Hz",
-        node->MIN_PARTICLES, node->MAX_PARTICLES, node->ANGLE_STEP, node->TIMER_FREQUENCY);
+        "Parameters validated - Particles: [%d-%d], AngleStep: %d, Frequency: %.1f Hz, Sensor: %s",
+        node->MIN_PARTICLES, node->MAX_PARTICLES, node->ANGLE_STEP, node->TIMER_FREQUENCY,
+        node->SENSOR_MODEL_TYPE.c_str());
 }
 
 rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
