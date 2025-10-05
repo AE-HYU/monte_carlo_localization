@@ -28,7 +28,8 @@ static inline double evaluate_particle_likelihood(
     double origin_x,
     double origin_y)
 {
-    double weight = 1.0;
+    // Use log-space computation to avoid numerical underflow
+    double log_weight = 0.0;
     const double px = proposal_dist(particle_idx, 0);
     const double py = proposal_dist(particle_idx, 1);
     const double ptheta = proposal_dist(particle_idx, 2);
@@ -37,26 +38,52 @@ static inline double evaluate_particle_likelihood(
     const double cos_theta = std::cos(ptheta);
     const double sin_theta = std::sin(ptheta);
 
+    // Z_short lambda parameter (configurable)
+    const double lambda_short = 1.0;
+
+    // Pre-allocate arrays for vectorized operations (minimize allocations in hot loop)
+    static thread_local std::vector<double> local_x_batch;
+    static thread_local std::vector<double> local_y_batch;
+    static thread_local std::vector<double> endpoint_x_batch;
+    static thread_local std::vector<double> endpoint_y_batch;
+
+    if (local_x_batch.size() < static_cast<size_t>(num_rays)) {
+        local_x_batch.resize(num_rays);
+        local_y_batch.resize(num_rays);
+        endpoint_x_batch.resize(num_rays);
+        endpoint_y_batch.resize(num_rays);
+    }
+
+    // Vectorized endpoint calculation for all valid rays
+    // This enables compiler auto-vectorization (SIMD)
+    for (int j = 0; j < num_rays; ++j) {
+        const float obs_range = obs[j];
+        local_x_batch[j] = obs_range * node->cos_table_[j];
+        local_y_batch[j] = obs_range * node->sin_table_[j];
+        endpoint_x_batch[j] = px + (local_x_batch[j] * cos_theta - local_y_batch[j] * sin_theta);
+        endpoint_y_batch[j] = py + (local_x_batch[j] * sin_theta + local_y_batch[j] * cos_theta);
+    }
+
+    // Process each ray
     for (int j = 0; j < num_rays; ++j) {
         const float obs_range = obs[j];
 
         // === z_max component: max range measurements ===
         if (obs_range >= node->MAX_RANGE_METERS) {
-            weight *= (node->Z_MAX * prob_uniform + node->Z_RAND * prob_uniform);
+            double prob = node->Z_MAX * prob_uniform + node->Z_RAND * prob_uniform;
+            log_weight += std::log(std::max(prob, 1e-10));
             continue;
         }
 
         // === Invalid measurements: z_rand only ===
         if (obs_range <= 0.0f) {
-            weight *= (node->Z_RAND * prob_uniform);
+            log_weight += std::log(std::max(node->Z_RAND * prob_uniform, 1e-10));
             continue;
         }
 
-        // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
-        const double local_x = obs_range * node->cos_table_[j];
-        const double local_y = obs_range * node->sin_table_[j];
-        const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
-        const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
+        // Use pre-computed endpoint from vectorized calculation
+        const double endpoint_x = endpoint_x_batch[j];
+        const double endpoint_y = endpoint_y_batch[j];
 
         // Convert to grid coordinates
         int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
@@ -65,7 +92,7 @@ static inline double evaluate_particle_likelihood(
         // Out of bounds: z_rand only
         if (grid_x < 0 || grid_x >= node->distance_field_width_ ||
             grid_y < 0 || grid_y >= node->distance_field_height_) {
-            weight *= (node->Z_RAND * prob_uniform);
+            log_weight += std::log(std::max(node->Z_RAND * prob_uniform, 1e-10));
             continue;
         }
 
@@ -78,12 +105,15 @@ static inline double evaluate_particle_likelihood(
                                  node->likelihood_table_size_ - 1);
         double prob_hit = node->likelihood_lookup_table_[table_idx];
 
-        // === z_short component: Exponential decay for short readings ===
-        // If endpoint is far from obstacles, there might be a dynamic obstacle blocking the ray
+        // === z_short component: Improved exponential model (Probabilistic Robotics) ===
+        // Models unexpected obstacles (e.g., dynamic obstacles, people)
         double prob_short = 0.0;
-        if (dist > obs_range * 0.3) {  // Endpoint is in free space
-            // Exponential model: shorter measurements more likely due to occlusion
-            prob_short = (2.0 / obs_range) * std::exp(-2.0 * obs_range);
+        if (obs_range < dist) {
+            // Exponential distribution: P(z|z_exp) = λe^(-λz) / (1 - e^(-λz_exp))
+            double normalizer = 1.0 - std::exp(-lambda_short * dist);
+            if (normalizer > 1e-6) {
+                prob_short = (lambda_short * std::exp(-lambda_short * obs_range)) / normalizer;
+            }
         }
 
         // === Multi-component probability ===
@@ -93,16 +123,15 @@ static inline double evaluate_particle_likelihood(
             node->Z_MAX * prob_uniform +
             node->Z_RAND * prob_uniform;
 
-        // Accumulate probability (add small epsilon for numerical stability)
-        weight *= (prob_total + 1e-6);
+        // Clamp probability for numerical stability
+        prob_total = std::clamp(prob_total, 1e-10, 1.0);
+
+        // Accumulate in log-space
+        log_weight += std::log(prob_total);
     }
 
-    // Apply squash factor
-    if (weight > 0.0) {
-        return std::exp(node->INV_SQUASH_FACTOR * std::log(weight));
-    } else {
-        return 0.0;
-    }
+    // Apply squash factor and convert back from log-space
+    return std::exp(node->INV_SQUASH_FACTOR * log_weight);
 }
 
 
