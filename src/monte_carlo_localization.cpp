@@ -109,9 +109,10 @@ MCL::MCL(const rclcpp::NodeOptions &options)
         std::bind(&MCL::odomCB, this, std::placeholders::_1),
         odom_opts);
 
-    // Initialization callbacks: Use compute_group to prevent concurrent execution with MCL
+    // Initialization callbacks: Use sensor_group (Reentrant) for immediate response
+    // The callbacks use state_lock internally, so they're safe to run concurrently with MCL
     rclcpp::SubscriptionOptions init_opts;
-    init_opts.callback_group = compute_group_;
+    init_opts.callback_group = sensor_group_;
 
     pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/initialpose", rclcpp::QoS(1),
