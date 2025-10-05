@@ -53,14 +53,17 @@ set(dependencies
   # rclcpp_parameters
 )
 
-# Create particle filter library 
+# Create particle filter library
 add_library(${PROJECT_NAME}_lib SHARED
   src/monte_carlo_localization.cpp
-  src/parameter_manager.cpp
-  src/map_manager.cpp
-  src/initialization.cpp
-  src/visualization.cpp
-  src/utils.cpp
+  src/modules/parameter_manager.cpp
+  src/modules/map_manager.cpp
+  src/modules/initialization.cpp
+  src/modules/visualization.cpp
+  src/modules/utils.cpp
+  src/sensor_model/beam_sensor_model.cpp
+  src/sensor_model/likelihood_field_sensor_model.cpp
+  src/motion_model/odometry_motion_model.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
@@ -68,11 +71,14 @@ ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
 # Create executable for MCL node
 add_executable(mcl_node
   src/monte_carlo_localization.cpp
-  src/parameter_manager.cpp
-  src/map_manager.cpp
-  src/initialization.cpp
-  src/visualization.cpp
-  src/utils.cpp
+  src/modules/parameter_manager.cpp
+  src/modules/map_manager.cpp
+  src/modules/initialization.cpp
+  src/modules/visualization.cpp
+  src/modules/utils.cpp
+  src/sensor_model/beam_sensor_model.cpp
+  src/sensor_model/likelihood_field_sensor_model.cpp
+  src/motion_model/odometry_motion_model.cpp
 )
 
 target_link_libraries(mcl_node ${PROJECT_NAME}_lib)
