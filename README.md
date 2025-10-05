@@ -2,6 +2,23 @@
 
 High-performance particle filter localization for F1TENTH with unified real/simulation configuration.
 
+## Architecture
+
+**Modular Design** - Core components separated into specialized modules:
+
+- **Motion Model** (`motion_model/`) - Odometry-based particle propagation with noise
+- **Sensor Models** (`sensor_model/`) - Pluggable observation models:
+  - `beam` - Ray casting with multi-component mixture (hit/short/max/rand)
+  - `likelihood_field` - Precomputed distance field for faster updates
+- **Core Modules** (`modules/`) - Map management, visualization, initialization, utilities
+- **Main Node** - Particle filter loop with adaptive resampling
+
+**Sensor Model Selection** - Configure in `mcl_config.yaml`:
+```yaml
+sensor_model_type: "beam"              # or "likelihood_field"
+z_hit: 0.85  z_short: 0.01  z_max: 0.07  z_rand: 0.07  # Mixture weights
+```
+
 ## Quick Start
 
 ```bash
@@ -18,7 +35,8 @@ ros2 launch mcl_pkg mcl_launch.py mod:=sim
 # Bag playback
 ros2 launch mcl_pkg mcl_launch.py mod:=bag
 
-# To change map, launch with map_name:='your_map'
+# Change map via launch arg or config file
+ros2 launch mcl_pkg mcl_launch.py mod:=sim map_name:=fixmap_toolbox
 ```
 
 ## Launch Parameters
@@ -26,7 +44,7 @@ ros2 launch mcl_pkg mcl_launch.py mod:=bag
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `mod` | `real` | Launch mode: `real`, `sim`, or `bag` |
-| `map_name` | `sibal1` | Map file to load |
+| `map_name` | from config | Map file to load (overrides `config/mcl_config.yaml`) |
 | `use_rviz` | `true` | Launch RViz visualization |
 
 ## Topics
@@ -59,14 +77,19 @@ ros2 launch mcl_pkg mcl_launch.py mod:=bag
 Edit `config/mcl_config.yaml`:
 
 ```yaml
-# Core MCL
-max_particles: 4000           # Number of particles
-update_rate: 100              # Real (Hz) / 200 (sim)
-max_pose_range: 10000.0       # Map coordinate limits (m)
+# Sensor Model Selection
+sensor_model_type: "beam"                  # "beam" or "likelihood_field"
+z_hit: 0.85  z_short: 0.01  z_max: 0.07  z_rand: 0.07  # Mixture weights
 
-# Vehicle parameters (auto-set by sim_mode)
-# Real hardware: wheelbase=0.325, lidar_offset=0.288
-# Simulation: wheelbase=0.324, lidar_offset=0.25
+# Core MCL
+max_particles: 4000                        # Number of particles
+timer_frequency: 50.0                      # TF update rate (Hz)
+max_range: 8.5                            # Laser max range (m)
+
+# Map Configuration
+map_server:
+  ros__parameters:
+    map: 'fixmap_toolbox'                 # Default map (no .yaml extension)
 ```
 
 ## Initialization
@@ -91,9 +114,15 @@ Place map files in `maps/` directory:
 
 ## Algorithm
 
-Monte Carlo Localization with dual-rate architecture:
-- **High-frequency odometry tracking** (100-200 Hz): Smooth interpolation
-- **Low-frequency MCL corrections** (~6 Hz): Drift correction from sensors
+**Particle Filter Pipeline**:
+1. **Motion Update** - Propagate particles using odometry with noise model
+2. **Sensor Update** - Compute likelihood using selected sensor model (beam/likelihood_field)
+3. **Resampling** - Adaptive low-variance resampling when effective particles drop
+4. **Pose Estimation** - Weighted mean of particle cloud
+
+**Dual-Rate Architecture**:
+- **High-frequency TF publishing** (50 Hz): Smooth transform broadcast
+- **Event-driven MCL updates** (~40 Hz): Triggered by LiDAR scans
 
 ## Prerequisites
 
