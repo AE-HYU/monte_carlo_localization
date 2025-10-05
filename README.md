@@ -72,7 +72,7 @@ ros2 launch mcl_pkg mcl_launch.py mod:=sim map_name:=fixmap_toolbox
 - `/pf/viz/inferred_pose` - Estimated pose marker
 - `/map` - Map display
 
-**Note**: Planners/controllers should use TF lookup (e.g., `map → base_link` = `map→odom` ⊗ `odom→base_link`). Velocity from `/odom` topic. Topics `/pf/pose/odom`, `/pf/viz/inferred_pose` are for visualization only.
+**Note**: Planners/controllers should manually compose TF transforms (lookup `map→odom` and `odom→base_link` separately, then compose via rotation matrix). Use velocity from `/odom` topic. Topics `/pf/pose/odom`, `/pf/viz/inferred_pose` are for visualization only.
 
 ## Key Configuration
 
