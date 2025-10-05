@@ -70,4 +70,4 @@ mcl:
 map_server:
   ros__parameters:
     # Default map file (override with launch argument: map_name:='your_map')
-    map: 'sibal1'                      # Map name without .yaml extension
+    map: 'fixmap_toolbox'                      # Map name without .yaml extension

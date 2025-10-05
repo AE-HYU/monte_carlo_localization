@@ -20,6 +20,7 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Pyth
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 import os
+import yaml
 
 
 def generate_launch_description():
@@ -34,9 +35,28 @@ def generate_launch_description():
         description='Launch mode: real (real car using /odom), sim (simulation, use sim time, /ego_racecar/odom), bag (bag file play, use sim time, /odom)'
     )
     
+    # Read default map name from source config file
+    default_map_name = 'sibal1'  # Fallback default
+    try:
+        # Always read from source config
+        source_config = os.path.abspath(os.path.join(
+            get_package_share_directory('mcl_pkg'),
+            '..', '..', '..', '..', 'src', 'perception_ws', 'monte_carlo_localization', 'config', 'mcl_config.yaml'
+        ))
+        if os.path.exists(source_config):
+            with open(source_config, 'r') as f:
+                config_data = yaml.safe_load(f)
+                if 'map_server' in config_data and 'ros__parameters' in config_data['map_server']:
+                    map_param = config_data['map_server']['ros__parameters'].get('map')
+                    if map_param:
+                        default_map_name = map_param
+                        print(f"[MCL Launch] Using map from config: {default_map_name}")
+    except Exception as e:
+        print(f"[MCL Launch] Warning: Could not read map from config file: {e}")
+
     map_name_arg = DeclareLaunchArgument(
         'map_name',
-        default_value='sibal1',
+        default_value=default_map_name,
         description='Map name (without .yaml extension)'
     )
     
