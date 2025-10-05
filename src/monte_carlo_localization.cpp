@@ -377,19 +377,25 @@ void MCL::timer_update()
     }
  
 
-    // Performance logging (periodic)
+    // Performance logging (periodic) - only when MCL was updated
     static int update_count = 0;
-    if (++update_count % 100 == 0) {
-        auto timer_end = std::chrono::high_resolution_clock::now();
-        double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
+    static int mcl_update_count = 0;
+    update_count++;
 
-        // Build detailed performance message
-        std::string msg = "MCL #" + std::to_string(update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
-                         "Total: " + std::to_string(total_time) + "ms, " +
-                         "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
-                         "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
-                         "Pub: " + std::to_string(pub_time_ms) + "ms, " +
-                         "Particles: " + std::to_string(particle_time_ms) + "ms";
+    if (has_new_data) {
+        mcl_update_count++;
+
+        if (mcl_update_count % 100 == 0) {
+            auto timer_end = std::chrono::high_resolution_clock::now();
+            double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
+
+            // Build detailed performance message (all values from current update)
+            std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
+                             "Total: " + std::to_string(total_time) + "ms, " +
+                             "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
+                             "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
+                             "Pub: " + std::to_string(pub_time_ms) + "ms, " +
+                             "Particles: " + std::to_string(particle_time_ms) + "ms";
 
         // Add sensor model specific breakdown
         if (SENSOR_MODEL_TYPE == "beam") {
@@ -400,32 +406,48 @@ void MCL::timer_update()
             msg += " (LikelihoodField: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
         }
 
-        msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
-               std::to_string(current_pose_base[1]) + ", " +
-               std::to_string(current_pose_base[2]) + "]";
+            msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
+                   std::to_string(current_pose_base[1]) + ", " +
+                   std::to_string(current_pose_base[2]) + "]";
 
-        RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+            RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
 
-        // Reset timing stats for next 100 iterations
-        timing_stats_.reset();
+            // Reset timing stats for next 100 iterations
+            timing_stats_.reset();
+        }
     }
 }
 
 Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp)
 {
-    static rclcpp::Time last_processed_lidar_stamp = rclcpp::Time(0);
+    (void)current_lidar_stamp;  // Unused - we now use TimePointZero for latest TF
 
-    if (last_processed_lidar_stamp.nanoseconds() == 0) {
-        last_processed_lidar_stamp = current_lidar_stamp;
+    static Eigen::Vector3d last_pose = Eigen::Vector3d::Zero();
+    static bool first_call = true;
+
+    if (first_call) {
+        first_call = false;
+        try {
+            // Get initial pose using latest TF
+            auto transform = tf_buffer_->lookupTransform(
+                ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
+
+            last_pose = Eigen::Vector3d(
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                utils::geometry::quaternion_to_yaw(transform.transform.rotation)
+            );
+        } catch (tf2::TransformException &ex) {
+            RCLCPP_WARN(this->get_logger(), "Could not get initial TF: %s", ex.what());
+        }
         return Eigen::Vector3d::Zero();
     }
 
     try {
+        // Use latest available TF instead of waiting for specific timestamp
+        // This eliminates 10-20ms blocking delays in simulation
         auto current_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, current_lidar_stamp, tf2::durationFromSec(0.03));
-
-        auto previous_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, last_processed_lidar_stamp, tf2::durationFromSec(0.03));
+            ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
 
         Eigen::Vector3d current_pose(
             current_transform.transform.translation.x,
@@ -433,15 +455,11 @@ Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_li
             utils::geometry::quaternion_to_yaw(current_transform.transform.rotation)
         );
 
-        Eigen::Vector3d previous_pose(
-            previous_transform.transform.translation.x,
-            previous_transform.transform.translation.y,
-            utils::geometry::quaternion_to_yaw(previous_transform.transform.rotation)
-        );
+        // Calculate motion from last stored pose to current
+        Eigen::Vector3d motion = utils::transforms::calculate_lidar_frame_motion(current_pose, last_pose);
 
-        Eigen::Vector3d motion = utils::transforms::calculate_lidar_frame_motion(current_pose, previous_pose);
-        
-        last_processed_lidar_stamp = current_lidar_stamp;
+        // Store current pose for next iteration
+        last_pose = current_pose;
         return motion;
 
     } catch (tf2::TransformException &ex) {
