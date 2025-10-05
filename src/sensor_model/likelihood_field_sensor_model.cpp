@@ -15,6 +15,98 @@ namespace mcl_pkg {
 namespace sensor_model {
 
 /**
+ * @brief Helper function: Evaluate likelihood for a single particle
+ */
+static inline double evaluate_particle_likelihood(
+    MCL* node,
+    const Eigen::MatrixXd& proposal_dist,
+    const std::vector<float>& obs,
+    int particle_idx,
+    int num_rays,
+    double prob_uniform,
+    double resolution,
+    double origin_x,
+    double origin_y)
+{
+    double weight = 1.0;
+    const double px = proposal_dist(particle_idx, 0);
+    const double py = proposal_dist(particle_idx, 1);
+    const double ptheta = proposal_dist(particle_idx, 2);
+
+    // Precompute particle rotation once per particle
+    const double cos_theta = std::cos(ptheta);
+    const double sin_theta = std::sin(ptheta);
+
+    for (int j = 0; j < num_rays; ++j) {
+        const float obs_range = obs[j];
+
+        // === z_max component: max range measurements ===
+        if (obs_range >= node->MAX_RANGE_METERS) {
+            weight *= (node->Z_MAX * prob_uniform + node->Z_RAND * prob_uniform);
+            continue;
+        }
+
+        // === Invalid measurements: z_rand only ===
+        if (obs_range <= 0.0f) {
+            weight *= (node->Z_RAND * prob_uniform);
+            continue;
+        }
+
+        // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
+        const double local_x = obs_range * node->cos_table_[j];
+        const double local_y = obs_range * node->sin_table_[j];
+        const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
+        const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
+
+        // Convert to grid coordinates
+        int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
+        int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
+
+        // Out of bounds: z_rand only
+        if (grid_x < 0 || grid_x >= node->distance_field_width_ ||
+            grid_y < 0 || grid_y >= node->distance_field_height_) {
+            weight *= (node->Z_RAND * prob_uniform);
+            continue;
+        }
+
+        // Look up distance to nearest obstacle
+        int idx = grid_y * node->distance_field_width_ + grid_x;
+        float dist = node->distance_field_[idx];
+
+        // === z_hit component: Gaussian likelihood ===
+        int table_idx = std::min(static_cast<int>(dist / node->likelihood_table_resolution_),
+                                 node->likelihood_table_size_ - 1);
+        double prob_hit = node->likelihood_lookup_table_[table_idx];
+
+        // === z_short component: Exponential decay for short readings ===
+        // If endpoint is far from obstacles, there might be a dynamic obstacle blocking the ray
+        double prob_short = 0.0;
+        if (dist > obs_range * 0.3) {  // Endpoint is in free space
+            // Exponential model: shorter measurements more likely due to occlusion
+            prob_short = (2.0 / obs_range) * std::exp(-2.0 * obs_range);
+        }
+
+        // === Multi-component probability ===
+        double prob_total =
+            node->Z_HIT * prob_hit +
+            node->Z_SHORT * prob_short +
+            node->Z_MAX * prob_uniform +
+            node->Z_RAND * prob_uniform;
+
+        // Accumulate probability (add small epsilon for numerical stability)
+        weight *= (prob_total + 1e-6);
+    }
+
+    // Apply squash factor
+    if (weight > 0.0) {
+        return std::exp(node->INV_SQUASH_FACTOR * std::log(weight));
+    } else {
+        return 0.0;
+    }
+}
+
+
+/**
  * @brief Precomputes distance field using efficient two-pass distance transform
  */
 void precompute_distance_field(MCL* node)
@@ -240,160 +332,16 @@ void likelihood_field_sensor_update(MCL* node,
     if (node->USE_PARALLEL_RAYCASTING) {
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < node->MAX_PARTICLES; ++i) {
-            double weight = 1.0;
-            const double px = proposal_dist(i, 0);
-            const double py = proposal_dist(i, 1);
-            const double ptheta = proposal_dist(i, 2);
-
-            // Precompute particle rotation once per particle
-            const double cos_theta = std::cos(ptheta);
-            const double sin_theta = std::sin(ptheta);
-
-            for (int j = 0; j < num_rays; ++j) {
-                const float obs_range = obs[j];
-
-                // === z_max component: max range measurements ===
-                if (obs_range >= node->MAX_RANGE_METERS) {
-                    weight *= (node->Z_MAX * prob_uniform + node->Z_RAND * prob_uniform);
-                    continue;
-                }
-
-                // === Invalid measurements: z_rand only ===
-                if (obs_range <= 0.0f) {
-                    weight *= (node->Z_RAND * prob_uniform);
-                    continue;
-                }
-
-                // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
-                const double local_x = obs_range * node->cos_table_[j];
-                const double local_y = obs_range * node->sin_table_[j];
-                const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
-                const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
-
-                // Convert to grid coordinates
-                int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
-                int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
-
-                // Out of bounds: z_rand only
-                if (grid_x < 0 || grid_x >= node->distance_field_width_ ||
-                    grid_y < 0 || grid_y >= node->distance_field_height_) {
-                    weight *= (node->Z_RAND * prob_uniform);
-                    continue;
-                }
-
-                // Look up distance to nearest obstacle
-                int idx = grid_y * node->distance_field_width_ + grid_x;
-                float dist = node->distance_field_[idx];
-
-                // === z_hit component: Gaussian likelihood ===
-                int table_idx = std::min(static_cast<int>(dist / node->likelihood_table_resolution_),
-                                         node->likelihood_table_size_ - 1);
-                double prob_hit = node->likelihood_lookup_table_[table_idx];
-
-                // === z_short component: Exponential decay for short readings ===
-                // If endpoint is far from obstacles, there might be a dynamic obstacle blocking the ray
-                double prob_short = 0.0;
-                if (dist > obs_range * 0.3) {  // Endpoint is in free space
-                    // Exponential model: shorter measurements more likely due to occlusion
-                    prob_short = (2.0 / obs_range) * std::exp(-2.0 * obs_range);
-                }
-
-                // === Multi-component probability ===
-                double prob_total =
-                    node->Z_HIT * prob_hit +
-                    node->Z_SHORT * prob_short +
-                    node->Z_MAX * prob_uniform +
-                    node->Z_RAND * prob_uniform;
-
-                // Accumulate probability (add small epsilon for numerical stability)
-                weight *= (prob_total + 1e-6);
-            }
-
-            // Apply squash factor
-            if (weight > 0.0) {
-                weights[i] = std::exp(node->INV_SQUASH_FACTOR * std::log(weight));
-            } else {
-                weights[i] = 0.0;
-            }
+            weights[i] = evaluate_particle_likelihood(
+                node, proposal_dist, obs, i, num_rays, prob_uniform,
+                resolution, origin_x, origin_y);
         }
     } else {
         // Sequential version
         for (int i = 0; i < node->MAX_PARTICLES; ++i) {
-            double weight = 1.0;
-            const double px = proposal_dist(i, 0);
-            const double py = proposal_dist(i, 1);
-            const double ptheta = proposal_dist(i, 2);
-
-            // Precompute particle rotation once per particle
-            const double cos_theta = std::cos(ptheta);
-            const double sin_theta = std::sin(ptheta);
-
-            for (int j = 0; j < num_rays; ++j) {
-                const float obs_range = obs[j];
-
-                // === z_max component: max range measurements ===
-                if (obs_range >= node->MAX_RANGE_METERS) {
-                    weight *= (node->Z_MAX * prob_uniform + node->Z_RAND * prob_uniform);
-                    continue;
-                }
-
-                // === Invalid measurements: z_rand only ===
-                if (obs_range <= 0.0f) {
-                    weight *= (node->Z_RAND * prob_uniform);
-                    continue;
-                }
-
-                // Calculate endpoint of the beam in world coordinates using precomputed cos/sin
-                const double local_x = obs_range * node->cos_table_[j];
-                const double local_y = obs_range * node->sin_table_[j];
-                const double endpoint_x = px + (local_x * cos_theta - local_y * sin_theta);
-                const double endpoint_y = py + (local_x * sin_theta + local_y * cos_theta);
-
-                // Convert to grid coordinates
-                int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
-                int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
-
-                // Out of bounds: z_rand only
-                if (grid_x < 0 || grid_x >= node->distance_field_width_ ||
-                    grid_y < 0 || grid_y >= node->distance_field_height_) {
-                    weight *= (node->Z_RAND * prob_uniform);
-                    continue;
-                }
-
-                // Look up distance to nearest obstacle
-                int idx = grid_y * node->distance_field_width_ + grid_x;
-                float dist = node->distance_field_[idx];
-
-                // === z_hit component: Gaussian likelihood ===
-                int table_idx = std::min(static_cast<int>(dist / node->likelihood_table_resolution_),
-                                         node->likelihood_table_size_ - 1);
-                double prob_hit = node->likelihood_lookup_table_[table_idx];
-
-                // === z_short component: Exponential decay for short readings ===
-                // If endpoint is far from obstacles, there might be a dynamic obstacle blocking the ray
-                double prob_short = 0.0;
-                if (dist > obs_range * 0.3) {  // Endpoint is in free space
-                    // Exponential model: shorter measurements more likely due to occlusion
-                    prob_short = (2.0 / obs_range) * std::exp(-2.0 * obs_range);
-                }
-
-                // === Multi-component probability ===
-                double prob_total =
-                    node->Z_HIT * prob_hit +
-                    node->Z_SHORT * prob_short +
-                    node->Z_MAX * prob_uniform +
-                    node->Z_RAND * prob_uniform;
-
-                // Accumulate probability (add small epsilon for numerical stability)
-                weight *= (prob_total + 1e-6);
-            }
-
-            // Apply squash factor
-            if (weight > 0.0) {
-                weights[i] = std::exp(node->INV_SQUASH_FACTOR * std::log(weight));
-            } else {
-                weights[i] = 0.0;
-            }
+            weights[i] = evaluate_particle_likelihood(
+                node, proposal_dist, obs, i, num_rays, prob_uniform,
+                resolution, origin_x, origin_y);
         }
     }
 }

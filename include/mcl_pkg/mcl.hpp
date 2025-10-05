@@ -48,26 +48,10 @@ class MCL : public rclcpp::Node
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
 
-    // Sensor model helper functions (beam model)
-    void initialize_sensor_arrays(int num_rays, int total_queries);
-    void generate_ray_queries(const Eigen::MatrixXd &proposal_dist, int num_rays);
-    void calculate_particle_weights(const std::vector<float> &obs, int num_rays,
-                                   std::vector<double> &weights);
-
-    // Likelihood field sensor model
-    void precompute_distance_field();
-    void precompute_likelihood_lookup_table();
-    void likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
-                                       const std::vector<float> &obs,
-                                       std::vector<double> &weights);
-
     Eigen::Vector3d expected_pose();
 
     // --------------------------------- INITIALIZATION ---------------------------------
     void initParameters();  // Parameter validation with semantic checks
-    void initialize_global();
-    void initialize_particles_pose(const Eigen::Vector3d &pose);
-    void precompute_sensor_model();
 
     // --------------------------------- ROS2 CALLBACKS ---------------------------------
     void lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg);
@@ -79,20 +63,7 @@ class MCL : public rclcpp::Node
     rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(
         const std::vector<rclcpp::Parameter> &parameters);
 
-    // --------------------------------- MAP MANAGEMENT ---------------------------------
-    void get_omap();
-    void try_load_map();  // Non-blocking async map loading
-
-    // --------------------------------- OUTPUT & VISUALIZATION ---------------------------------
-    void publish_tf(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
-    void visualize(const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp = rclcpp::Time(0));
-    void publish_particles(const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp = rclcpp::Time(0));
-    
-    // --------------------------------- POSE MANAGEMENT ---------------------------------
-    bool is_pose_valid(const Eigen::Vector3d& pose);
-
     // --------------------------------- TF UTILITIES ---------------------------------
-    Eigen::Vector3d apply_tf_offset(const Eigen::Vector3d& pose_in_laser_frame);
     Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp);
 
     // --------------------------------- RAY CASTING ---------------------------------

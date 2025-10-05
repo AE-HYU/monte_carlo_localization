@@ -38,32 +38,6 @@ void get_omap(MCL* node);
  */
 void try_load_map(MCL* node);
 
-/**
- * @brief Precompute sensor model lookup table for all ranges
- *
- * Generates probability table for beam sensor model:
- * - p_hit: Gaussian around true range
- * - p_short: Exponential for early returns
- * - p_max: Probability of max range reading
- * - p_rand: Uniform random noise
- *
- * Lookup table indexed by: [observed_range_px][true_range_px]
- *
- * @param node Pointer to MCL node
- */
-void precompute_sensor_model(MCL* node);
-
-/**
- * @brief Precompute distance field for likelihood field sensor model
- *
- * Generates a distance transform of the map where each cell contains
- * the distance to the nearest obstacle. Used for faster sensor model
- * evaluation without ray casting.
- *
- * @param node Pointer to MCL node
- */
-void precompute_distance_field(MCL* node);
-
 } // namespace map_manager
 } // namespace mcl_pkg
 
