@@ -29,7 +29,6 @@ mcl:
 
     # === SENSOR MODEL ===
     sensor_model_type: "beam"                      # "beam" or "likelihood_field"
-    # sensor_model_type: "likelihood_field"          # "beam" or "likelihood_field"
 
     # Multi-component sensor model weights (used by BOTH beam and likelihood_field)
     # Must sum to 1.0 (auto-normalized if not)
