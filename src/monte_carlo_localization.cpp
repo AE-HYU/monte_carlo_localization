@@ -672,6 +672,7 @@ void MCL::precompute_likelihood_lookup_table()
 
 /**
  * @brief Likelihood field sensor model - no ray casting needed
+ * Multi-component model: z_hit (Gaussian) + z_short (Exponential) + z_max + z_rand
  */
 void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
                                         const std::vector<float> &obs,
@@ -698,6 +699,9 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
     double origin_x = local_map->info.origin.position.x;
     double origin_y = local_map->info.origin.position.y;
 
+    // Precompute uniform probability for z_max and z_rand
+    const double prob_uniform = 1.0 / MAX_RANGE_METERS;
+
     // Evaluate each particle (parallelize with OpenMP)
     if (USE_PARALLEL_RAYCASTING) {
         #pragma omp parallel for schedule(dynamic)
@@ -714,8 +718,15 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
             for (int j = 0; j < num_rays; ++j) {
                 const float obs_range = obs[j];
 
-                // Skip invalid measurements
-                if (obs_range >= MAX_RANGE_METERS || obs_range <= 0.0f) {
+                // === z_max component: max range measurements ===
+                if (obs_range >= MAX_RANGE_METERS) {
+                    weight *= (Z_MAX * prob_uniform + Z_RAND * prob_uniform);
+                    continue;
+                }
+
+                // === Invalid measurements: z_rand only ===
+                if (obs_range <= 0.0f) {
+                    weight *= (Z_RAND * prob_uniform);
                     continue;
                 }
 
@@ -729,9 +740,10 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
                 int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
                 int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
 
-                // Check bounds
+                // Out of bounds: z_rand only
                 if (grid_x < 0 || grid_x >= distance_field_width_ ||
                     grid_y < 0 || grid_y >= distance_field_height_) {
+                    weight *= (Z_RAND * prob_uniform);
                     continue;
                 }
 
@@ -739,13 +751,28 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
                 int idx = grid_y * distance_field_width_ + grid_x;
                 float dist = distance_field_[idx];
 
-                // Lookup Gaussian likelihood from precomputed table
+                // === z_hit component: Gaussian likelihood ===
                 int table_idx = std::min(static_cast<int>(dist / likelihood_table_resolution_),
                                          likelihood_table_size_ - 1);
-                double prob = likelihood_lookup_table_[table_idx];
+                double prob_hit = likelihood_lookup_table_[table_idx];
 
-                // Accumulate probability
-                weight *= (prob + 0.01);
+                // === z_short component: Exponential decay for short readings ===
+                // If endpoint is far from obstacles, there might be a dynamic obstacle blocking the ray
+                double prob_short = 0.0;
+                if (dist > obs_range * 0.3) {  // Endpoint is in free space
+                    // Exponential model: shorter measurements more likely due to occlusion
+                    prob_short = (2.0 / obs_range) * std::exp(-2.0 * obs_range);
+                }
+
+                // === Multi-component probability ===
+                double prob_total =
+                    Z_HIT * prob_hit +
+                    Z_SHORT * prob_short +
+                    Z_MAX * prob_uniform +
+                    Z_RAND * prob_uniform;
+
+                // Accumulate probability (add small epsilon for numerical stability)
+                weight *= (prob_total + 1e-6);
             }
 
             // Apply squash factor
@@ -770,8 +797,15 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
             for (int j = 0; j < num_rays; ++j) {
                 const float obs_range = obs[j];
 
-                // Skip invalid measurements
-                if (obs_range >= MAX_RANGE_METERS || obs_range <= 0.0f) {
+                // === z_max component: max range measurements ===
+                if (obs_range >= MAX_RANGE_METERS) {
+                    weight *= (Z_MAX * prob_uniform + Z_RAND * prob_uniform);
+                    continue;
+                }
+
+                // === Invalid measurements: z_rand only ===
+                if (obs_range <= 0.0f) {
+                    weight *= (Z_RAND * prob_uniform);
                     continue;
                 }
 
@@ -785,9 +819,10 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
                 int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
                 int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
 
-                // Check bounds
+                // Out of bounds: z_rand only
                 if (grid_x < 0 || grid_x >= distance_field_width_ ||
                     grid_y < 0 || grid_y >= distance_field_height_) {
+                    weight *= (Z_RAND * prob_uniform);
                     continue;
                 }
 
@@ -795,13 +830,28 @@ void MCL::likelihood_field_sensor_model(const Eigen::MatrixXd &proposal_dist,
                 int idx = grid_y * distance_field_width_ + grid_x;
                 float dist = distance_field_[idx];
 
-                // Lookup Gaussian likelihood from precomputed table
+                // === z_hit component: Gaussian likelihood ===
                 int table_idx = std::min(static_cast<int>(dist / likelihood_table_resolution_),
                                          likelihood_table_size_ - 1);
-                double prob = likelihood_lookup_table_[table_idx];
+                double prob_hit = likelihood_lookup_table_[table_idx];
 
-                // Accumulate probability
-                weight *= (prob + 0.01);
+                // === z_short component: Exponential decay for short readings ===
+                // If endpoint is far from obstacles, there might be a dynamic obstacle blocking the ray
+                double prob_short = 0.0;
+                if (dist > obs_range * 0.3) {  // Endpoint is in free space
+                    // Exponential model: shorter measurements more likely due to occlusion
+                    prob_short = (2.0 / obs_range) * std::exp(-2.0 * obs_range);
+                }
+
+                // === Multi-component probability ===
+                double prob_total =
+                    Z_HIT * prob_hit +
+                    Z_SHORT * prob_short +
+                    Z_MAX * prob_uniform +
+                    Z_RAND * prob_uniform;
+
+                // Accumulate probability (add small epsilon for numerical stability)
+                weight *= (prob_total + 1e-6);
             }
 
             // Apply squash factor

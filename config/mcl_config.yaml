@@ -9,7 +9,7 @@ mcl:
     max_particles: 4000                # Maximum number of particles
     min_particles: 500                 # Minimum number of particles (for adaptive resampling)
     max_viz_particles: 60              # Visualization downsampling
-    max_range: 9.0                    # Laser max range (m)
+    max_range: 8.5                    # Laser max range (m)
     max_pose_range: 10000.0           # Maximum valid pose coordinate range (m)
 
     # === TF CONTROL ===
@@ -31,16 +31,18 @@ mcl:
     # sensor_model_type: "beam"                      # "beam" or "likelihood_field"
     sensor_model_type: "likelihood_field"          # "beam" or "likelihood_field"
 
-
-    # Beam model parameters (used when sensor_model_type: "beam")
-    z_hit: 0.85                        # Weight for correct measurements
-    z_short: 0.01                      # Weight for short readings
+    # Multi-component sensor model weights (used by BOTH beam and likelihood_field)
+    # Must sum to 1.0 (auto-normalized if not)
+    z_hit: 0.85                        # Weight for correct measurements (Gaussian)
+    z_short: 0.01                      # Weight for short readings (dynamic obstacles, motion blur)
     z_max: 0.07                        # Weight for max range readings
-    z_rand: 0.07                       # Weight for random noise
-    sigma_hit: 5.0                     # Measurement noise std dev
+    z_rand: 0.07                       # Weight for random noise (reflections, interference)
 
-    # Likelihood field model parameters (used when sensor_model_type: "likelihood_field")
-    likelihood_sigma: 0.1              # Distance field Gaussian sigma (meters)
+    # Beam model specific parameters (only used when sensor_model_type: "beam")
+    sigma_hit: 5.0                     # Measurement noise std dev for beam model
+
+    # Likelihood field model specific parameters (only used when sensor_model_type: "likelihood_field")
+    likelihood_sigma: 0.05              # Distance field Gaussian sigma (meters)
 
     # === RAY CASTING ===
     angle_step: 15                     # Laser downsampling factor
@@ -53,7 +55,7 @@ mcl:
     odom_topic: "/odom"                # Odometry input topic
     publish_odom: true                 # Publish pose as odometry message
     viz: true                          # Enable particle visualization
-    timer_frequency: 100.0              # Timer frequency (Hz) - TF publishing rate (higher than LiDAR for smooth tracking)
+    timer_frequency: 50.0              # Timer frequency (Hz) - TF publishing rate (higher than LiDAR for smooth tracking)
 
     # === TF FRAME NAMES ===
     map_frame: "map"                   # Global reference frame
