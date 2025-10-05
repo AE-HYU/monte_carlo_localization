@@ -51,26 +51,28 @@ ros2 launch mcl_pkg mcl_launch.py mod:=sim map_name:=fixmap_toolbox
 
 ### Real Mode (`mod:=real`)
 - **Input**: `/scan`, `/odom` - LiDAR and odometry data
-- **Output**: `/pf/pose/odom` - Localized pose for planner/controller
-- **Transforms**: `map → base_link`
+- **Output**:
+  - `/pf/pose/odom` - Localized pose (for visualization/comparison)
+  - **TF**: `map → odom` (50 Hz) - Primary output for planners/controllers
+- **Usage**: Downstream nodes should use TF lookup `map → base_link` (composition of `map→odom` ⊗ `odom→base_link`)
 - **Timing**: Real time
 
 ### Simulation Mode (`mod:=sim`)
 - **Input**: `/scan`, `/ego_racecar/odom` - Simulation sensor data
-- **Output**: `/pf/pose/odom` - Localized pose
-- **Transforms**: `map → base_link`
+- **Output**: `/pf/pose/odom`, **TF**: `mcl_map → map` (for comparison with simulator)
 - **Timing**: Simulation time
 
 ### Bag Playback Mode (`mod:=bag`)
 - **Input**: `/scan`, `/odom` - Recorded LiDAR and odometry data
-- **Output**: `/pf/pose/odom` - Localized pose
-- **Transforms**: `map → base_link`
+- **Output**: `/pf/pose/odom`, **TF**: `map → odom`
 - **Timing**: Simulation time
 
 ### Visualization
 - `/pf/viz/particles` - Particle cloud
 - `/pf/viz/inferred_pose` - Estimated pose marker
 - `/map` - Map display
+
+**Note**: Planners/controllers should use TF lookup (e.g., `map → base_link` = `map→odom` ⊗ `odom→base_link`). Velocity from `/odom` topic. Topics `/pf/pose/odom`, `/pf/viz/inferred_pose` are for visualization only.
 
 ## Key Configuration
 
