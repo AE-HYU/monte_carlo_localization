@@ -17,7 +17,8 @@ namespace mcl_pkg
 namespace visualization
 {
 
-void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
+// Internal helper function for TF publishing
+static void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
     if (!node->PUBLISH_MAP_ODOM_TF) {
         return;
@@ -74,43 +75,18 @@ void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::
     }
 }
 
-void visualize(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
+void publish_localization(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
-    if (!node->DO_VIZ)
-        return;
+    rclcpp::Time pub_stamp = (stamp.nanoseconds() != 0) ? stamp : node->get_clock()->now();
 
-    rclcpp::Time viz_stamp = (stamp.nanoseconds() != 0) ? stamp : node->get_clock()->now();
+    // 1. Publish TF (map->odom)
+    publish_tf(node, base_link_pose, pub_stamp);
 
-    // RViz pose visualization (already in base_link frame)
-    if (node->pose_pub_ && node->pose_pub_->get_subscription_count() > 0)
-    {
-        geometry_msgs::msg::PoseStamped pose_msg;
-        pose_msg.header.stamp = viz_stamp;
-        pose_msg.header.frame_id = node->MAP_FRAME;
-
-        pose_msg.pose.position.x = base_link_pose[0];
-        pose_msg.pose.position.y = base_link_pose[1];
-        pose_msg.pose.position.z = 0.0;
-
-        tf2::Quaternion q;
-        q.setRPY(0, 0, base_link_pose[2]);
-        pose_msg.pose.orientation = tf2::toMsg(q);
-
-        node->pose_pub_->publish(pose_msg);
-    }
-
-    // Particle cloud visualization
-    if (node->particle_pub_)
-    {
-        std::lock_guard<std::mutex> lock(node->state_lock_);
-        publish_particles(node, node->particles_, viz_stamp);
-    }
-
-    // Odometry message
+    // 2. Publish Odometry message
     if (node->PUBLISH_ODOM && node->odom_pub_ && node->odom_pub_->get_subscription_count() > 0)
     {
         nav_msgs::msg::Odometry odom_msg;
-        odom_msg.header.stamp = viz_stamp;
+        odom_msg.header.stamp = pub_stamp;
         odom_msg.header.frame_id = node->MAP_FRAME;
         odom_msg.child_frame_id = node->BASE_FRAME;
 
@@ -124,9 +100,28 @@ void visualize(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::T
 
         node->odom_pub_->publish(odom_msg);
     }
+
+    // 3. Publish Pose visualization (RViz arrow)
+    if (node->DO_VIZ && node->pose_pub_ && node->pose_pub_->get_subscription_count() > 0)
+    {
+        geometry_msgs::msg::PoseStamped pose_msg;
+        pose_msg.header.stamp = pub_stamp;
+        pose_msg.header.frame_id = node->MAP_FRAME;
+
+        pose_msg.pose.position.x = base_link_pose[0];
+        pose_msg.pose.position.y = base_link_pose[1];
+        pose_msg.pose.position.z = 0.0;
+
+        tf2::Quaternion q;
+        q.setRPY(0, 0, base_link_pose[2]);
+        pose_msg.pose.orientation = tf2::toMsg(q);
+
+        node->pose_pub_->publish(pose_msg);
+    }
 }
 
-void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
+// Internal helper function for particle publishing
+static void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp)
 {
     geometry_msgs::msg::PoseArray particle_array;
     particle_array.header.stamp = stamp;
@@ -137,7 +132,7 @@ void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const
     for (int i = 0; i < viz_count; ++i)
     {
         Eigen::Vector3d laser_particle(particles_to_pub(i, 0), particles_to_pub(i, 1), particles_to_pub(i, 2));
-        
+
         // Convert laser frame to base_link frame
         Eigen::Vector3d base_particle = utils::transforms::apply_laser_to_base_offset(
             laser_particle, node->laser_offset_x_, node->laser_offset_y_);
@@ -155,6 +150,19 @@ void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const
     }
 
     node->particle_pub_->publish(particle_array);
+}
+
+void publish_particles_viz(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
+{
+    (void)base_link_pose;  // Unused parameter
+
+    if (!node->DO_VIZ || !node->particle_pub_)
+        return;
+
+    rclcpp::Time viz_stamp = (stamp.nanoseconds() != 0) ? stamp : node->get_clock()->now();
+
+    std::lock_guard<std::mutex> lock(node->state_lock_);
+    publish_particles(node, node->particles_, viz_stamp);
 }
 
 } // namespace visualization

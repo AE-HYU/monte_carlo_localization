@@ -18,19 +18,14 @@ namespace visualization
 {
 
 /**
- * @brief Publish map->odom TF transform
+ * @brief Publish TF, odometry, and pose at high frequency (called every timer tick)
  */
-void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
+void publish_localization(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
 
 /**
- * @brief Publish visualization data for RViz (pose, particles)
+ * @brief Publish particle cloud visualization (called only on MCL updates)
  */
-void visualize(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
-
-/**
- * @brief Publish particle array for RViz
- */
-void publish_particles(MCL* node, const Eigen::MatrixXd &particles_to_pub, const rclcpp::Time &stamp);
+void publish_particles_viz(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp);
 
 } // namespace visualization
 } // namespace mcl_pkg

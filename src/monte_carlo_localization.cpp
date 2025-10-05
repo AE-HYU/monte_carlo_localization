@@ -327,9 +327,13 @@ void MCL::timer_update()
     }
 
     // Update MCL only when new LiDAR data is available
+    double motion_calc_time_ms = 0.0;
     if (has_new_data) {
         // Calculate odometry motion
+        auto motion_start = std::chrono::high_resolution_clock::now();
         action = calculate_lidar_frame_motion(lidar_timestamp);
+        auto motion_end = std::chrono::high_resolution_clock::now();
+        motion_calc_time_ms = std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
         // Execute MCL with state lock
         if (!state_lock_.try_lock()) {
@@ -354,17 +358,23 @@ void MCL::timer_update()
     Eigen::Vector3d current_pose_base = utils::transforms::apply_laser_to_base_offset(
         current_pose_laser, laser_offset_x_, laser_offset_y_);
 
-    // Publish TF at timer frequency with latest sensor timestamp
+    // Publish localization output at timer frequency (50Hz)
     // Use latest sensor time instead of this->now() to avoid sim_time issues
-    rclcpp::Time tf_time = (latest_sensor_time.nanoseconds() > 0) ? latest_sensor_time : this->now();
-    visualization::publish_tf(this, current_pose_base, tf_time);
+    rclcpp::Time pub_time = (latest_sensor_time.nanoseconds() > 0) ? latest_sensor_time : this->now();
 
-    // Publish visualization only when MCL was updated
-    // if (has_new_data) {
-    //     visualization::visualize(this, current_pose_base, lidar_timestamp);
-    // }
-  
-    visualization::visualize(this, current_pose_base, lidar_timestamp);
+    auto pub_start = std::chrono::high_resolution_clock::now();
+    visualization::publish_localization(this, current_pose_base, pub_time);
+    auto pub_end = std::chrono::high_resolution_clock::now();
+    double pub_time_ms = std::chrono::duration<double, std::milli>(pub_end - pub_start).count();
+
+    // Publish particles only when MCL was updated (save bandwidth)
+    double particle_time_ms = 0.0;
+    if (has_new_data) {
+        auto particle_start = std::chrono::high_resolution_clock::now();
+        visualization::publish_particles_viz(this, current_pose_base, lidar_timestamp);
+        auto particle_end = std::chrono::high_resolution_clock::now();
+        particle_time_ms = std::chrono::duration<double, std::milli>(particle_end - particle_start).count();
+    }
  
 
     // Performance logging (periodic)
@@ -376,7 +386,10 @@ void MCL::timer_update()
         // Build detailed performance message
         std::string msg = "MCL #" + std::to_string(update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
                          "Total: " + std::to_string(total_time) + "ms, " +
-                         "MCL: " + std::to_string(mcl_processing_time_) + "ms";
+                         "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
+                         "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
+                         "Pub: " + std::to_string(pub_time_ms) + "ms, " +
+                         "Particles: " + std::to_string(particle_time_ms) + "ms";
 
         // Add sensor model specific breakdown
         if (SENSOR_MODEL_TYPE == "beam") {
