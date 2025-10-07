@@ -63,7 +63,7 @@ add_library(${PROJECT_NAME}_lib SHARED
   src/modules/utils.cpp
   src/sensor_model/beam_sensor_model.cpp
   src/sensor_model/likelihood_field_sensor_model.cpp
-  src/motion_model/odometry_motion_model.cpp
+  src/motion_model/simple_motion_model.cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}_lib ${dependencies})
@@ -78,7 +78,7 @@ add_executable(mcl_node
   src/modules/utils.cpp
   src/sensor_model/beam_sensor_model.cpp
   src/sensor_model/likelihood_field_sensor_model.cpp
-  src/motion_model/odometry_motion_model.cpp
+  src/motion_model/simple_motion_model.cpp
 )
 
 target_link_libraries(mcl_node ${PROJECT_NAME}_lib)

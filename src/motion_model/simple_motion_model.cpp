@@ -1,11 +1,11 @@
 // ================================================================================================
-// ODOMETRY MOTION MODEL - Implementation
+// SIMPLE MOTION MODEL - Implementation
 // ================================================================================================
-// Odometry-based motion model with Gaussian noise
-// Applies differential motion in robot's local frame with configurable noise parameters
+// Simplified motion model with fixed Gaussian noise
+// Directly transforms global pose changes to robot's local frame without RTR decomposition
 // ================================================================================================
 
-#include "mcl_pkg/motion_model/odometry_motion_model.hpp"
+#include "mcl_pkg/motion_model/simple_motion_model.hpp"
 #include "mcl_pkg/mcl.hpp"
 #include <vector>
 
@@ -13,11 +13,11 @@ namespace mcl_pkg {
 namespace motion_model {
 
 /**
- * @brief Applies odometry-based motion model to particles with Gaussian noise
+ * @brief Applies simple motion model to particles with fixed Gaussian noise
  */
-void odometry_motion_update(MCL* node,
-                            Eigen::MatrixXd& proposal_dist,
-                            const Eigen::Vector3d& action)
+void simple_motion_update(MCL* node,
+                          Eigen::MatrixXd& proposal_dist,
+                          const Eigen::Vector3d& action)
 {
     // Vectorized motion model implementation
     // Transform the action into the coordinate space of each particle

@@ -12,7 +12,7 @@
 #include "mcl_pkg/utils.hpp"
 #include "mcl_pkg/sensor_model/beam_sensor_model.hpp"
 #include "mcl_pkg/sensor_model/likelihood_field_sensor_model.hpp"
-#include "mcl_pkg/motion_model/odometry_motion_model.hpp"
+#include "mcl_pkg/motion_model/simple_motion_model.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -478,8 +478,8 @@ Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_li
  */
 void MCL::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
-    // Apply odometry-based motion model
-    motion_model::odometry_motion_update(this, proposal_dist, action);
+    // Apply simple motion model
+    motion_model::simple_motion_update(this, proposal_dist, action);
 }
 
 /**

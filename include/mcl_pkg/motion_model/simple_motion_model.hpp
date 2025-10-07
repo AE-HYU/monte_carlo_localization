@@ -1,12 +1,12 @@
 // ================================================================================================
-// ODOMETRY MOTION MODEL - Header
+// SIMPLE MOTION MODEL - Header
 // ================================================================================================
-// Odometry-based motion model with Gaussian noise
-// Applies differential motion in robot's local frame with configurable noise parameters
+// Simplified motion model with fixed Gaussian noise
+// Directly transforms global pose changes to robot's local frame without RTR decomposition
 // ================================================================================================
 
-#ifndef MCL_PKG__MOTION_MODEL__ODOMETRY_MOTION_MODEL_HPP_
-#define MCL_PKG__MOTION_MODEL__ODOMETRY_MOTION_MODEL_HPP_
+#ifndef MCL_PKG__MOTION_MODEL__SIMPLE_MOTION_MODEL_HPP_
+#define MCL_PKG__MOTION_MODEL__SIMPLE_MOTION_MODEL_HPP_
 
 #include <Eigen/Dense>
 
@@ -18,21 +18,21 @@ class MCL;
 namespace motion_model {
 
 /**
- * @brief Applies odometry-based motion model to particles with Gaussian noise
+ * @brief Applies simple motion model to particles with fixed Gaussian noise
  *
- * Transforms particles according to odometry action with added noise:
+ * Transforms particles according to motion with added noise:
  * - Converts local frame motion (dx, dy, dtheta) to global coordinates
- * - Adds Gaussian noise based on MOTION_DISPERSION parameters
+ * - Adds fixed Gaussian noise based on MOTION_DISPERSION parameters
  *
  * @param node Pointer to MCL node containing particles and parameters
  * @param proposal_dist Particle poses (Nx3: x, y, theta) - modified in place
  * @param action Motion command (dx, dy, dtheta) in local frame
  */
-void odometry_motion_update(MCL* node,
-                            Eigen::MatrixXd& proposal_dist,
-                            const Eigen::Vector3d& action);
+void simple_motion_update(MCL* node,
+                          Eigen::MatrixXd& proposal_dist,
+                          const Eigen::Vector3d& action);
 
 } // namespace motion_model
 } // namespace mcl_pkg
 
-#endif  // MCL_PKG__MOTION_MODEL__ODOMETRY_MOTION_MODEL_HPP_
+#endif  // MCL_PKG__MOTION_MODEL__SIMPLE_MOTION_MODEL_HPP_
