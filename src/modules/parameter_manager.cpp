@@ -38,9 +38,18 @@ void initParameters(MCL* node)
     node->declare_parameter("likelihood_sigma", 0.2);  // Sigma for likelihood field (meters)
 
     // Motion model parameters
+    node->declare_parameter("motion_model_type", "simple");  // "simple" or "odometry" (RTR)
+
+    // Simple motion model (fixed Gaussian noise)
     node->declare_parameter("motion_dispersion_x", 0.02);
     node->declare_parameter("motion_dispersion_y", 0.01);
     node->declare_parameter("motion_dispersion_theta", 0.05);
+
+    // Odometry motion model (RTR with alpha parameters)
+    node->declare_parameter("alpha1", 0.5);  // rotation → rotation
+    node->declare_parameter("alpha2", 0.02);  // translation → rotation
+    node->declare_parameter("alpha3", 1.0);  // translation → translation
+    node->declare_parameter("alpha4", 0.1);  // rotation → translation
 
     // Robot geometry
     node->declare_parameter("wheelbase", 0.324);
@@ -85,9 +94,18 @@ void initParameters(MCL* node)
     node->LIKELIHOOD_SIGMA = node->get_parameter("likelihood_sigma").as_double();
 
     // Motion model parameters
+    node->MOTION_MODEL_TYPE = node->get_parameter("motion_model_type").as_string();
+
+    // Simple motion model
     node->MOTION_DISPERSION_X = node->get_parameter("motion_dispersion_x").as_double();
     node->MOTION_DISPERSION_Y = node->get_parameter("motion_dispersion_y").as_double();
     node->MOTION_DISPERSION_THETA = node->get_parameter("motion_dispersion_theta").as_double();
+
+    // Odometry motion model (RTR)
+    node->ALPHA1 = node->get_parameter("alpha1").as_double();
+    node->ALPHA2 = node->get_parameter("alpha2").as_double();
+    node->ALPHA3 = node->get_parameter("alpha3").as_double();
+    node->ALPHA4 = node->get_parameter("alpha4").as_double();
 
     // Robot geometry
     node->WHEELBASE = node->get_parameter("wheelbase").as_double();
@@ -117,6 +135,13 @@ void initParameters(MCL* node)
         RCLCPP_WARN(node->get_logger(),
             "Invalid sensor_model_type '%s', using default 'beam'", node->SENSOR_MODEL_TYPE.c_str());
         node->SENSOR_MODEL_TYPE = "beam";
+    }
+
+    // Validate motion model type
+    if (node->MOTION_MODEL_TYPE != "simple" && node->MOTION_MODEL_TYPE != "odometry") {
+        RCLCPP_WARN(node->get_logger(),
+            "Invalid motion_model_type '%s', using default 'simple'", node->MOTION_MODEL_TYPE.c_str());
+        node->MOTION_MODEL_TYPE = "simple";
     }
 
     // Validate likelihood field sigma
@@ -174,7 +199,7 @@ void initParameters(MCL* node)
         node->SIGMA_HIT = 8.0;
     }
 
-    // Validate motion dispersion parameters
+    // Validate simple motion model parameters
     if (node->MOTION_DISPERSION_X < 0.0) {
         RCLCPP_WARN(node->get_logger(),
             "motion_dispersion_x negative, using absolute value");
@@ -189,6 +214,24 @@ void initParameters(MCL* node)
         RCLCPP_WARN(node->get_logger(),
             "motion_dispersion_theta negative, using absolute value");
         node->MOTION_DISPERSION_THETA = std::abs(node->MOTION_DISPERSION_THETA);
+    }
+
+    // Validate odometry motion model parameters (alpha)
+    if (node->ALPHA1 < 0.0) {
+        RCLCPP_WARN(node->get_logger(), "alpha1 negative, using absolute value");
+        node->ALPHA1 = std::abs(node->ALPHA1);
+    }
+    if (node->ALPHA2 < 0.0) {
+        RCLCPP_WARN(node->get_logger(), "alpha2 negative, using absolute value");
+        node->ALPHA2 = std::abs(node->ALPHA2);
+    }
+    if (node->ALPHA3 < 0.0) {
+        RCLCPP_WARN(node->get_logger(), "alpha3 negative, using absolute value");
+        node->ALPHA3 = std::abs(node->ALPHA3);
+    }
+    if (node->ALPHA4 < 0.0) {
+        RCLCPP_WARN(node->get_logger(), "alpha4 negative, using absolute value");
+        node->ALPHA4 = std::abs(node->ALPHA4);
     }
 
     // Validate max range

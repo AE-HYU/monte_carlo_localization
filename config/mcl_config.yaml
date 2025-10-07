@@ -19,10 +19,21 @@ mcl:
     # mod:=bag → true (MCL publishes map->odom)
     publish_map_odom_tf: true          # Publish map->odom transform (default for real robot)
 
-    # === MOTION MODEL NOISE ===
+    # === MOTION MODEL SELECTION ===
+    motion_model_type: "odometry"        # "simple" or "odometry" (RTR)
+
+    # === SIMPLE MOTION MODEL (fixed Gaussian noise) ===
     motion_dispersion_x: 0.010          # Forward motion noise (m)
     motion_dispersion_y: 0.01          # Lateral motion noise (m)
     motion_dispersion_theta: 0.05      # Rotation noise (rad)
+
+    # === ODOMETRY MOTION MODEL (RTR with motion-proportional noise) ===
+    # Based on Probabilistic Robotics Ch 5.4 (Thrun, Burgard, Fox)
+    # Tuned for F1TENTH high-speed racing scenarios
+    alpha1: 0.5                        # rotation → rotation noise
+    alpha2: 0.02                       # translation → rotation noise
+    alpha3: 1.0                        # translation → translation noise
+    alpha4: 0.1                        # rotation → translation noise
 
     # === ROBOT GEOMETRY ===
     wheelbase: 0.324                   # Distance between axles (m)

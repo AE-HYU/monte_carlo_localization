@@ -92,7 +92,13 @@ class MCL : public rclcpp::Node
     double LIKELIHOOD_SIGMA;  // Sigma for likelihood field model (meters)
 
     // --------------------------------- MOTION MODEL PARAMETERS ---------------------------------
+    std::string MOTION_MODEL_TYPE;  // "simple" or "odometry" (RTR)
+
+    // Simple motion model (fixed Gaussian noise)
     double MOTION_DISPERSION_X, MOTION_DISPERSION_Y, MOTION_DISPERSION_THETA;
+
+    // Odometry motion model (RTR with alpha parameters)
+    double ALPHA1, ALPHA2, ALPHA3, ALPHA4;
 
     // --------------------------------- ROBOT GEOMETRY PARAMETERS ---------------------------------
     double WHEELBASE;

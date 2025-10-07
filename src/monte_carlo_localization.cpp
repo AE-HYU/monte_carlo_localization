@@ -13,6 +13,7 @@
 #include "mcl_pkg/sensor_model/beam_sensor_model.hpp"
 #include "mcl_pkg/sensor_model/likelihood_field_sensor_model.hpp"
 #include "mcl_pkg/motion_model/simple_motion_model.hpp"
+#include "mcl_pkg/motion_model/odometry_motion_model.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -177,6 +178,8 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
+    RCLCPP_INFO(this->get_logger(), "Motion model: %s | Sensor model: %s",
+        MOTION_MODEL_TYPE.c_str(), SENSOR_MODEL_TYPE.c_str());
     RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
     RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
 }
@@ -478,8 +481,14 @@ Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_li
  */
 void MCL::motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action)
 {
-    // Apply simple motion model
-    motion_model::simple_motion_update(this, proposal_dist, action);
+    // Select motion model based on parameter
+    if (MOTION_MODEL_TYPE == "odometry") {
+        // RTR-based odometry motion model (Probabilistic Robotics Ch 5.4)
+        motion_model::odometry_motion_update(this, proposal_dist, action);
+    } else {
+        // Simple motion model (fixed Gaussian noise)
+        motion_model::simple_motion_update(this, proposal_dist, action);
+    }
 }
 
 /**

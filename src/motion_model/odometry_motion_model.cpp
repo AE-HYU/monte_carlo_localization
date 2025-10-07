@@ -1,0 +1,133 @@
+// ================================================================================================
+// ODOMETRY MOTION MODEL - Implementation
+// ================================================================================================
+// RTR (Rotation-Translation-Rotation) based motion model from Probabilistic Robotics
+// Chapter 5.4, Table 5.6: sample_motion_model_odometry
+// Reference: Thrun, Burgard, Fox - "Probabilistic Robotics" (2005), pp. 134-136
+// ================================================================================================
+
+#include "mcl_pkg/motion_model/odometry_motion_model.hpp"
+#include "mcl_pkg/mcl.hpp"
+#include <cmath>
+#include <vector>
+
+namespace mcl_pkg {
+namespace motion_model {
+
+/**
+ * @brief Applies RTR-based odometry motion model to particles
+ *
+ * Implements sample_motion_model_odometry from Probabilistic Robotics.
+ * Decomposes motion into rotation1 → translation → rotation2 sequence
+ * with motion-proportional Gaussian noise.
+ */
+void odometry_motion_update(MCL* node,
+                            Eigen::MatrixXd& proposal_dist,
+                            const Eigen::Vector3d& action)
+{
+    // Extract motion in local frame: [forward, lateral, rotation]
+    double delta_trans_local = std::sqrt(action[0] * action[0] + action[1] * action[1]);
+    double delta_rot_total = action[2];
+
+    // If motion is too small, skip (avoid numerical issues with atan2)
+    if (delta_trans_local < 1e-4 && std::abs(delta_rot_total) < 1e-4) {
+        return;
+    }
+
+    // ============================================================================
+    // RTR Decomposition
+    // ============================================================================
+
+    // rot1: Initial rotation to face the direction of translation
+    double delta_rot1 = 0.0;
+    if (delta_trans_local > 1e-4) {
+        delta_rot1 = std::atan2(action[1], action[0]);
+    }
+
+    // trans: Translation distance
+    double delta_trans = delta_trans_local;
+
+    // rot2: Final rotation to achieve target heading
+    double delta_rot2 = delta_rot_total - delta_rot1;
+
+    // Normalize angles to [-π, π]
+    auto normalize_angle = [](double angle) {
+        while (angle > M_PI) angle -= 2.0 * M_PI;
+        while (angle < -M_PI) angle += 2.0 * M_PI;
+        return angle;
+    };
+
+    delta_rot1 = normalize_angle(delta_rot1);
+    delta_rot2 = normalize_angle(delta_rot2);
+
+    // ============================================================================
+    // Generate noise samples for all particles (with RNG lock)
+    // ============================================================================
+
+    std::vector<double> noise_rot1_values(node->MAX_PARTICLES);
+    std::vector<double> noise_trans_values(node->MAX_PARTICLES);
+    std::vector<double> noise_rot2_values(node->MAX_PARTICLES);
+
+    {
+        std::lock_guard<std::mutex> lock(node->rng_lock_);
+
+        for (int i = 0; i < node->MAX_PARTICLES; ++i) {
+            // Alpha parameters: motion-proportional noise variances
+            // α1: rotation → rotation noise
+            // α2: translation → rotation noise
+            // α3: translation → translation noise
+            // α4: rotation → translation noise
+
+            // Variance calculation (as in Probabilistic Robotics)
+            double var_rot1 = node->ALPHA1 * delta_rot1 * delta_rot1 +
+                             node->ALPHA2 * delta_trans * delta_trans;
+            double var_trans = node->ALPHA3 * delta_trans * delta_trans +
+                              node->ALPHA4 * (delta_rot1 * delta_rot1 + delta_rot2 * delta_rot2);
+            double var_rot2 = node->ALPHA1 * delta_rot2 * delta_rot2 +
+                             node->ALPHA2 * delta_trans * delta_trans;
+
+            // Sample from Gaussian (std dev = sqrt(variance))
+            noise_rot1_values[i] = node->normal_dist_(node->rng_) * std::sqrt(var_rot1);
+            noise_trans_values[i] = node->normal_dist_(node->rng_) * std::sqrt(var_trans);
+            noise_rot2_values[i] = node->normal_dist_(node->rng_) * std::sqrt(var_rot2);
+        }
+    }
+
+    // ============================================================================
+    // Apply noisy motion to each particle
+    // ============================================================================
+
+    for (int i = 0; i < node->MAX_PARTICLES; ++i) {
+        // Apply noise to motion parameters
+        double delta_rot1_hat = delta_rot1 - noise_rot1_values[i];
+        double delta_trans_hat = delta_trans - noise_trans_values[i];
+        double delta_rot2_hat = delta_rot2 - noise_rot2_values[i];
+
+        // Get current particle pose
+        double x = proposal_dist(i, 0);
+        double y = proposal_dist(i, 1);
+        double theta = proposal_dist(i, 2);
+
+        // Apply RTR motion
+        // 1. Rotate to face translation direction
+        theta += delta_rot1_hat;
+
+        // 2. Translate forward
+        x += delta_trans_hat * std::cos(theta);
+        y += delta_trans_hat * std::sin(theta);
+
+        // 3. Rotate to final heading
+        theta += delta_rot2_hat;
+
+        // Normalize final angle
+        theta = normalize_angle(theta);
+
+        // Update particle
+        proposal_dist(i, 0) = x;
+        proposal_dist(i, 1) = y;
+        proposal_dist(i, 2) = theta;
+    }
+}
+
+} // namespace motion_model
+} // namespace mcl_pkg
