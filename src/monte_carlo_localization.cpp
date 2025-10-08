@@ -644,23 +644,15 @@ double MCL::calculate_ess()
  */
 void MCL::resample()
 {
-    // Allocate resampled particles buffer
-    Eigen::MatrixXd resampled_particles(MAX_PARTICLES, 3);
-
-    // Select resampling method
+    // Select resampling method and resample directly into particles_
     if (RESAMPLING_TYPE == "low_variance")
     {
-        // Low Variance Sampler (systematic resampling)
-        resampling_model::low_variance_resample(this, proposal_distribution_, weights_, resampled_particles);
+        resampling_model::low_variance_resample(this, proposal_distribution_, weights_, particles_);
     }
     else
     {
-        // Multinomial resampling (default)
-        resampling_model::multinomial_resample(this, proposal_distribution_, weights_, resampled_particles);
+        resampling_model::multinomial_resample(this, proposal_distribution_, weights_, particles_);
     }
-
-    // Update particles with resampled set
-    particles_ = resampled_particles;
 
     // Reset weights to uniform after resampling
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
