@@ -44,6 +44,9 @@ mcl:
                                        # 0.3 = aggressive (less resampling, more diversity)
                                        # 0.5 = balanced (recommended for F1Tenth)
                                        # 0.7 = conservative (more resampling, more accuracy)
+    resampling_type: "low_variance"    # Resampling method: "multinomial" or "low_variance"
+                                       # multinomial: Standard independent sampling (high variance)
+                                       # low_variance: Systematic sampling (low variance, recommended)
 
     # === SENSOR MODEL ===
     sensor_model_type: "beam"                      # "beam" or "likelihood_field"

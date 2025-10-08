@@ -57,6 +57,7 @@ void initParameters(MCL* node)
     // Resampling parameters
     node->declare_parameter("use_adaptive_resampling", true);   // Enable adaptive resampling
     node->declare_parameter("ess_threshold", 0.5);              // ESS threshold (0.0-1.0)
+    node->declare_parameter("resampling_type", "low_variance"); // "multinomial" or "low_variance"
 
     // ROS interface
     node->declare_parameter("scan_topic", "/scan");
@@ -117,6 +118,7 @@ void initParameters(MCL* node)
     // Resampling parameters
     node->USE_ADAPTIVE_RESAMPLING = node->get_parameter("use_adaptive_resampling").as_bool();
     node->ESS_THRESHOLD = node->get_parameter("ess_threshold").as_double();
+    node->RESAMPLING_TYPE = node->get_parameter("resampling_type").as_string();
 
     // ROS interface
     node->PUBLISH_ODOM = node->get_parameter("publish_odom").as_bool();
@@ -191,6 +193,13 @@ void initParameters(MCL* node)
         RCLCPP_WARN(node->get_logger(),
             "ess_threshold must be between 0.0 and 1.0, got %.3f. Using default 0.5", node->ESS_THRESHOLD);
         node->ESS_THRESHOLD = 0.5;
+    }
+
+    // Validate resampling type
+    if (node->RESAMPLING_TYPE != "multinomial" && node->RESAMPLING_TYPE != "low_variance") {
+        RCLCPP_WARN(node->get_logger(),
+            "Invalid resampling_type '%s', using default 'low_variance'", node->RESAMPLING_TYPE.c_str());
+        node->RESAMPLING_TYPE = "low_variance";
     }
 
     // Validate sensor model weights sum to 1.0

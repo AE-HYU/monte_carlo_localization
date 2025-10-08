@@ -14,6 +14,8 @@
 #include "mcl_pkg/sensor_model/likelihood_field_sensor_model.hpp"
 #include "mcl_pkg/motion_model/simple_motion_model.hpp"
 #include "mcl_pkg/motion_model/odometry_motion_model.hpp"
+#include "mcl_pkg/resampling_model/multinomial_resampling.hpp"
+#include "mcl_pkg/resampling_model/low_variance_resampling.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -178,8 +180,9 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
         TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
-    RCLCPP_INFO(this->get_logger(), "Motion model: %s | Sensor model: %s",
-        MOTION_MODEL_TYPE.c_str(), SENSOR_MODEL_TYPE.c_str());
+    RCLCPP_INFO(this->get_logger(), "Motion model: %s | Sensor model: %s | Resampling: %s%s",
+        MOTION_MODEL_TYPE.c_str(), SENSOR_MODEL_TYPE.c_str(), RESAMPLING_TYPE.c_str(),
+        USE_ADAPTIVE_RESAMPLING ? " (adaptive)" : "");
     RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
     RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
 }
@@ -634,29 +637,30 @@ double MCL::calculate_ess()
 }
 
 /**
- * @brief Execute multinomial resampling
+ * @brief Execute resampling using selected method
  *
- * Samples MAX_PARTICLES new particles from proposal_distribution_
- * according to weights_. Resets weights to uniform after resampling.
+ * Dispatches to either multinomial or low variance resampling based on
+ * RESAMPLING_TYPE parameter. Resets weights to uniform after resampling.
  */
 void MCL::resample()
 {
-    std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
-    std::vector<int> resample_indices(MAX_PARTICLES);
+    // Allocate resampled particles buffer
+    Eigen::MatrixXd resampled_particles(MAX_PARTICLES, 3);
 
+    // Select resampling method
+    if (RESAMPLING_TYPE == "low_variance")
     {
-        std::lock_guard<std::mutex> lock(rng_lock_);
-        for (int i = 0; i < MAX_PARTICLES; ++i)
-        {
-            resample_indices[i] = particle_dist(rng_);
-        }
+        // Low Variance Sampler (systematic resampling)
+        resampling_model::low_variance_resample(this, proposal_distribution_, weights_, resampled_particles);
+    }
+    else
+    {
+        // Multinomial resampling (default)
+        resampling_model::multinomial_resample(this, proposal_distribution_, weights_, resampled_particles);
     }
 
-    // Copy resampled particles to main particle set
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        particles_.row(i) = proposal_distribution_.row(resample_indices[i]);
-    }
+    // Update particles with resampled set
+    particles_ = resampled_particles;
 
     // Reset weights to uniform after resampling
     std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);

@@ -110,6 +110,7 @@ class MCL : public rclcpp::Node
     // --------------------------------- RESAMPLING PARAMETERS ---------------------------------
     bool USE_ADAPTIVE_RESAMPLING;  // Enable/disable adaptive resampling
     double ESS_THRESHOLD;           // ESS threshold for resampling (0.0-1.0)
+    std::string RESAMPLING_TYPE;    // Resampling method: "multinomial" or "low_variance"
 
     // --------------------------------- TF FRAME NAMES ---------------------------------
     std::string MAP_FRAME;
