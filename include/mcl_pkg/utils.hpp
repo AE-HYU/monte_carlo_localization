@@ -64,7 +64,12 @@ namespace performance
     double resampling_time = 0.0;
     double query_prep_time = 0.0;
     int measurement_count = 0;
-    
+
+    // ESS statistics
+    double ess_sum = 0.0;          // Cumulative ESS for averaging
+    int ess_count = 0;             // Number of ESS measurements
+    int resample_count = 0;        // Number of times resampled
+
     void reset();
     void print_stats(const std::function<void(const std::string&)>& logger) const;
   };

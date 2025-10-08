@@ -127,6 +127,11 @@ void TimingStats::reset()
     resampling_time = 0.0;
     query_prep_time = 0.0;
     measurement_count = 0;
+
+    // Reset ESS statistics
+    ess_sum = 0.0;
+    ess_count = 0;
+    resample_count = 0;
 }
 
 // Print performance statistics using provided logger function

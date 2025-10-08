@@ -50,6 +50,10 @@ class MCL : public rclcpp::Node
 
     Eigen::Vector3d expected_pose();
 
+    // --------------------------------- RESAMPLING ---------------------------------
+    double calculate_ess();  // Calculate Effective Sample Size
+    void resample();         // Execute resampling (multinomial)
+
     // --------------------------------- INITIALIZATION ---------------------------------
     void initParameters();  // Parameter validation with semantic checks
 
@@ -103,6 +107,9 @@ class MCL : public rclcpp::Node
     // --------------------------------- ROBOT GEOMETRY PARAMETERS ---------------------------------
     double WHEELBASE;
 
+    // --------------------------------- RESAMPLING PARAMETERS ---------------------------------
+    bool USE_ADAPTIVE_RESAMPLING;  // Enable/disable adaptive resampling
+    double ESS_THRESHOLD;           // ESS threshold for resampling (0.0-1.0)
 
     // --------------------------------- TF FRAME NAMES ---------------------------------
     std::string MAP_FRAME;

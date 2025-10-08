@@ -54,6 +54,10 @@ void initParameters(MCL* node)
     // Robot geometry
     node->declare_parameter("wheelbase", 0.324);
 
+    // Resampling parameters
+    node->declare_parameter("use_adaptive_resampling", true);   // Enable adaptive resampling
+    node->declare_parameter("ess_threshold", 0.5);              // ESS threshold (0.0-1.0)
+
     // ROS interface
     node->declare_parameter("scan_topic", "/scan");
     node->declare_parameter("odom_topic", "/odom");
@@ -109,6 +113,10 @@ void initParameters(MCL* node)
 
     // Robot geometry
     node->WHEELBASE = node->get_parameter("wheelbase").as_double();
+
+    // Resampling parameters
+    node->USE_ADAPTIVE_RESAMPLING = node->get_parameter("use_adaptive_resampling").as_bool();
+    node->ESS_THRESHOLD = node->get_parameter("ess_threshold").as_double();
 
     // ROS interface
     node->PUBLISH_ODOM = node->get_parameter("publish_odom").as_bool();
@@ -176,6 +184,13 @@ void initParameters(MCL* node)
         RCLCPP_ERROR(node->get_logger(),
             "angle_step must be positive, got %d. Using default 18", node->ANGLE_STEP);
         node->ANGLE_STEP = 18;
+    }
+
+    // Validate ESS threshold
+    if (node->ESS_THRESHOLD < 0.0 || node->ESS_THRESHOLD > 1.0) {
+        RCLCPP_WARN(node->get_logger(),
+            "ess_threshold must be between 0.0 and 1.0, got %.3f. Using default 0.5", node->ESS_THRESHOLD);
+        node->ESS_THRESHOLD = 0.5;
     }
 
     // Validate sensor model weights sum to 1.0

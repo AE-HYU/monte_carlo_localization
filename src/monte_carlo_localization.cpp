@@ -413,6 +413,15 @@ void MCL::timer_update()
             msg += " (LikelihoodField: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
         }
 
+            // Add ESS statistics if adaptive resampling is enabled
+            if (USE_ADAPTIVE_RESAMPLING && timing_stats_.ess_count > 0) {
+                double avg_ess = timing_stats_.ess_sum / timing_stats_.ess_count;
+                double resample_rate = (static_cast<double>(timing_stats_.resample_count) / timing_stats_.ess_count) * 100.0;
+                msg += ", ESS: " + std::to_string(static_cast<int>(avg_ess)) + "/" + std::to_string(MAX_PARTICLES) +
+                       " (" + std::to_string(static_cast<int>(avg_ess * 100.0 / MAX_PARTICLES)) + "%), " +
+                       "Resample: " + std::to_string(static_cast<int>(resample_rate)) + "%";
+            }
+
             msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
                    std::to_string(current_pose_base[1]) + ", " +
                    std::to_string(current_pose_base[2]) + "]";
@@ -598,6 +607,62 @@ float MCL::cast_ray(double x, double y, double angle,
 }
 
 /**
+ * @brief Calculate Effective Sample Size (ESS)
+ * @return ESS value (1 to MAX_PARTICLES)
+ *
+ * ESS measures the diversity of particle weights.
+ * ESS = 1 / Σ(w_i²)
+ *
+ * - ESS = MAX_PARTICLES: all weights equal (ideal)
+ * - ESS = 1: one particle has all weight (degenerate)
+ */
+double MCL::calculate_ess()
+{
+    double sum_sq = 0.0;
+    for (const auto& w : weights_)
+    {
+        sum_sq += w * w;
+    }
+
+    // Avoid division by zero
+    if (sum_sq < 1e-10)
+    {
+        return 0.0;
+    }
+
+    return 1.0 / sum_sq;
+}
+
+/**
+ * @brief Execute multinomial resampling
+ *
+ * Samples MAX_PARTICLES new particles from proposal_distribution_
+ * according to weights_. Resets weights to uniform after resampling.
+ */
+void MCL::resample()
+{
+    std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
+    std::vector<int> resample_indices(MAX_PARTICLES);
+
+    {
+        std::lock_guard<std::mutex> lock(rng_lock_);
+        for (int i = 0; i < MAX_PARTICLES; ++i)
+        {
+            resample_indices[i] = particle_dist(rng_);
+        }
+    }
+
+    // Copy resampled particles to main particle set
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        particles_.row(i) = proposal_distribution_.row(resample_indices[i]);
+    }
+
+    // Reset weights to uniform after resampling
+    std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
+}
+
+/**
  * @brief Executes complete MCL cycle: predict, update, normalize, resample
  */
 void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
@@ -625,28 +690,40 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
         }
     }
 
-    // 4. Multinomial resampling - generate all indices at once
+    // 4. Adaptive Resampling (with ESS check if enabled)
     auto resample_start = std::chrono::high_resolution_clock::now();
-    std::discrete_distribution<int> particle_dist(weights_.begin(), weights_.end());
-    std::vector<int> resample_indices(MAX_PARTICLES);
 
+    if (USE_ADAPTIVE_RESAMPLING)
     {
-        std::lock_guard<std::mutex> lock(rng_lock_);
-        for (int i = 0; i < MAX_PARTICLES; ++i)
+        // Calculate Effective Sample Size
+        double ess = calculate_ess();
+        double ess_threshold_particles = MAX_PARTICLES * ESS_THRESHOLD;
+
+        // Update ESS statistics
+        timing_stats_.ess_sum += ess;
+        timing_stats_.ess_count++;
+
+        if (ess < ess_threshold_particles)
         {
-            resample_indices[i] = particle_dist(rng_);
+            // ESS too low → resample
+            resample();
+            timing_stats_.resample_count++;
+            RCLCPP_DEBUG(this->get_logger(), "Resampled (ESS: %.1f < %.1f)", ess, ess_threshold_particles);
+        }
+        else
+        {
+            // ESS good → just update particles without resampling
+            particles_ = proposal_distribution_;
+            RCLCPP_DEBUG(this->get_logger(), "No resample (ESS: %.1f >= %.1f)", ess, ess_threshold_particles);
         }
     }
-
-    // Copy resampled particles to main particle set
-    for (int i = 0; i < MAX_PARTICLES; ++i)
+    else
     {
-        particles_.row(i) = proposal_distribution_.row(resample_indices[i]);
+        // Always resample (original behavior)
+        resample();
+        timing_stats_.resample_count++;
     }
-    
-    // Reset weights to uniform after resampling
-    std::fill(weights_.begin(), weights_.end(), 1.0 / MAX_PARTICLES);
-    
+
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
     

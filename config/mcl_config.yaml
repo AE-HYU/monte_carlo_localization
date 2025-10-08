@@ -38,6 +38,13 @@ mcl:
     # === ROBOT GEOMETRY ===
     wheelbase: 0.324                   # Distance between axles (m)
 
+    # === RESAMPLING ===
+    use_adaptive_resampling: true      # Enable adaptive resampling (true/false)
+    ess_threshold: 0.5                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
+                                       # 0.3 = aggressive (less resampling, more diversity)
+                                       # 0.5 = balanced (recommended for F1Tenth)
+                                       # 0.7 = conservative (more resampling, more accuracy)
+
     # === SENSOR MODEL ===
     sensor_model_type: "beam"                      # "beam" or "likelihood_field"
 
