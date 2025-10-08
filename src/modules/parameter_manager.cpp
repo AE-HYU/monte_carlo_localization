@@ -50,6 +50,8 @@ void initParameters(MCL* node)
     node->declare_parameter("alpha2", 0.02);  // translation → rotation
     node->declare_parameter("alpha3", 1.0);  // translation → translation
     node->declare_parameter("alpha4", 0.1);  // rotation → translation
+    node->declare_parameter("small_trans_threshold", 0.001);  // Small motion threshold (m)
+    node->declare_parameter("small_rot_threshold", 0.001);    // Small rotation threshold (rad)
 
     // Robot geometry
     node->declare_parameter("wheelbase", 0.324);
@@ -111,6 +113,8 @@ void initParameters(MCL* node)
     node->ALPHA2 = node->get_parameter("alpha2").as_double();
     node->ALPHA3 = node->get_parameter("alpha3").as_double();
     node->ALPHA4 = node->get_parameter("alpha4").as_double();
+    node->SMALL_TRANS_THRESHOLD = node->get_parameter("small_trans_threshold").as_double();
+    node->SMALL_ROT_THRESHOLD = node->get_parameter("small_rot_threshold").as_double();
 
     // Robot geometry
     node->WHEELBASE = node->get_parameter("wheelbase").as_double();

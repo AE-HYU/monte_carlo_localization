@@ -35,6 +35,10 @@ mcl:
     alpha3: 1.0                        # translation → translation noise
     alpha4: 0.1                        # rotation → translation noise
 
+    # Small motion thresholds (below these, use minimal noise instead of RTR model)
+    small_trans_threshold: 0.001       # Translation threshold (m) - 1mm
+    small_rot_threshold: 0.001         # Rotation threshold (rad) - ~0.057 degrees
+
     # === ROBOT GEOMETRY ===
     wheelbase: 0.324                   # Distance between axles (m)
 

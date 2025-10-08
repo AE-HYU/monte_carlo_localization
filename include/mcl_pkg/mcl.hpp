@@ -103,6 +103,7 @@ class MCL : public rclcpp::Node
 
     // Odometry motion model (RTR with alpha parameters)
     double ALPHA1, ALPHA2, ALPHA3, ALPHA4;
+    double SMALL_TRANS_THRESHOLD, SMALL_ROT_THRESHOLD;  // Small motion thresholds
 
     // --------------------------------- ROBOT GEOMETRY PARAMETERS ---------------------------------
     double WHEELBASE;
