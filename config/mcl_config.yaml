@@ -20,20 +20,20 @@ mcl:
     publish_map_odom_tf: true          # Publish map->odom transform (default for real robot)
 
     # === MOTION MODEL SELECTION ===
-    motion_model_type: "odometry"        # "simple" or "odometry" (RTR)
+    motion_model_type: "simple"        # "simple" or "odometry" (RTR)
 
     # === SIMPLE MOTION MODEL (fixed Gaussian noise) ===
-    motion_dispersion_x: 0.010          # Forward motion noise (m)
-    motion_dispersion_y: 0.01          # Lateral motion noise (m)
-    motion_dispersion_theta: 0.05      # Rotation noise (rad)
+    motion_dispersion_x: 0.017          # Forward motion noise (m)
+    motion_dispersion_y: 0.012          # Lateral motion noise (m)
+    motion_dispersion_theta: 0.065      # Rotation noise (rad)
 
     # === ODOMETRY MOTION MODEL (RTR with motion-proportional noise) ===
     # Based on Probabilistic Robotics Ch 5.4 (Thrun, Burgard, Fox)
     # Tuned for F1TENTH high-speed racing scenarios
-    alpha1: 0.5                        # rotation → rotation noise
+    alpha1: 0.2                        # rotation → rotation noise
     alpha2: 0.02                       # translation → rotation noise
-    alpha3: 1.0                        # translation → translation noise
-    alpha4: 0.1                        # rotation → translation noise
+    alpha3: 0.7                        # translation → translation noise
+    alpha4: 0.08                        # rotation → translation noise
 
     # Small motion thresholds (below these, use minimal noise instead of RTR model)
     small_trans_threshold: 0.001       # Translation threshold (m) - 1mm
@@ -53,7 +53,7 @@ mcl:
                                        # low_variance: Systematic sampling (low variance, recommended)
 
     # === SENSOR MODEL ===
-    sensor_model_type: "beam"                      # "beam" or "likelihood_field"
+    sensor_model_type: "likelihood_field"                      # "beam" or "likelihood_field"
 
     # Multi-component sensor model weights (used by BOTH beam and likelihood_field)
     # Must sum to 1.0 (auto-normalized if not)

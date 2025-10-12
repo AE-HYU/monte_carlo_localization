@@ -336,76 +336,66 @@ void MCL::timer_update()
         }
     }
 
-    // Update MCL only when new LiDAR data is available
-    double motion_calc_time_ms = 0.0;
-    if (has_new_data) {
-        // Calculate odometry motion
-        auto motion_start = std::chrono::high_resolution_clock::now();
-        action = calculate_lidar_frame_motion(lidar_timestamp);
-        auto motion_end = std::chrono::high_resolution_clock::now();
-        motion_calc_time_ms = std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
-
-        // Execute MCL with state lock
-        if (!state_lock_.try_lock()) {
-            RCLCPP_INFO(this->get_logger(), "MCL update skipped - previous update still running");
-            // Don't return - still publish TF with current pose
-        } else {
-            auto mcl_start = std::chrono::high_resolution_clock::now();
-            run_mcl(action, observation);
-            auto mcl_end = std::chrono::high_resolution_clock::now();
-
-            mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
-            state_lock_.unlock();
-        }
+    // Early return if no new LiDAR data (save CPU, prevent stale TF republishing)
+    if (!has_new_data) {
+        RCLCPP_WARN(this->get_logger(), "No new LiDAR data - skipping MCL update");
+        return;
     }
 
-    // Always publish TF with latest estimated pose (even without new LiDAR)
-    state_lock_.lock();
+    // Calculate odometry motion
+    auto motion_start = std::chrono::high_resolution_clock::now();
+    action = calculate_lidar_frame_motion(lidar_timestamp);
+    auto motion_end = std::chrono::high_resolution_clock::now();
+    double motion_calc_time_ms = std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
+
+    // Execute MCL with state lock
+    if (!state_lock_.try_lock()) {
+        RCLCPP_WARN(this->get_logger(), "MCL update skipped - previous update still running");
+        return;  // Skip this update entirely if previous one is still running
+    }
+
+    auto mcl_start = std::chrono::high_resolution_clock::now();
+    run_mcl(action, observation);
+    auto mcl_end = std::chrono::high_resolution_clock::now();
+    mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+
+    // Expected pose calculation (state_lock already held)
     Eigen::Vector3d current_pose_laser = expected_pose();
+
     state_lock_.unlock();
 
     // Convert laser frame to base_link
     Eigen::Vector3d current_pose_base = utils::transforms::apply_laser_to_base_offset(
         current_pose_laser, laser_offset_x_, laser_offset_y_);
 
-    // Publish localization output at timer frequency (50Hz)
-    // Use latest sensor time instead of this->now() to avoid sim_time issues
-    rclcpp::Time pub_time = (latest_sensor_time.nanoseconds() > 0) ? latest_sensor_time : this->now();
-
+    // Publish localization output synchronized with LiDAR data
     auto pub_start = std::chrono::high_resolution_clock::now();
-    visualization::publish_localization(this, current_pose_base, pub_time);
+    visualization::publish_localization(this, current_pose_base, lidar_timestamp);
     auto pub_end = std::chrono::high_resolution_clock::now();
     double pub_time_ms = std::chrono::duration<double, std::milli>(pub_end - pub_start).count();
 
-    // Publish particles only when MCL was updated (save bandwidth)
-    double particle_time_ms = 0.0;
-    if (has_new_data) {
-        auto particle_start = std::chrono::high_resolution_clock::now();
-        visualization::publish_particles_viz(this, current_pose_base, lidar_timestamp);
-        auto particle_end = std::chrono::high_resolution_clock::now();
-        particle_time_ms = std::chrono::duration<double, std::milli>(particle_end - particle_start).count();
-    }
+    // Publish particles
+    auto particle_start = std::chrono::high_resolution_clock::now();
+    visualization::publish_particles_viz(this, current_pose_base, lidar_timestamp);
+    auto particle_end = std::chrono::high_resolution_clock::now();
+    double particle_time_ms = std::chrono::duration<double, std::milli>(particle_end - particle_start).count();
  
 
-    // Performance logging (periodic) - only when MCL was updated
-    static int update_count = 0;
+    // Performance logging (periodic)
     static int mcl_update_count = 0;
-    update_count++;
+    mcl_update_count++;
 
-    if (has_new_data) {
-        mcl_update_count++;
+    if (mcl_update_count % 100 == 0) {
+        auto timer_end = std::chrono::high_resolution_clock::now();
+        double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
 
-        if (mcl_update_count % 100 == 0) {
-            auto timer_end = std::chrono::high_resolution_clock::now();
-            double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
-
-            // Build detailed performance message (all values from current update)
-            std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
-                             "Total: " + std::to_string(total_time) + "ms, " +
-                             "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
-                             "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
-                             "Pub: " + std::to_string(pub_time_ms) + "ms, " +
-                             "Particles: " + std::to_string(particle_time_ms) + "ms";
+        // Build detailed performance message (all values from current update)
+        std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
+                         "Total: " + std::to_string(total_time) + "ms, " +
+                         "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
+                         "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
+                         "Pub: " + std::to_string(pub_time_ms) + "ms, " +
+                         "Particles: " + std::to_string(particle_time_ms) + "ms";
 
         // Add sensor model specific breakdown
         if (SENSOR_MODEL_TYPE == "beam") {
@@ -416,24 +406,23 @@ void MCL::timer_update()
             msg += " (LikelihoodField: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
         }
 
-            // Add ESS statistics if adaptive resampling is enabled
-            if (USE_ADAPTIVE_RESAMPLING && timing_stats_.ess_count > 0) {
-                double avg_ess = timing_stats_.ess_sum / timing_stats_.ess_count;
-                double resample_rate = (static_cast<double>(timing_stats_.resample_count) / timing_stats_.ess_count) * 100.0;
-                msg += ", ESS: " + std::to_string(static_cast<int>(avg_ess)) + "/" + std::to_string(MAX_PARTICLES) +
-                       " (" + std::to_string(static_cast<int>(avg_ess * 100.0 / MAX_PARTICLES)) + "%), " +
-                       "Resample: " + std::to_string(static_cast<int>(resample_rate)) + "%";
-            }
-
-            msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
-                   std::to_string(current_pose_base[1]) + ", " +
-                   std::to_string(current_pose_base[2]) + "]";
-
-            RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
-
-            // Reset timing stats for next 100 iterations
-            timing_stats_.reset();
+        // Add ESS statistics if adaptive resampling is enabled
+        if (USE_ADAPTIVE_RESAMPLING && timing_stats_.ess_count > 0) {
+            double avg_ess = timing_stats_.ess_sum / timing_stats_.ess_count;
+            double resample_rate = (static_cast<double>(timing_stats_.resample_count) / timing_stats_.ess_count) * 100.0;
+            msg += ", ESS: " + std::to_string(static_cast<int>(avg_ess)) + "/" + std::to_string(MAX_PARTICLES) +
+                   " (" + std::to_string(static_cast<int>(avg_ess * 100.0 / MAX_PARTICLES)) + "%), " +
+                   "Resample: " + std::to_string(static_cast<int>(resample_rate)) + "%";
         }
+
+        msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
+               std::to_string(current_pose_base[1]) + ", " +
+               std::to_string(current_pose_base[2]) + "]";
+
+        RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+
+        // Reset timing stats for next 100 iterations
+        timing_stats_.reset();
     }
 }
 
