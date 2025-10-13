@@ -338,7 +338,8 @@ void MCL::timer_update()
 
     // Early return if no new LiDAR data (save CPU, prevent stale TF republishing)
     if (!has_new_data) {
-        RCLCPP_WARN(this->get_logger(), "No new LiDAR data - skipping MCL update");
+        // rclcpp::Time now = this->get_clock()->now();
+        // RCLCPP_WARN(this->get_logger(), "No new LiDAR data %f - skipping MCL update", now.seconds());
         return;
     }
 
