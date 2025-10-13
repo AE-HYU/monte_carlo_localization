@@ -32,56 +32,94 @@ void precompute_beam_sensor_model(MCL* node)
         return;
     }
 
+    double resolution = local_map->info.resolution;
     int table_width = node->MAX_RANGE_PX_ + 1;
     node->sensor_model_table_ = Eigen::MatrixXd::Zero(table_width, table_width);
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Build lookup table
-    for (int d = 0; d < table_width; ++d)  // d = expected range
-    {
-        double norm = 0.0;
+    // Convert SIGMA_HIT from meters to pixels
+    double sigma_hit_px = node->SIGMA_HIT / resolution;
 
-        for (int r = 0; r < table_width; ++r)  // r = observed range
+    RCLCPP_INFO(node->get_logger(),
+                "Building beam sensor model: sigma_hit=%.3fm (%.2fpx), resolution=%.3fm",
+                node->SIGMA_HIT, sigma_hit_px, resolution);
+
+    // Build lookup table
+    for (int d = 0; d < table_width; ++d)  // d = expected range (pixels)
+    {
+        // First pass: calculate normalization factors for Z_HIT and Z_SHORT
+        double sum_z_hit = 0.0;
+        double sum_z_short = 0.0;
+
+        for (int r = 0; r < table_width; ++r)
         {
-            double prob = 0.0;
+            double z = static_cast<double>(r - d);  // Error in pixels
+
+            // Z_HIT: Gaussian (needs normalization)
+            double prob_hit = std::exp(-(z * z) / (2.0 * sigma_hit_px * sigma_hit_px))
+                            / (sigma_hit_px * std::sqrt(2.0 * M_PI));
+            sum_z_hit += prob_hit;
+
+            // Z_SHORT: Exponential (needs normalization)
+            if (r < d && d > 0)
+            {
+                double prob_short = 2.0 * (d - r) / static_cast<double>(d);
+                sum_z_short += prob_short;
+            }
+        }
+
+        // Normalization factors
+        double norm_hit = (sum_z_hit > 0) ? (1.0 / sum_z_hit) : 0.0;
+        double norm_short = (sum_z_short > 0) ? (1.0 / sum_z_short) : 0.0;
+
+        // Second pass: build normalized sensor model
+        for (int r = 0; r < table_width; ++r)  // r = observed range (pixels)
+        {
             double z = static_cast<double>(r - d);
 
-            // Z_HIT: Gaussian around expected range
-            prob += node->Z_HIT * std::exp(-(z * z) / (2.0 * node->SIGMA_HIT * node->SIGMA_HIT)) / (node->SIGMA_HIT * std::sqrt(2.0 * M_PI));
+            // === Z_HIT: Normalized Gaussian ===
+            double prob_hit = std::exp(-(z * z) / (2.0 * sigma_hit_px * sigma_hit_px))
+                            / (sigma_hit_px * std::sqrt(2.0 * M_PI)) * norm_hit;
 
-            // Z_SHORT: Exponential for early obstacles
-            if (r < d)
+            // === Z_SHORT: Normalized Exponential ===
+            double prob_short = 0.0;
+            if (r < d && d > 0)
             {
-                prob += 2.0 * node->Z_SHORT * (d - r) / static_cast<double>(d);
+                prob_short = 2.0 * (d - r) / static_cast<double>(d) * norm_short;
             }
 
-            // Z_MAX: Delta function at maximum range
-            if (r == node->MAX_RANGE_PX_)
-            {
-                prob += node->Z_MAX;
-            }
+            // === Z_MAX: Delta function (already normalized) ===
+            double prob_max = (r == node->MAX_RANGE_PX_) ? 1.0 : 0.0;
 
-            // Z_RAND: Uniform distribution
-            if (r < node->MAX_RANGE_PX_)
-            {
-                prob += node->Z_RAND * 1.0 / static_cast<double>(node->MAX_RANGE_PX_);
-            }
+            // === Z_RAND: Uniform (already normalized) ===
+            double prob_rand = (r < node->MAX_RANGE_PX_) ? (1.0 / node->MAX_RANGE_PX_) : 0.0;
 
-            norm += prob;
+            // Combine with mixture weights (Z_HIT + Z_SHORT + Z_MAX + Z_RAND = 1.0)
+            double prob = node->Z_HIT * prob_hit +
+                          node->Z_SHORT * prob_short +
+                          node->Z_MAX * prob_max +
+                          node->Z_RAND * prob_rand;
+
             node->sensor_model_table_(r, d) = prob;
         }
 
-        // Normalize
-        if (norm > 0)
-        {
-            node->sensor_model_table_.col(d) /= norm;
-        }
+        // Normalize column to ensure sum to 1.0 (numerical stability)
+        double col_sum = node->sensor_model_table_.col(d).sum();
+        if (col_sum > 1e-12)
+            node->sensor_model_table_.col(d) /= col_sum;
+        
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    RCLCPP_INFO(node->get_logger(), "Beam sensor model ready (%ld ms)", duration.count());
+
+    // Verify normalization (column sum should be ≈ 1.0)
+    double col_sum = node->sensor_model_table_.col(table_width / 2).sum();
+
+    RCLCPP_INFO(node->get_logger(),
+                "Beam sensor model ready (%ld ms) - %dx%d table, column sum check: %.6f",
+                duration.count(), table_width, table_width, col_sum);
 }
 
 /**
