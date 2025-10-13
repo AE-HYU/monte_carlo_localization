@@ -257,7 +257,12 @@ std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries)
 }
 
 /**
- * @brief Casts single ray to find obstacle distance
+ * @brief Casts single ray to find obstacle distance using Bresenham line algorithm
+ *
+ * Bresenham's line algorithm provides:
+ * - Faster execution (integer-only arithmetic, no floating point)
+ * - More accurate pixel traversal (visits exactly the pixels the line crosses)
+ * - Better cache locality (sequential grid access pattern)
  */
 float cast_ray(double x, double y, double angle,
                const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map,
@@ -269,37 +274,85 @@ float cast_ray(double x, double y, double angle,
     double resolution = local_map->info.resolution;
     double origin_x = local_map->info.origin.position.x;
     double origin_y = local_map->info.origin.position.y;
+    int width = local_map->info.width;
+    int height = local_map->info.height;
 
-    double dx = std::cos(angle) * resolution;
-    double dy = std::sin(angle) * resolution;
+    // Convert start position to grid coordinates
+    int x0 = static_cast<int>((x - origin_x) / resolution);
+    int y0 = static_cast<int>((y - origin_y) / resolution);
 
-    for (int step = 0; step < max_range_px; ++step)
+    // Calculate end position in grid coordinates
+    double x_end = x + std::cos(angle) * max_range_px * resolution;
+    double y_end = y + std::sin(angle) * max_range_px * resolution;
+    int x1 = static_cast<int>((x_end - origin_x) / resolution);
+    int y1 = static_cast<int>((y_end - origin_y) / resolution);
+
+    // Check if start position is out of bounds or occupied
+    if (x0 < 0 || x0 >= width || y0 < 0 || y0 >= height) {
+        return 0.0;
+    }
+    int start_idx = y0 * width + x0;
+    if (local_map->data[start_idx] > 50) {
+        return 0.0;
+    }
+
+    // Bresenham's line algorithm
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    int x_curr = x0;
+    int y_curr = y0;
+
+    // Calculate maximum steps as Manhattan distance (dx + dy is upper bound)
+    // For diagonal line, actual steps ≈ max(dx, dy)
+    // Adding safety margin to ensure we reach the end point
+    int max_steps = dx + dy + 1;
+
+    while (true)
     {
-        x += dx;
-        y += dy;
-
-        // World to grid coordinate transformation
-        int grid_x = static_cast<int>((x - origin_x) / resolution);
-        int grid_y = static_cast<int>((y - origin_y) / resolution);
-
-        // Map boundary collision
-        if (grid_x < 0 || grid_x >= static_cast<int>(local_map->info.width) || grid_y < 0 ||
-            grid_y >= static_cast<int>(local_map->info.height))
-        {
-            return step * resolution;
+        // Check boundary
+        if (x_curr < 0 || x_curr >= width || y_curr < 0 || y_curr >= height) {
+            // Hit boundary - calculate distance
+            double dist_x = (x_curr - x0) * resolution;
+            double dist_y = (y_curr - y0) * resolution;
+            return std::sqrt(dist_x * dist_x + dist_y * dist_y);
         }
 
-        // Check for obstacles
-        int map_idx = grid_y * local_map->info.width + grid_x;
-        if (map_idx >= 0 && map_idx < static_cast<int>(local_map->data.size()))
-        {
-            if (local_map->data[map_idx] > 50)
-            {
-                return step * resolution;
-            }
+        // Check for obstacle
+        int map_idx = y_curr * width + x_curr;
+        if (local_map->data[map_idx] > 50) {
+            // Hit obstacle - calculate distance
+            double dist_x = (x_curr - x0) * resolution;
+            double dist_y = (y_curr - y0) * resolution;
+            return std::sqrt(dist_x * dist_x + dist_y * dist_y);
+        }
+
+        // Check if reached end point (max range)
+        if (x_curr == x1 && y_curr == y1) {
+            break;
+        }
+
+        // Safety check to prevent infinite loop
+        if (max_steps-- <= 0) {
+            break;
+        }
+
+        // Bresenham step
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x_curr += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y_curr += sy;
         }
     }
 
+    // No obstacle found within max range
     return max_range_px * resolution;
 }
 
