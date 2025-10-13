@@ -70,11 +70,6 @@ class MCL : public rclcpp::Node
     // --------------------------------- TF UTILITIES ---------------------------------
     Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp);
 
-    // --------------------------------- RAY CASTING ---------------------------------
-    std::vector<float> calc_range_many(const Eigen::MatrixXd &queries);
-    float cast_ray(double x, double y, double angle,
-                   const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map);
-
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
     int ANGLE_STEP;
     int MAX_PARTICLES;

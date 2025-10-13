@@ -65,6 +65,27 @@ void calculate_beam_particle_weights(MCL* node,
                                      int num_rays,
                                      std::vector<double>& weights);
 
+/**
+ * @brief Performs batch ray casting for multiple queries
+ * @param node Pointer to MCL node
+ * @param queries Matrix of ray queries (Nx3: x, y, angle)
+ * @return Vector of distances to obstacles for each query
+ */
+std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries);
+
+/**
+ * @brief Casts single ray to find obstacle distance
+ * @param x Starting x position
+ * @param y Starting y position
+ * @param angle Ray angle in radians
+ * @param local_map Occupancy grid map
+ * @param max_range_px Maximum range in pixels
+ * @return Distance to obstacle in meters
+ */
+float cast_ray(double x, double y, double angle,
+               const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map,
+               int max_range_px);
+
 } // namespace sensor_model
 } // namespace mcl_pkg
 

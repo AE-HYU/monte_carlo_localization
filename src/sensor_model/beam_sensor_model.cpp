@@ -109,10 +109,7 @@ void beam_sensor_update(MCL* node,
 
     // Perform ray casting (if parallel raycasting enabled)
     if (node->USE_PARALLEL_RAYCASTING) {
-        auto raycast_start = std::chrono::high_resolution_clock::now();
-        node->ranges_ = node->calc_range_many(node->queries_);
-        node->timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - raycast_start).count();
+        node->ranges_ = calc_range_many(node, node->queries_);
 
         // Calculate weights using lookup table
         auto sensor_eval_start = std::chrono::high_resolution_clock::now();
@@ -213,6 +210,97 @@ void calculate_beam_particle_weights(MCL* node,
             weights[i] = 0.0;
         }
     }
+}
+
+// ================================================================================================
+// RAY CASTING FUNCTIONS
+// ================================================================================================
+
+/**
+ * @brief Performs batch ray casting for multiple queries
+ */
+std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries)
+{
+    auto raycast_start = std::chrono::high_resolution_clock::now();
+
+    std::vector<float> results(queries.rows());
+
+    // Get map once for all ray casting operations
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(node->map_lock_);
+        local_map = node->map_msg_;
+    }
+
+    if (!local_map || !node->map_initialized_) {
+        std::fill(results.begin(), results.end(), node->MAX_RANGE_METERS);
+        return results;
+    }
+
+    if (node->USE_PARALLEL_RAYCASTING) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+        }
+    } else {
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+        }
+    }
+
+    auto raycast_end = std::chrono::high_resolution_clock::now();
+    node->timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
+
+    return results;
+}
+
+/**
+ * @brief Casts single ray to find obstacle distance
+ */
+float cast_ray(double x, double y, double angle,
+               const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map,
+               int max_range_px)
+{
+    if (!local_map)
+        return 10.0;  // Default MAX_RANGE_METERS
+
+    double resolution = local_map->info.resolution;
+    double origin_x = local_map->info.origin.position.x;
+    double origin_y = local_map->info.origin.position.y;
+
+    double dx = std::cos(angle) * resolution;
+    double dy = std::sin(angle) * resolution;
+
+    for (int step = 0; step < max_range_px; ++step)
+    {
+        x += dx;
+        y += dy;
+
+        // World to grid coordinate transformation
+        int grid_x = static_cast<int>((x - origin_x) / resolution);
+        int grid_y = static_cast<int>((y - origin_y) / resolution);
+
+        // Map boundary collision
+        if (grid_x < 0 || grid_x >= static_cast<int>(local_map->info.width) || grid_y < 0 ||
+            grid_y >= static_cast<int>(local_map->info.height))
+        {
+            return step * resolution;
+        }
+
+        // Check for obstacles
+        int map_idx = grid_y * local_map->info.width + grid_x;
+        if (map_idx >= 0 && map_idx < static_cast<int>(local_map->data.size()))
+        {
+            if (local_map->data[map_idx] > 50)
+            {
+                return step * resolution;
+            }
+        }
+    }
+
+    return max_range_px * resolution;
 }
 
 } // namespace sensor_model
