@@ -63,7 +63,7 @@ mcl:
     z_rand: 0.07                       # Weight for random noise (reflections, interference)
 
     # Beam model specific parameters (only used when sensor_model_type: "beam")
-    sigma_hit: 5.0                     # Measurement noise std dev for beam model
+    sigma_hit: 0.25                     # Measurement noise std dev for beam model
 
     # Likelihood field model specific parameters (only used when sensor_model_type: "likelihood_field")
     likelihood_sigma: 0.05              # Distance field Gaussian sigma (meters)

@@ -32,56 +32,94 @@ void precompute_beam_sensor_model(MCL* node)
         return;
     }
 
+    double resolution = local_map->info.resolution;
     int table_width = node->MAX_RANGE_PX_ + 1;
     node->sensor_model_table_ = Eigen::MatrixXd::Zero(table_width, table_width);
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Build lookup table
-    for (int d = 0; d < table_width; ++d)  // d = expected range
-    {
-        double norm = 0.0;
+    // Convert SIGMA_HIT from meters to pixels
+    double sigma_hit_px = node->SIGMA_HIT / resolution;
 
-        for (int r = 0; r < table_width; ++r)  // r = observed range
+    RCLCPP_INFO(node->get_logger(),
+                "Building beam sensor model: sigma_hit=%.3fm (%.2fpx), resolution=%.3fm",
+                node->SIGMA_HIT, sigma_hit_px, resolution);
+
+    // Build lookup table
+    for (int d = 0; d < table_width; ++d)  // d = expected range (pixels)
+    {
+        // First pass: calculate normalization factors for Z_HIT and Z_SHORT
+        double sum_z_hit = 0.0;
+        double sum_z_short = 0.0;
+
+        for (int r = 0; r < table_width; ++r)
         {
-            double prob = 0.0;
+            double z = static_cast<double>(r - d);  // Error in pixels
+
+            // Z_HIT: Gaussian (needs normalization)
+            double prob_hit = std::exp(-(z * z) / (2.0 * sigma_hit_px * sigma_hit_px))
+                            / (sigma_hit_px * std::sqrt(2.0 * M_PI));
+            sum_z_hit += prob_hit;
+
+            // Z_SHORT: Exponential (needs normalization)
+            if (r < d && d > 0)
+            {
+                double prob_short = 2.0 * (d - r) / static_cast<double>(d);
+                sum_z_short += prob_short;
+            }
+        }
+
+        // Normalization factors
+        double norm_hit = (sum_z_hit > 0) ? (1.0 / sum_z_hit) : 0.0;
+        double norm_short = (sum_z_short > 0) ? (1.0 / sum_z_short) : 0.0;
+
+        // Second pass: build normalized sensor model
+        for (int r = 0; r < table_width; ++r)  // r = observed range (pixels)
+        {
             double z = static_cast<double>(r - d);
 
-            // Z_HIT: Gaussian around expected range
-            prob += node->Z_HIT * std::exp(-(z * z) / (2.0 * node->SIGMA_HIT * node->SIGMA_HIT)) / (node->SIGMA_HIT * std::sqrt(2.0 * M_PI));
+            // === Z_HIT: Normalized Gaussian ===
+            double prob_hit = std::exp(-(z * z) / (2.0 * sigma_hit_px * sigma_hit_px))
+                            / (sigma_hit_px * std::sqrt(2.0 * M_PI)) * norm_hit;
 
-            // Z_SHORT: Exponential for early obstacles
-            if (r < d)
+            // === Z_SHORT: Normalized Exponential ===
+            double prob_short = 0.0;
+            if (r < d && d > 0)
             {
-                prob += 2.0 * node->Z_SHORT * (d - r) / static_cast<double>(d);
+                prob_short = 2.0 * (d - r) / static_cast<double>(d) * norm_short;
             }
 
-            // Z_MAX: Delta function at maximum range
-            if (r == node->MAX_RANGE_PX_)
-            {
-                prob += node->Z_MAX;
-            }
+            // === Z_MAX: Delta function (already normalized) ===
+            double prob_max = (r == node->MAX_RANGE_PX_) ? 1.0 : 0.0;
 
-            // Z_RAND: Uniform distribution
-            if (r < node->MAX_RANGE_PX_)
-            {
-                prob += node->Z_RAND * 1.0 / static_cast<double>(node->MAX_RANGE_PX_);
-            }
+            // === Z_RAND: Uniform (already normalized) ===
+            double prob_rand = (r < node->MAX_RANGE_PX_) ? (1.0 / node->MAX_RANGE_PX_) : 0.0;
 
-            norm += prob;
+            // Combine with mixture weights (Z_HIT + Z_SHORT + Z_MAX + Z_RAND = 1.0)
+            double prob = node->Z_HIT * prob_hit +
+                          node->Z_SHORT * prob_short +
+                          node->Z_MAX * prob_max +
+                          node->Z_RAND * prob_rand;
+
             node->sensor_model_table_(r, d) = prob;
         }
 
-        // Normalize
-        if (norm > 0)
-        {
-            node->sensor_model_table_.col(d) /= norm;
-        }
+        // Normalize column to ensure sum to 1.0 (numerical stability)
+        double col_sum = node->sensor_model_table_.col(d).sum();
+        if (col_sum > 1e-12)
+            node->sensor_model_table_.col(d) /= col_sum;
+        
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    RCLCPP_INFO(node->get_logger(), "Beam sensor model ready (%ld ms)", duration.count());
+
+    // Verify normalization (column sum should be ≈ 1.0)
+    double col_sum = node->sensor_model_table_.col(table_width / 2).sum();
+
+    RCLCPP_INFO(node->get_logger(),
+                "Beam sensor model ready (%ld ms) - %dx%d table, column sum check: %.6f",
+                duration.count(), table_width, table_width, col_sum);
 }
 
 /**
@@ -109,10 +147,7 @@ void beam_sensor_update(MCL* node,
 
     // Perform ray casting (if parallel raycasting enabled)
     if (node->USE_PARALLEL_RAYCASTING) {
-        auto raycast_start = std::chrono::high_resolution_clock::now();
-        node->ranges_ = node->calc_range_many(node->queries_);
-        node->timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - raycast_start).count();
+        node->ranges_ = calc_range_many(node, node->queries_);
 
         // Calculate weights using lookup table
         auto sensor_eval_start = std::chrono::high_resolution_clock::now();
@@ -213,6 +248,150 @@ void calculate_beam_particle_weights(MCL* node,
             weights[i] = 0.0;
         }
     }
+}
+
+// ================================================================================================
+// RAY CASTING FUNCTIONS
+// ================================================================================================
+
+/**
+ * @brief Performs batch ray casting for multiple queries
+ */
+std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries)
+{
+    auto raycast_start = std::chrono::high_resolution_clock::now();
+
+    std::vector<float> results(queries.rows());
+
+    // Get map once for all ray casting operations
+    nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
+    {
+        std::lock_guard<std::mutex> lock(node->map_lock_);
+        local_map = node->map_msg_;
+    }
+
+    if (!local_map || !node->map_initialized_) {
+        std::fill(results.begin(), results.end(), node->MAX_RANGE_METERS);
+        return results;
+    }
+
+    if (node->USE_PARALLEL_RAYCASTING) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+        }
+    } else {
+        for (int i = 0; i < queries.rows(); ++i)
+        {
+            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+        }
+    }
+
+    auto raycast_end = std::chrono::high_resolution_clock::now();
+    node->timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
+
+    return results;
+}
+
+/**
+ * @brief Casts single ray to find obstacle distance using Bresenham line algorithm
+ *
+ * Bresenham's line algorithm provides:
+ * - Faster execution (integer-only arithmetic, no floating point)
+ * - More accurate pixel traversal (visits exactly the pixels the line crosses)
+ * - Better cache locality (sequential grid access pattern)
+ */
+float cast_ray(double x, double y, double angle,
+               const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map,
+               int max_range_px)
+{
+    if (!local_map)
+        return 10.0;  // Default MAX_RANGE_METERS
+
+    double resolution = local_map->info.resolution;
+    double origin_x = local_map->info.origin.position.x;
+    double origin_y = local_map->info.origin.position.y;
+    int width = local_map->info.width;
+    int height = local_map->info.height;
+
+    // Convert start position to grid coordinates
+    int x0 = static_cast<int>((x - origin_x) / resolution);
+    int y0 = static_cast<int>((y - origin_y) / resolution);
+
+    // Calculate end position in grid coordinates
+    double x_end = x + std::cos(angle) * max_range_px * resolution;
+    double y_end = y + std::sin(angle) * max_range_px * resolution;
+    int x1 = static_cast<int>((x_end - origin_x) / resolution);
+    int y1 = static_cast<int>((y_end - origin_y) / resolution);
+
+    // Check if start position is out of bounds or occupied
+    if (x0 < 0 || x0 >= width || y0 < 0 || y0 >= height) {
+        return 0.0;
+    }
+    int start_idx = y0 * width + x0;
+    if (local_map->data[start_idx] > 50) {
+        return 0.0;
+    }
+
+    // Bresenham's line algorithm
+    int dx = std::abs(x1 - x0);
+    int dy = std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    int x_curr = x0;
+    int y_curr = y0;
+
+    // Calculate maximum steps as Manhattan distance (dx + dy is upper bound)
+    // For diagonal line, actual steps ≈ max(dx, dy)
+    // Adding safety margin to ensure we reach the end point
+    int max_steps = dx + dy + 1;
+
+    while (true)
+    {
+        // Check boundary
+        if (x_curr < 0 || x_curr >= width || y_curr < 0 || y_curr >= height) {
+            // Hit boundary - calculate distance
+            double dist_x = (x_curr - x0) * resolution;
+            double dist_y = (y_curr - y0) * resolution;
+            return std::sqrt(dist_x * dist_x + dist_y * dist_y);
+        }
+
+        // Check for obstacle
+        int map_idx = y_curr * width + x_curr;
+        if (local_map->data[map_idx] > 50) {
+            // Hit obstacle - calculate distance
+            double dist_x = (x_curr - x0) * resolution;
+            double dist_y = (y_curr - y0) * resolution;
+            return std::sqrt(dist_x * dist_x + dist_y * dist_y);
+        }
+
+        // Check if reached end point (max range)
+        if (x_curr == x1 && y_curr == y1) {
+            break;
+        }
+
+        // Safety check to prevent infinite loop
+        if (max_steps-- <= 0) {
+            break;
+        }
+
+        // Bresenham step
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x_curr += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y_curr += sy;
+        }
+    }
+
+    // No obstacle found within max range
+    return max_range_px * resolution;
 }
 
 } // namespace sensor_model
