@@ -339,6 +339,11 @@ std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries)
  * - Faster execution (integer-only arithmetic, no floating point)
  * - More accurate pixel traversal (visits exactly the pixels the line crosses)
  * - Better cache locality (sequential grid access pattern)
+ *
+ * Optimizations:
+ * - Uses integer distance calculation (avoids sqrt until final return)
+ * - Accurate step count (max(dx,dy) not dx+dy)
+ * - Early termination on obstacles
  */
 float cast_ray(double x, double y, double angle,
                const nav_msgs::msg::OccupancyGrid::SharedPtr& local_map,
@@ -382,37 +387,31 @@ float cast_ray(double x, double y, double angle,
     int x_curr = x0;
     int y_curr = y0;
 
-    // Calculate maximum steps as Manhattan distance (dx + dy is upper bound)
-    // For diagonal line, actual steps ≈ max(dx, dy)
-    // Adding safety margin to ensure we reach the end point
-    int max_steps = dx + dy + 1;
+    // Actual steps needed: max(dx, dy) for Bresenham
+    // This is much more accurate than dx + dy
+    int max_steps = std::max(dx, dy) + 1;
 
-    while (true)
+    while (max_steps-- > 0)
     {
-        // Check boundary
+        // Check boundary (first, before obstacle check for safety)
         if (x_curr < 0 || x_curr >= width || y_curr < 0 || y_curr >= height) {
-            // Hit boundary - calculate distance
-            double dist_x = (x_curr - x0) * resolution;
-            double dist_y = (y_curr - y0) * resolution;
-            return std::sqrt(dist_x * dist_x + dist_y * dist_y);
+            // Hit boundary - calculate distance using integer arithmetic
+            int delta_x = x_curr - x0;
+            int delta_y = y_curr - y0;
+            return std::sqrt(delta_x * delta_x + delta_y * delta_y) * resolution;
         }
 
         // Check for obstacle
         int map_idx = y_curr * width + x_curr;
         if (local_map->data[map_idx] > 50) {
-            // Hit obstacle - calculate distance
-            double dist_x = (x_curr - x0) * resolution;
-            double dist_y = (y_curr - y0) * resolution;
-            return std::sqrt(dist_x * dist_x + dist_y * dist_y);
+            // Hit obstacle - calculate distance using integer arithmetic
+            int delta_x = x_curr - x0;
+            int delta_y = y_curr - y0;
+            return std::sqrt(delta_x * delta_x + delta_y * delta_y) * resolution;
         }
 
         // Check if reached end point (max range)
         if (x_curr == x1 && y_curr == y1) {
-            break;
-        }
-
-        // Safety check to prevent infinite loop
-        if (max_steps-- <= 0) {
             break;
         }
 
