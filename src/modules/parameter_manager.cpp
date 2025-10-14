@@ -71,6 +71,8 @@ void initParameters(MCL* node)
     // Performance
     node->declare_parameter("use_parallel_raycasting", true);
     node->declare_parameter("num_threads", 0); // 0 = auto-detect
+    node->declare_parameter("omp_schedule_type", "static"); // "static", "dynamic", "guided"
+    node->declare_parameter("omp_chunk_size", 0); // 0 = default (no chunk size specified)
 
     // TF frames
     node->declare_parameter("map_frame", "map");
@@ -132,6 +134,8 @@ void initParameters(MCL* node)
     // Performance
     node->USE_PARALLEL_RAYCASTING = node->get_parameter("use_parallel_raycasting").as_bool();
     node->NUM_THREADS = node->get_parameter("num_threads").as_int();
+    node->OMP_SCHEDULE_TYPE = node->get_parameter("omp_schedule_type").as_string();
+    node->OMP_CHUNK_SIZE = node->get_parameter("omp_chunk_size").as_int();
 
     // TF frames
     node->MAP_FRAME = node->get_parameter("map_frame").as_string();
@@ -276,10 +280,26 @@ void initParameters(MCL* node)
         node->TIMER_FREQUENCY = 35.0;
     }
 
+    // Validate OpenMP schedule type
+    if (node->OMP_SCHEDULE_TYPE != "static" &&
+        node->OMP_SCHEDULE_TYPE != "dynamic" &&
+        node->OMP_SCHEDULE_TYPE != "guided") {
+        RCLCPP_WARN(node->get_logger(),
+            "Invalid omp_schedule_type '%s', using default 'static'", node->OMP_SCHEDULE_TYPE.c_str());
+        node->OMP_SCHEDULE_TYPE = "static";
+    }
+
+    // Validate OpenMP chunk size
+    if (node->OMP_CHUNK_SIZE < 0) {
+        RCLCPP_WARN(node->get_logger(),
+            "omp_chunk_size cannot be negative (%d), using default 0", node->OMP_CHUNK_SIZE);
+        node->OMP_CHUNK_SIZE = 0;
+    }
+
     RCLCPP_INFO(node->get_logger(),
-        "Parameters validated - Particles: [%d-%d], AngleStep: %d, Frequency: %.1f Hz, Sensor: %s",
+        "Parameters validated - Particles: [%d-%d], AngleStep: %d, Frequency: %.1f Hz, Sensor: %s, OMP: %s(%d)",
         node->MIN_PARTICLES, node->MAX_PARTICLES, node->ANGLE_STEP, node->TIMER_FREQUENCY,
-        node->SENSOR_MODEL_TYPE.c_str());
+        node->SENSOR_MODEL_TYPE.c_str(), node->OMP_SCHEDULE_TYPE.c_str(), node->OMP_CHUNK_SIZE);
 }
 
 rcl_interfaces::msg::SetParametersResult dynamicParametersCallback(

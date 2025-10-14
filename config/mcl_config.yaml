@@ -54,6 +54,8 @@ mcl:
 
     # === SENSOR MODEL ===
     sensor_model_type: "beam"                      # "beam" or "likelihood_field"
+    omp_schedule_type: "static"
+    omp_chunk_size: 0
 
     # Multi-component sensor model weights (used by BOTH beam and likelihood_field)
     # Must sum to 1.0 (auto-normalized if not)
@@ -69,7 +71,7 @@ mcl:
     likelihood_sigma: 0.05              # Distance field Gaussian sigma (meters)
 
     # === RAY CASTING ===
-    angle_step: 15                     # Laser downsampling factor
+    angle_step: 18                     # Laser downsampling factor
     squash_factor: 1.2                 # Weight normalization power
     use_parallel_raycasting: true      # Enable parallel processing
     num_threads: 0                     # Auto-detect threads

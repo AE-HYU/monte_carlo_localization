@@ -57,6 +57,7 @@ namespace performance
   // Timing statistics structure
   struct TimingStats
   {
+    // Cumulative times (for averaging over 100 updates)
     double total_mcl_time = 0.0;
     double ray_casting_time = 0.0;
     double sensor_model_time = 0.0;
@@ -64,6 +65,11 @@ namespace performance
     double resampling_time = 0.0;
     double query_prep_time = 0.0;
     int measurement_count = 0;
+
+    // Current update times (latest single measurement)
+    double current_query_prep_time = 0.0;
+    double current_ray_casting_time = 0.0;
+    double current_sensor_model_time = 0.0;
 
     // ESS statistics
     double ess_sum = 0.0;          // Cumulative ESS for averaging

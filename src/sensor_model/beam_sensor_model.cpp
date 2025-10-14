@@ -142,8 +142,10 @@ void beam_sensor_update(MCL* node,
     // Generate ray casting queries
     generate_beam_ray_queries(node, proposal_dist, num_rays);
 
-    node->timing_stats_.query_prep_time += std::chrono::duration<double, std::milli>(
-        std::chrono::high_resolution_clock::now() - query_prep_start).count();
+    auto query_prep_end = std::chrono::high_resolution_clock::now();
+    double query_time = std::chrono::duration<double, std::milli>(query_prep_end - query_prep_start).count();
+    node->timing_stats_.query_prep_time += query_time;
+    node->timing_stats_.current_query_prep_time = query_time;
 
     // Perform ray casting (if parallel raycasting enabled)
     if (node->USE_PARALLEL_RAYCASTING) {
@@ -152,8 +154,10 @@ void beam_sensor_update(MCL* node,
         // Calculate weights using lookup table
         auto sensor_eval_start = std::chrono::high_resolution_clock::now();
         calculate_beam_particle_weights(node, obs, num_rays, weights);
-        node->timing_stats_.sensor_model_time += std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - sensor_eval_start).count();
+        auto sensor_eval_end = std::chrono::high_resolution_clock::now();
+        double sensor_time = std::chrono::duration<double, std::milli>(sensor_eval_end - sensor_eval_start).count();
+        node->timing_stats_.sensor_model_time += sensor_time;
+        node->timing_stats_.current_sensor_model_time = sensor_time;
     }
 }
 
@@ -263,23 +267,74 @@ std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries)
 
     std::vector<float> results(queries.rows());
 
-    // Get map once for all ray casting operations
+    // Get map once for all ray casting operations - measure lock time
+    auto lock_start = std::chrono::high_resolution_clock::now();
     nav_msgs::msg::OccupancyGrid::SharedPtr local_map;
     {
         std::lock_guard<std::mutex> lock(node->map_lock_);
         local_map = node->map_msg_;
     }
+    auto lock_end = std::chrono::high_resolution_clock::now();
+    double lock_time = std::chrono::duration<double, std::milli>(lock_end - lock_start).count();
 
     if (!local_map || !node->map_initialized_) {
         std::fill(results.begin(), results.end(), node->MAX_RANGE_METERS);
         return results;
     }
 
+    // Measure thread warmup time
+    auto actual_raycast_start = std::chrono::high_resolution_clock::now();
+    double thread_warmup_time = 0.0;
+
     if (node->USE_PARALLEL_RAYCASTING) {
-        #pragma omp parallel for schedule(dynamic)
-        for (int i = 0; i < queries.rows(); ++i)
+        // Check thread pool warmup time
+        auto thread_warmup_start = std::chrono::high_resolution_clock::now();
+        #pragma omp parallel
         {
-            results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+            #pragma omp single
+            {
+                auto thread_warmup_end = std::chrono::high_resolution_clock::now();
+                thread_warmup_time = std::chrono::duration<double, std::milli>(thread_warmup_end - thread_warmup_start).count();
+            }
+        }
+
+        // Apply OpenMP scheduling based on parameters
+        if (node->OMP_SCHEDULE_TYPE == "static") {
+            if (node->OMP_CHUNK_SIZE > 0) {
+                #pragma omp parallel for schedule(static, node->OMP_CHUNK_SIZE)
+                for (int i = 0; i < queries.rows(); ++i) {
+                    results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+                }
+            } else {
+                #pragma omp parallel for schedule(static)
+                for (int i = 0; i < queries.rows(); ++i) {
+                    results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+                }
+            }
+        } else if (node->OMP_SCHEDULE_TYPE == "dynamic") {
+            if (node->OMP_CHUNK_SIZE > 0) {
+                #pragma omp parallel for schedule(dynamic, node->OMP_CHUNK_SIZE)
+                for (int i = 0; i < queries.rows(); ++i) {
+                    results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+                }
+            } else {
+                #pragma omp parallel for schedule(dynamic)
+                for (int i = 0; i < queries.rows(); ++i) {
+                    results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+                }
+            }
+        } else if (node->OMP_SCHEDULE_TYPE == "guided") {
+            if (node->OMP_CHUNK_SIZE > 0) {
+                #pragma omp parallel for schedule(guided, node->OMP_CHUNK_SIZE)
+                for (int i = 0; i < queries.rows(); ++i) {
+                    results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+                }
+            } else {
+                #pragma omp parallel for schedule(guided)
+                for (int i = 0; i < queries.rows(); ++i) {
+                    results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
+                }
+            }
         }
     } else {
         for (int i = 0; i < queries.rows(); ++i)
@@ -287,9 +342,22 @@ std::vector<float> calc_range_many(MCL* node, const Eigen::MatrixXd &queries)
             results[i] = cast_ray(queries(i, 0), queries(i, 1), queries(i, 2), local_map, node->MAX_RANGE_PX_);
         }
     }
+    auto actual_raycast_end = std::chrono::high_resolution_clock::now();
+    double actual_raycast_time = std::chrono::duration<double, std::milli>(actual_raycast_end - actual_raycast_start).count();
 
     auto raycast_end = std::chrono::high_resolution_clock::now();
-    node->timing_stats_.ray_casting_time += std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
+    double raycast_time = std::chrono::duration<double, std::milli>(raycast_end - raycast_start).count();
+    node->timing_stats_.ray_casting_time += raycast_time;
+    node->timing_stats_.current_ray_casting_time = raycast_time;
+
+    // Log detailed breakdown if time is unusually high (>5ms)
+    if (raycast_time > 5.0) {
+        double pure_raycast_time = actual_raycast_time - thread_warmup_time;
+        // RCLCPP_WARN(node->get_logger(),
+        //     "Raycast slow: Total=%.2fms (Lock=%.2fms, ThreadWarmup=%.2fms, PureRaycast=%.2fms, Queries=%d, Schedule=%s)",
+        //     raycast_time, lock_time, thread_warmup_time, pure_raycast_time,
+        //     static_cast<int>(queries.rows()), node->OMP_SCHEDULE_TYPE.c_str());
+    }
 
     return results;
 }

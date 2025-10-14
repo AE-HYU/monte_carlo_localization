@@ -83,6 +83,8 @@ class MCL : public rclcpp::Node
     double TIMER_FREQUENCY;
     bool USE_PARALLEL_RAYCASTING;
     int NUM_THREADS;
+    std::string OMP_SCHEDULE_TYPE;  // OpenMP schedule: "static", "dynamic", "guided"
+    int OMP_CHUNK_SIZE;             // Chunk size for OpenMP scheduling (0 = default)
     double MAX_POSE_RANGE;
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------

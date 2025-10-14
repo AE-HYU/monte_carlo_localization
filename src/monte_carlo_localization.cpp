@@ -398,13 +398,23 @@ void MCL::timer_update()
                          "Pub: " + std::to_string(pub_time_ms) + "ms, " +
                          "Particles: " + std::to_string(particle_time_ms) + "ms";
 
-        // Add sensor model specific breakdown
+        // Add sensor model specific breakdown (current update)
         if (SENSOR_MODEL_TYPE == "beam") {
-            msg += " (Query: " + std::to_string(timing_stats_.query_prep_time) + "ms, " +
-                   "Raycast: " + std::to_string(timing_stats_.ray_casting_time) + "ms, " +
-                   "Sensor: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
-        } else {
-            msg += " (LikelihoodField: " + std::to_string(timing_stats_.sensor_model_time) + "ms)";
+            msg += " | Current: (Query: " + std::to_string(timing_stats_.current_query_prep_time) + "ms, " +
+                   "Raycast: " + std::to_string(timing_stats_.current_ray_casting_time) + "ms, " +
+                   "Sensor: " + std::to_string(timing_stats_.current_sensor_model_time) + "ms)";
+            // Also add average for comparison
+            if (timing_stats_.measurement_count > 0) {
+                double avg_query = timing_stats_.query_prep_time / timing_stats_.measurement_count;
+                double avg_raycast = timing_stats_.ray_casting_time / timing_stats_.measurement_count;
+                double avg_sensor = timing_stats_.sensor_model_time / timing_stats_.measurement_count;
+                msg += " | Avg: (Query: " + std::to_string(avg_query) + "ms, " +
+                       "Raycast: " + std::to_string(avg_raycast) + "ms, " +
+                       "Sensor: " + std::to_string(avg_sensor) + "ms)";
+            }
+        } else if (timing_stats_.measurement_count > 0) {
+            double avg_sensor = timing_stats_.sensor_model_time / timing_stats_.measurement_count;
+            msg += " (LikelihoodField(avg): " + std::to_string(avg_sensor) + "ms)";
         }
 
         // Add ESS statistics if adaptive resampling is enabled
@@ -421,6 +431,11 @@ void MCL::timer_update()
                std::to_string(current_pose_base[2]) + "]";
 
         RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+
+        // Also print detailed timing stats collected over the last interval
+        timing_stats_.print_stats([this](const std::string &s) {
+            RCLCPP_INFO(this->get_logger(), "%s", s.c_str());
+        });
 
         // Reset timing stats for next 100 iterations
         timing_stats_.reset();
@@ -627,6 +642,7 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
     auto mcl_end = std::chrono::high_resolution_clock::now();
     timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
     timing_stats_.measurement_count++;
+    // Collect timing stats here; printing is done periodically from timer_update()
 }
 
 /**
