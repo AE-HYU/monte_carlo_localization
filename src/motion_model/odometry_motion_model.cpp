@@ -49,18 +49,6 @@ void odometry_motion_update(MCL* node,
     // RTR Decomposition
     // ============================================================================
 
-    // rot1: Initial rotation to face the direction of translation
-    double delta_rot1 = 0.0;
-    if (delta_trans_local > 1e-4) {
-        delta_rot1 = std::atan2(action[1], action[0]);
-    }
-
-    // trans: Translation distance
-    double delta_trans = delta_trans_local;
-
-    // rot2: Final rotation to achieve target heading
-    double delta_rot2 = delta_rot_total - delta_rot1;
-
     // Normalize angles to [-π, π]
     auto normalize_angle = [](double angle) {
         while (angle > M_PI) angle -= 2.0 * M_PI;
@@ -68,8 +56,43 @@ void odometry_motion_update(MCL* node,
         return angle;
     };
 
+    // rot1: Initial rotation to face the direction of translation
+    double delta_rot1 = 0.0;
+    if (delta_trans_local > 1e-4) {
+        delta_rot1 = std::atan2(action[1], action[0]);
+    }
+
+    // trans: Translation distance (sign indicates forward/backward)
+    double delta_trans = delta_trans_local;
+
+    // rot2: Final rotation to achieve target heading
+    double delta_rot2 = normalize_angle(delta_rot_total - delta_rot1);
+
+    // ============================================================================
+    // Reverse motion handling (similar to AMCL)
+    // ============================================================================
+    // If delta_rot1 is closer to ±π than to 0, the robot is likely reversing.
+    // In this case, we flip the direction and reduce rotation uncertainty.
+
+    bool is_reverse = std::abs(delta_rot1) > M_PI / 2.0;
+
+    if (is_reverse) {
+        // Flip the translation direction (robot moving backward)
+        delta_trans = -delta_trans;
+
+        // Adjust rot1 by ±π to point in the opposite direction
+        if (delta_rot1 > 0) {
+            delta_rot1 -= M_PI;
+        } else {
+            delta_rot1 += M_PI;
+        }
+
+        // Recalculate rot2 with adjusted rot1
+        delta_rot2 = normalize_angle(delta_rot_total - delta_rot1);
+    }
+
+    // Normalize rot1 after potential reverse adjustment
     delta_rot1 = normalize_angle(delta_rot1);
-    delta_rot2 = normalize_angle(delta_rot2);
 
     // ============================================================================
     // Generate noise samples for all particles (with RNG lock)
@@ -83,24 +106,25 @@ void odometry_motion_update(MCL* node,
         std::lock_guard<std::mutex> lock(node->rng_lock_);
 
         for (int i = 0; i < node->MAX_PARTICLES; ++i) {
-            // Alpha parameters: motion-proportional noise variances
+            // Alpha parameters: motion-proportional noise standard deviations
             // α1: rotation → rotation noise
             // α2: translation → rotation noise
             // α3: translation → translation noise
             // α4: rotation → translation noise
 
-            // Variance calculation (as in Probabilistic Robotics)
-            double var_rot1 = node->ALPHA1 * delta_rot1 * delta_rot1 +
-                             node->ALPHA2 * delta_trans * delta_trans;
-            double var_trans = node->ALPHA3 * delta_trans * delta_trans +
-                              node->ALPHA4 * (delta_rot1 * delta_rot1 + delta_rot2 * delta_rot2);
-            double var_rot2 = node->ALPHA1 * delta_rot2 * delta_rot2 +
-                             node->ALPHA2 * delta_trans * delta_trans;
+            // Linear approximation for standard deviation (as in Probabilistic Robotics)
+            // This avoids the sqrt(α*x²) = |α*x| computation
+            double std_rot1 = node->ALPHA1 * std::abs(delta_rot1) +
+                             node->ALPHA2 * std::abs(delta_trans);
+            double std_trans = node->ALPHA3 * std::abs(delta_trans) +
+                              node->ALPHA4 * (std::abs(delta_rot1) + std::abs(delta_rot2));
+            double std_rot2 = node->ALPHA1 * std::abs(delta_rot2) +
+                             node->ALPHA2 * std::abs(delta_trans);
 
-            // Sample from Gaussian (std dev = sqrt(variance))
-            noise_rot1_values[i] = node->normal_dist_(node->rng_) * std::sqrt(var_rot1);
-            noise_trans_values[i] = node->normal_dist_(node->rng_) * std::sqrt(var_trans);
-            noise_rot2_values[i] = node->normal_dist_(node->rng_) * std::sqrt(var_rot2);
+            // Sample from Gaussian with linear approximation of std dev
+            noise_rot1_values[i] = node->normal_dist_(node->rng_) * std_rot1;
+            noise_trans_values[i] = node->normal_dist_(node->rng_) * std_trans;
+            noise_rot2_values[i] = node->normal_dist_(node->rng_) * std_rot2;
         }
     }
 
@@ -123,7 +147,7 @@ void odometry_motion_update(MCL* node,
         // 1. Rotate to face translation direction
         theta += delta_rot1_hat;
 
-        // 2. Translate forward
+        // 2. Translate (forward if positive, backward if negative)
         x += delta_trans_hat * std::cos(theta);
         y += delta_trans_hat * std::sin(theta);
 

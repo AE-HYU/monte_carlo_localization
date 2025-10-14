@@ -87,7 +87,9 @@ Eigen::Vector3d calculate_lidar_frame_motion(const Eigen::Vector3d& current_pose
 {
     // Calculate global displacement
     Eigen::Vector2d delta_global = current_pose.head<2>() - previous_pose.head<2>();
-    double delta_theta = current_pose[2] - previous_pose[2];
+
+    // Calculate angular difference and normalize to [-π, π] for shortest path
+    double delta_theta = geometry::normalize_angle(current_pose[2] - previous_pose[2]);
 
     // Transform global displacement to robot-local coordinates using previous pose
     Eigen::Matrix2d rot = geometry::rotation_matrix(-previous_pose[2]);
