@@ -48,13 +48,15 @@ static void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const r
 
         try {
             odom_to_base_msg = node->tf_buffer_->lookupTransform(
-                node->ODOM_FRAME, node->BASE_FRAME, tf_stamp, tf2::durationFromSec(0.05));
+                node->ODOM_FRAME, node->BASE_FRAME, tf_stamp);  // 없으면 아예 발행을 안하는것도 ㄱㅊ...?
             tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
         } catch (tf2::TransformException &ex) {
-            // FALLBACK: Assume map = odom
             RCLCPP_WARN_THROTTLE(node->get_logger(), *node->get_clock(), 5000,
-                "TF lookup failed, assuming map=odom (simulation mode): %s", ex.what());
-            odom_to_base = map_to_base;
+                "TF lookup failed: %s", ex.what());
+            odom_to_base_msg = node->tf_buffer_->lookupTransform(
+                node->ODOM_FRAME, node->BASE_FRAME, tf2::TimePointZero);
+            tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
+            // return;  // Skip publishing if TF not found at requested time
         }
 
         // Step 3: Compute map->odom
