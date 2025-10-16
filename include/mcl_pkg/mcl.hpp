@@ -20,6 +20,8 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/LinearMath/Transform.h>
+#include <tf2/LinearMath/Quaternion.h>
 
 #include <Eigen/Dense>
 #include <memory>
@@ -201,6 +203,20 @@ class MCL : public rclcpp::Node
     // --------------------------------- VELOCITY TRACKING ---------------------------------
     double current_velocity_;          // Current linear velocity (m/s)
     double current_angular_vel_;       // Current angular velocity (rad/s)
+
+    // --------------------------------- HIGH-FREQUENCY PUBLISHING ---------------------------------
+    // Latest odometry data for high-frequency extrapolation
+    rclcpp::Time latest_odom_timestamp_;
+    Eigen::Vector3d latest_odom_pose_;  // (x, y, theta) in odom frame
+
+    // MCL localization result (latest only)
+    rclcpp::Time latest_mcl_timestamp_;
+    Eigen::Vector3d latest_map_to_odom_;  // map->odom transform (x, y, theta)
+    std::mutex mcl_result_lock_;
+
+    // High-frequency publishing timer (200Hz)
+    rclcpp::TimerBase::SharedPtr high_freq_timer_;
+    void high_frequency_publish();  // 200Hz callback for TF and topic publishing
 
     // --------------------------------- LASER-BASELINK OFFSET ---------------------------------
     double laser_offset_x_;            // Laser offset from base_link (forward, m)
