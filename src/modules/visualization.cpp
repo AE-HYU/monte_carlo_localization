@@ -136,23 +136,23 @@ void publish_localization(MCL* node, const Eigen::Vector3d &base_link_pose, cons
     // publish_tf(node, base_link_pose, pub_stamp);  // DISABLED
 
     // 2. Publish Odometry message (also handled by 200Hz timer, but kept for compatibility)
-    if (node->PUBLISH_ODOM && node->odom_pub_ && node->odom_pub_->get_subscription_count() > 0)
-    {
-        nav_msgs::msg::Odometry odom_msg;
-        odom_msg.header.stamp = pub_stamp;
-        odom_msg.header.frame_id = node->MAP_FRAME;
-        odom_msg.child_frame_id = node->BASE_FRAME;
+    // if (node->PUBLISH_ODOM && node->odom_pub_ && node->odom_pub_->get_subscription_count() > 0)
+    // {
+    //     nav_msgs::msg::Odometry odom_msg;
+    //     odom_msg.header.stamp = pub_stamp;
+    //     odom_msg.header.frame_id = node->MAP_FRAME;
+    //     odom_msg.child_frame_id = node->BASE_FRAME;
 
-        odom_msg.pose.pose.position.x = base_link_pose[0];
-        odom_msg.pose.pose.position.y = base_link_pose[1];
-        odom_msg.pose.pose.position.z = 0.0;
+    //     odom_msg.pose.pose.position.x = base_link_pose[0];
+    //     odom_msg.pose.pose.position.y = base_link_pose[1];
+    //     odom_msg.pose.pose.position.z = 0.0;
 
-        tf2::Quaternion q;
-        q.setRPY(0, 0, base_link_pose[2]);
-        odom_msg.pose.pose.orientation = tf2::toMsg(q);
+    //     tf2::Quaternion q;
+    //     q.setRPY(0, 0, base_link_pose[2]);
+    //     odom_msg.pose.pose.orientation = tf2::toMsg(q);
 
-        node->odom_pub_->publish(odom_msg);
-    }
+    //     node->odom_pub_->publish(odom_msg);
+    // }
 
     // 3. Publish Pose visualization (RViz arrow)
     if (node->DO_VIZ && node->pose_pub_ && node->pose_pub_->get_subscription_count() > 0)

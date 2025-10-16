@@ -423,7 +423,8 @@ void MCL::timer_update()
             );
 
             rclcpp::Time latest_odom_time(odom_to_base_tf.header.stamp);
-            double time_diff = (lidar_timestamp - latest_odom_time).seconds();
+            // Use nanoseconds to avoid time source mismatch issues
+            double time_diff = (lidar_timestamp.nanoseconds() - latest_odom_time.nanoseconds()) / 1e9;
 
             if (std::abs(time_diff) < 0.050) {
                 // Get current velocity (should match TF timestamp closely due to Reentrant callback)
@@ -827,7 +828,8 @@ void MCL::high_frequency_publish()
     {
         std::lock_guard<std::mutex> lock(odom_lock_);
 
-        double time_diff = (now - latest_odom_timestamp_).seconds();
+        // Use nanoseconds to avoid time source mismatch issues, then convert to seconds
+        double time_diff = (now.nanoseconds() - latest_odom_timestamp_.nanoseconds()) / 1e9;
 
         // Only use if within reasonable range
         if (std::abs(time_diff) > 0.050) {
@@ -874,25 +876,26 @@ void MCL::high_frequency_publish()
         pub_tf_->sendTransform(map_to_odom_msg);
     }
 
-    // Publish map->base as odometry topic (map->odom × odom->base)
+    // Compute map->base transform (always needed for visualization)
+    // Create map->odom transform
+    tf2::Transform map_to_odom_tf;
+    tf2::Quaternion q_mo;
+    q_mo.setRPY(0, 0, map_to_odom[2]);
+    map_to_odom_tf.setOrigin(tf2::Vector3(map_to_odom[0], map_to_odom[1], 0.0));
+    map_to_odom_tf.setRotation(q_mo);
+
+    // Create odom->base transform
+    tf2::Transform odom_to_base;
+    tf2::Quaternion q_ob;
+    q_ob.setRPY(0, 0, odom_current[2]);
+    odom_to_base.setOrigin(tf2::Vector3(odom_current[0], odom_current[1], 0.0));
+    odom_to_base.setRotation(q_ob);
+
+    // Compute map->base = map->odom × odom->base
+    tf2::Transform map_to_base = map_to_odom_tf * odom_to_base;
+
+    // Publish map->base as odometry topic (optional, only if subscribers exist)
     if (PUBLISH_ODOM && odom_pub_ && odom_pub_->get_subscription_count() > 0) {
-        // Create map->odom transform
-        tf2::Transform map_to_odom_tf;
-        tf2::Quaternion q_mo;
-        q_mo.setRPY(0, 0, map_to_odom[2]);
-        map_to_odom_tf.setOrigin(tf2::Vector3(map_to_odom[0], map_to_odom[1], 0.0));
-        map_to_odom_tf.setRotation(q_mo);
-
-        // Create odom->base transform
-        tf2::Transform odom_to_base;
-        tf2::Quaternion q_ob;
-        q_ob.setRPY(0, 0, odom_current[2]);
-        odom_to_base.setOrigin(tf2::Vector3(odom_current[0], odom_current[1], 0.0));
-        odom_to_base.setRotation(q_ob);
-
-        // Compute map->base = map->odom × odom->base
-        tf2::Transform map_to_base = map_to_odom_tf * odom_to_base;
-
         nav_msgs::msg::Odometry odom_msg;
         odom_msg.header.stamp = now;
         odom_msg.header.frame_id = MAP_FRAME;
@@ -906,6 +909,14 @@ void MCL::high_frequency_publish()
 
         odom_pub_->publish(odom_msg);
     }
+
+    // Publish pose visualization (always publish for RViz)
+    Eigen::Vector3d map_to_base_pose(
+        map_to_base.getOrigin().x(),
+        map_to_base.getOrigin().y(),
+        tf2::getYaw(map_to_base.getRotation())
+    );
+    visualization::publish_localization(this, map_to_base_pose, now);
 }
 
 } // namespace mcl_pkg
