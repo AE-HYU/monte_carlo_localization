@@ -20,7 +20,7 @@ mcl:
     publish_map_odom_tf: true          # Publish map->odom transform (default for real robot)
 
     # === MOTION MODEL SELECTION ===
-    motion_model_type: "odometry"        # "simple" or "odometry" (RTR)
+    motion_model_type: "simple"        # "simple" or "odometry" (RTR)
 
     # === SIMPLE MOTION MODEL (fixed Gaussian noise) ===
     motion_dispersion_x: 0.017          # Forward motion noise (m)
