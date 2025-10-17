@@ -219,6 +219,19 @@ class MCL : public rclcpp::Node
     rclcpp::TimerBase::SharedPtr high_freq_timer_;
     void high_frequency_publish();  // 200Hz callback for TF and topic publishing
 
+    // --------------------------------- POSE EXTRAPOLATION UTILITIES ---------------------------------
+    /**
+     * @brief Extrapolate pose forward in time using velocity
+     * @param base_pose Starting pose (x, y, theta)
+     * @param linear_vel Linear velocity (m/s)
+     * @param angular_vel Angular velocity (rad/s)
+     * @param time_diff Time to extrapolate forward (seconds)
+     * @return Extrapolated pose (x, y, theta)
+     */
+    Eigen::Vector3d extrapolatePose(const Eigen::Vector3d& base_pose,
+                                    double linear_vel, double angular_vel,
+                                    double time_diff);
+
     // --------------------------------- LASER-BASELINK OFFSET ---------------------------------
     double laser_offset_x_;            // Laser offset from base_link (forward, m)
     double laser_offset_y_;            // Laser offset from base_link (lateral, m)
