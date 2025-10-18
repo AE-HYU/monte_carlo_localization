@@ -25,8 +25,10 @@
 #include <tf2/utils.h>
 
 #include <Eigen/Dense>
+#include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -186,7 +188,6 @@ class MCL : public rclcpp::Node
     std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
     
     // Timers
-    rclcpp::TimerBase::SharedPtr update_timer_;
     rclcpp::TimerBase::SharedPtr map_timer_;
     rclcpp::TimerBase::SharedPtr map_loader_timer_;  // Async map loading timer
 
@@ -196,6 +197,18 @@ class MCL : public rclcpp::Node
     std::mutex odom_lock_;
     std::mutex map_lock_;
     std::mutex rng_lock_;
+
+    // MCL worker thread control
+    std::atomic<bool> mcl_running_{false};
+    std::mutex pending_mcl_lock_;
+
+    struct MCLTaskData {
+        std::vector<float> observation;
+        rclcpp::Time timestamp;
+    };
+    std::optional<MCLTaskData> pending_mcl_data_;
+
+    static constexpr int MAX_CONSECUTIVE_MCL_RUNS = 3;  // Prevent infinite loop
 
     // --------------------------------- RANDOM NUMBER GENERATION ---------------------------------
     std::mt19937 rng_;
@@ -240,7 +253,7 @@ class MCL : public rclcpp::Node
     utils::performance::TimingStats timing_stats_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
-    void timer_update(); // Main MCL update function - includes odometry publishing
+    void execute_mcl_worker();  // Async MCL worker (lidar-driven)
     void publish_map_periodically();
 
     // --------------------------------- CALLBACK GROUPS FOR THREADING ---------------------------------
