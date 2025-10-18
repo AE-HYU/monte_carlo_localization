@@ -258,7 +258,7 @@ void MCL::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
     std::lock_guard<std::mutex> lock(odom_lock_);
 
     current_velocity_ = msg->twist.twist.linear.x;
-    current_angular_vel_ = msg->twist.twist.angular.z;
+    current_angular_vel_ = msg->twist.twist.angular.z * M_PI / 180.0;  // Convert deg/s to rad/s
 
     // Store latest odom pose for high-frequency publishing
     latest_odom_timestamp_ = msg->header.stamp;
@@ -622,7 +622,7 @@ Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_li
                 ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
 
             rclcpp::Time latest_tf_time(latest_odom_to_base_msg.header.stamp);
-            double time_diff = (current_lidar_stamp - latest_tf_time).seconds();
+            double time_diff = (current_lidar_stamp.nanoseconds() - latest_tf_time.nanoseconds()) / 1e9;
 
             if (std::abs(time_diff) < 0.050) {
                 // Get current velocity for extrapolation
@@ -911,7 +911,7 @@ void MCL::high_frequency_publish()
     }
     // Lock released - now do calculations outside lock
 
-    double time_diff = (now - latest_odom_time).seconds();
+    double time_diff = (now.nanoseconds() - latest_odom_time.nanoseconds()) / 1e9;
 
     // Only use if within reasonable range
     if (std::abs(time_diff) > 0.050) {
