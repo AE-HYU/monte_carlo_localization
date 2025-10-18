@@ -43,9 +43,11 @@ geometry_msgs::msg::Quaternion yaw_to_quaternion(double yaw)
 // Normalize angle to [-π, π] range
 double normalize_angle(double angle)
 {
-    while (angle > M_PI) angle -= 2.0 * M_PI;
-    while (angle < -M_PI) angle += 2.0 * M_PI;
-    return angle;
+    // Fast normalization using fmod instead of while loop
+    // This is O(1) instead of O(n) for large angles
+    angle = std::fmod(angle + M_PI, 2.0 * M_PI);
+    if (angle < 0) angle += 2.0 * M_PI;
+    return angle - M_PI;
 }
 
 // Generate 2D rotation matrix R(θ)

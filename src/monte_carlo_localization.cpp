@@ -862,7 +862,8 @@ Eigen::Vector3d MCL::extrapolatePose(const Eigen::Vector3d& base_pose,
     Eigen::Vector3d extrapolated_pose;
     extrapolated_pose[0] = base_pose[0] + dx;
     extrapolated_pose[1] = base_pose[1] + dy;
-    extrapolated_pose[2] = base_pose[2] + dtheta;
+    // Normalize angle to [-π, π] to prevent accumulation
+    extrapolated_pose[2] = utils::geometry::normalize_angle(base_pose[2] + dtheta);
 
     return extrapolated_pose;
 }
