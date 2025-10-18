@@ -6,7 +6,7 @@
 mcl:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 3000                # Maximum number of particles
+    max_particles: 4000                # Maximum number of particles
     min_particles: 500                 # Minimum number of particles (for adaptive resampling)
     max_viz_particles: 60              # Visualization downsampling
     max_range: 8.5                    # Laser max range (m)
@@ -32,7 +32,7 @@ mcl:
     # Tuned for F1TENTH high-speed racing scenarios
     alpha1: 0.2                        # rotation → rotation noise
     alpha2: 0.02                       # translation → rotation noise
-    alpha3: 0.7                        # translation → translation noise
+    alpha3: 1.0                        # translation → translation noise
     alpha4: 0.08                        # rotation → translation noise
 
     # Small motion thresholds (below these, use minimal noise instead of RTR model)
@@ -53,7 +53,7 @@ mcl:
                                        # low_variance: Systematic sampling (low variance, recommended)
 
     # === SENSOR MODEL ===
-    sensor_model_type: "beam"                      # "beam" or "likelihood_field"
+    sensor_model_type: "likelihood_field"                      # "beam" or "likelihood_field"
     omp_schedule_type: "static"
     omp_chunk_size: 0
 
