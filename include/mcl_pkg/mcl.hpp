@@ -73,7 +73,8 @@ class MCL : public rclcpp::Node
         const std::vector<rclcpp::Parameter> &parameters);
 
     // --------------------------------- TF UTILITIES ---------------------------------
-    Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp);
+    Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp,
+                                                   const Eigen::Vector3d& current_odom_to_base);
 
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
     int ANGLE_STEP;
@@ -193,20 +194,19 @@ class MCL : public rclcpp::Node
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
-    std::mutex lidar_lock_;
+    std::mutex lidar_lock_;      // Protects: downsampled_ranges_, pending_mcl_data_
     std::mutex odom_lock_;
     std::mutex map_lock_;
     std::mutex rng_lock_;
 
     // MCL worker thread control
     std::atomic<bool> mcl_running_{false};
-    std::mutex pending_mcl_lock_;
 
     struct MCLTaskData {
         std::vector<float> observation;
         rclcpp::Time timestamp;
     };
-    std::optional<MCLTaskData> pending_mcl_data_;
+    std::optional<MCLTaskData> pending_mcl_data_;  // Protected by lidar_lock_
 
     static constexpr int MAX_CONSECUTIVE_MCL_RUNS = 3;  // Prevent infinite loop
 
