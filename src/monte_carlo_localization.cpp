@@ -168,12 +168,6 @@ MCL::MCL(const rclcpp::NodeOptions &options)
         std::bind(&MCL::publish_map_periodically, this),
         compute_group_);
 
-    // High-frequency publishing timer (200Hz)
-    high_freq_timer_ = this->create_wall_timer(
-        std::chrono::microseconds(5000),  // 5ms = 200Hz
-        std::bind(&MCL::high_frequency_publish, this),
-        sensor_group_);  // Use sensor_group for real-time performance
-
     // Register dynamic parameter callback
     param_callback_handle_ = this->add_on_set_parameters_callback(
         [this](const std::vector<rclcpp::Parameter> &parameters) {
@@ -202,7 +196,6 @@ MCL::~MCL()
     // Cancel all timers explicitly for clean shutdown
     if (map_loader_timer_) map_loader_timer_->cancel();
     if (map_timer_) map_timer_->cancel();
-    if (high_freq_timer_) high_freq_timer_->cancel();
 
     // Other resources (smart pointers, Eigen matrices) are cleaned up automatically via RAII
 }
@@ -286,21 +279,24 @@ void MCL::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 
 void MCL::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    std::lock_guard<std::mutex> lock(odom_lock_);
+    // Store latest odom data for MCL worker and visualization (needs lock)
+    {
+        std::lock_guard<std::mutex> lock(odom_lock_);
+        current_velocity_ = msg->twist.twist.linear.x;
+        current_angular_vel_ = msg->twist.twist.angular.z * M_PI / 180.0;  // Convert deg/s to rad/s
+        latest_odom_timestamp_ = msg->header.stamp;
+        latest_odom_pose_[0] = msg->pose.pose.position.x;
+        latest_odom_pose_[1] = msg->pose.pose.position.y;
+        latest_odom_pose_[2] = utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation);
 
-    current_velocity_ = msg->twist.twist.linear.x;
-    current_angular_vel_ = msg->twist.twist.angular.z * M_PI / 180.0;  // Convert deg/s to rad/s
-
-    // Store latest odom pose for high-frequency publishing
-    latest_odom_timestamp_ = msg->header.stamp;
-    latest_odom_pose_[0] = msg->pose.pose.position.x;
-    latest_odom_pose_[1] = msg->pose.pose.position.y;
-    latest_odom_pose_[2] = utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation);
-
-    if (!odom_initialized_) {
-        odom_initialized_ = true;
-        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        if (!odom_initialized_) {
+            odom_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        }
     }
+
+    // Publish pose immediately with odom data (no extrapolation needed)
+    publish_pose(msg);
 }
 
 void MCL::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
@@ -923,9 +919,9 @@ void MCL::publish_map_periodically()
 }
 
 // ================================================================================================
-// HIGH-FREQUENCY PUBLISHING (200Hz)
+// POSE PUBLISHING (triggered by odom callback)
 // ================================================================================================
-void MCL::high_frequency_publish()
+void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
 {
     // Get latest map->odom transform (from MCL computation)
     Eigen::Vector3d map_to_odom_vec;
@@ -934,50 +930,19 @@ void MCL::high_frequency_publish()
         map_to_odom_vec = latest_map_to_odom_;
     }
 
-    // Get current time for publishing
-    rclcpp::Time now = this->get_clock()->now();
+    // Extract odom->base from incoming message (no extrapolation needed)
+    Eigen::Vector3d odom_to_base_vec(
+        odom_msg->pose.pose.position.x,
+        odom_msg->pose.pose.position.y,
+        utils::geometry::quaternion_to_yaw(odom_msg->pose.pose.orientation)
+    );
 
-    // Get latest odom->base and extrapolate to current time
-    // Copy data from global variables while holding lock (minimize lock time)
-    Eigen::Vector3d latest_odom_to_base_vec;
-    double linear_vel, angular_vel;
-    rclcpp::Time latest_odom_time;
-    {
-        std::lock_guard<std::mutex> lock(odom_lock_);
-        latest_odom_to_base_vec = latest_odom_pose_;
-        linear_vel = current_velocity_;
-        angular_vel = current_angular_vel_;
-        latest_odom_time = latest_odom_timestamp_;
-    }
-    // Lock released - now do calculations outside lock
-
-    double time_diff = (now.nanoseconds() - latest_odom_time.nanoseconds()) / 1e9;
-
-    // Only use if within reasonable range
-    if (std::abs(time_diff) > 0.050) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-            "[200Hz] Odometry too old (%.4fs > 0.050s) - skipping publishing", time_diff);
-        return;  // Odometry too old
-    }
-
-    Eigen::Vector3d current_odom_to_base_vec;
-    if (std::abs(time_diff) < 0.001) {
-        // Close enough, no extrapolation needed
-        current_odom_to_base_vec = latest_odom_to_base_vec;
-        RCLCPP_DEBUG(this->get_logger(),
-            "[200Hz] Using latest odom->base directly (time_diff=%.4fs)", time_diff);
-    } else {
-        // Extrapolate odom->base using velocity
-        current_odom_to_base_vec = extrapolatePose(latest_odom_to_base_vec, linear_vel, angular_vel, time_diff);
-
-        RCLCPP_DEBUG(this->get_logger(),
-            "[200Hz] Extrapolated odom->base (time_diff=%.4fs)", time_diff);
-    }
+    rclcpp::Time timestamp = odom_msg->header.stamp;
 
     // Publish map->odom TF
     if (PUBLISH_MAP_ODOM_TF) {
         geometry_msgs::msg::TransformStamped map_to_odom_msg;
-        map_to_odom_msg.header.stamp = now;
+        map_to_odom_msg.header.stamp = timestamp;
         map_to_odom_msg.header.frame_id = MAP_FRAME;
         map_to_odom_msg.child_frame_id = ODOM_FRAME;
 
@@ -1001,30 +966,30 @@ void MCL::high_frequency_publish()
     map_to_odom_tf.setRotation(map_to_odom_quat);
 
     // Create odom->base transform (needed for TF multiplication)
-    tf2::Transform current_odom_to_base_tf;
-    current_odom_to_base_tf.setOrigin(tf2::Vector3(
-        current_odom_to_base_vec[0], current_odom_to_base_vec[1], 0.0));
+    tf2::Transform odom_to_base_tf;
+    odom_to_base_tf.setOrigin(tf2::Vector3(
+        odom_to_base_vec[0], odom_to_base_vec[1], 0.0));
     tf2::Quaternion odom_to_base_quat;
-    odom_to_base_quat.setRPY(0, 0, current_odom_to_base_vec[2]);
-    current_odom_to_base_tf.setRotation(odom_to_base_quat);
+    odom_to_base_quat.setRPY(0, 0, odom_to_base_vec[2]);
+    odom_to_base_tf.setRotation(odom_to_base_quat);
 
     // Compute map->base = map->odom × odom->base
-    tf2::Transform map_to_base_tf = map_to_odom_tf * current_odom_to_base_tf;
+    tf2::Transform map_to_base_tf = map_to_odom_tf * odom_to_base_tf;
 
     // Publish map->base as odometry topic (optional, only if subscribers exist)
     if (PUBLISH_ODOM && odom_pub_ && odom_pub_->get_subscription_count() > 0) {
-        nav_msgs::msg::Odometry odom_msg;
-        odom_msg.header.stamp = now;
-        odom_msg.header.frame_id = MAP_FRAME;
-        odom_msg.child_frame_id = BASE_FRAME;
+        nav_msgs::msg::Odometry odom_out_msg;
+        odom_out_msg.header.stamp = timestamp;
+        odom_out_msg.header.frame_id = MAP_FRAME;
+        odom_out_msg.child_frame_id = BASE_FRAME;
 
-        odom_msg.pose.pose.position.x = map_to_base_tf.getOrigin().x();
-        odom_msg.pose.pose.position.y = map_to_base_tf.getOrigin().y();
-        odom_msg.pose.pose.position.z = 0.0;
+        odom_out_msg.pose.pose.position.x = map_to_base_tf.getOrigin().x();
+        odom_out_msg.pose.pose.position.y = map_to_base_tf.getOrigin().y();
+        odom_out_msg.pose.pose.position.z = 0.0;
 
-        odom_msg.pose.pose.orientation = tf2::toMsg(map_to_base_tf.getRotation());
+        odom_out_msg.pose.pose.orientation = tf2::toMsg(map_to_base_tf.getRotation());
 
-        odom_pub_->publish(odom_msg);
+        odom_pub_->publish(odom_out_msg);
     }
 
     // Publish pose visualization for RViz (PoseStamped message)
@@ -1033,7 +998,7 @@ void MCL::high_frequency_publish()
         map_to_base_tf.getOrigin().y(),
         tf2::getYaw(map_to_base_tf.getRotation())
     );
-    visualization::publish_localization(this, map_to_base_vec, now);
+    visualization::publish_localization(this, map_to_base_vec, timestamp);
 }
 
 } // namespace mcl_pkg

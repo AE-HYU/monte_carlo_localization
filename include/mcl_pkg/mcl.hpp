@@ -218,8 +218,8 @@ class MCL : public rclcpp::Node
     double current_velocity_;          // Current linear velocity (m/s)
     double current_angular_vel_;       // Current angular velocity (rad/s)
 
-    // --------------------------------- HIGH-FREQUENCY PUBLISHING ---------------------------------
-    // Latest odometry data for high-frequency extrapolation
+    // --------------------------------- POSE PUBLISHING ---------------------------------
+    // Latest odometry data storage (for MCL worker and visualization)
     rclcpp::Time latest_odom_timestamp_;
     Eigen::Vector3d latest_odom_pose_;  // (x, y, theta) in odom frame
 
@@ -228,9 +228,8 @@ class MCL : public rclcpp::Node
     Eigen::Vector3d latest_map_to_odom_;  // map->odom transform (x, y, theta)
     std::mutex mcl_result_lock_;
 
-    // High-frequency publishing timer (200Hz)
-    rclcpp::TimerBase::SharedPtr high_freq_timer_;
-    void high_frequency_publish();  // 200Hz callback for TF and topic publishing
+    // Pose publishing (triggered by odom callback)
+    void publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg);
 
     // --------------------------------- POSE EXTRAPOLATION UTILITIES ---------------------------------
     /**
