@@ -59,6 +59,11 @@ class MCL : public rclcpp::Node
     double calculate_ess();  // Calculate Effective Sample Size
     void resample();         // Execute resampling (multinomial)
 
+    // --------------------------------- LOCALIZATION QUALITY ---------------------------------
+    double get_max_weight();                    // Maximum particle weight
+    Eigen::Matrix3d calculate_covariance();     // Particle covariance matrix
+    double calculate_particle_spread();         // Average particle distance from mean
+
     // --------------------------------- INITIALIZATION ---------------------------------
     void initParameters();  // Parameter validation with semantic checks
 
@@ -73,7 +78,8 @@ class MCL : public rclcpp::Node
         const std::vector<rclcpp::Parameter> &parameters);
 
     // --------------------------------- TF UTILITIES ---------------------------------
-    Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp);
+    Eigen::Vector3d calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp,
+                                                   const Eigen::Vector3d& current_odom_to_base);
 
     // --------------------------------- ALGORITHM PARAMETERS ---------------------------------
     int ANGLE_STEP;
@@ -180,6 +186,7 @@ class MCL : public rclcpp::Node
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr quality_marker_pub_;  // Max weight visualization
 
     // Services and TF
     rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
@@ -193,20 +200,19 @@ class MCL : public rclcpp::Node
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
-    std::mutex lidar_lock_;
+    std::mutex lidar_lock_;      // Protects: downsampled_ranges_, pending_mcl_data_
     std::mutex odom_lock_;
     std::mutex map_lock_;
     std::mutex rng_lock_;
 
     // MCL worker thread control
     std::atomic<bool> mcl_running_{false};
-    std::mutex pending_mcl_lock_;
 
     struct MCLTaskData {
         std::vector<float> observation;
         rclcpp::Time timestamp;
     };
-    std::optional<MCLTaskData> pending_mcl_data_;
+    std::optional<MCLTaskData> pending_mcl_data_;  // Protected by lidar_lock_
 
     static constexpr int MAX_CONSECUTIVE_MCL_RUNS = 3;  // Prevent infinite loop
 
@@ -218,8 +224,8 @@ class MCL : public rclcpp::Node
     double current_velocity_;          // Current linear velocity (m/s)
     double current_angular_vel_;       // Current angular velocity (rad/s)
 
-    // --------------------------------- HIGH-FREQUENCY PUBLISHING ---------------------------------
-    // Latest odometry data for high-frequency extrapolation
+    // --------------------------------- POSE PUBLISHING ---------------------------------
+    // Latest odometry data storage (for MCL worker and visualization)
     rclcpp::Time latest_odom_timestamp_;
     Eigen::Vector3d latest_odom_pose_;  // (x, y, theta) in odom frame
 
@@ -228,9 +234,13 @@ class MCL : public rclcpp::Node
     Eigen::Vector3d latest_map_to_odom_;  // map->odom transform (x, y, theta)
     std::mutex mcl_result_lock_;
 
-    // High-frequency publishing timer (200Hz)
-    rclcpp::TimerBase::SharedPtr high_freq_timer_;
-    void high_frequency_publish();  // 200Hz callback for TF and topic publishing
+    // Localization quality metrics (computed with state_lock_, read with mcl_result_lock_)
+    double latest_max_weight_;
+    Eigen::Matrix3d latest_covariance_;
+    double latest_particle_spread_;
+
+    // Pose publishing (triggered by odom callback)
+    void publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg);
 
     // --------------------------------- POSE EXTRAPOLATION UTILITIES ---------------------------------
     /**

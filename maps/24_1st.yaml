@@ -1,0 +1,9 @@
+free_thresh: 0.3
+image: 24_1st.png
+negate: 0
+occupied_thresh: 0.65
+origin:
+- -9.811409759521485
+- -4.3500000000000005
+- 0
+resolution: 0.05000000074505806
