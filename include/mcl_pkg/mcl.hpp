@@ -59,6 +59,11 @@ class MCL : public rclcpp::Node
     double calculate_ess();  // Calculate Effective Sample Size
     void resample();         // Execute resampling (multinomial)
 
+    // --------------------------------- LOCALIZATION QUALITY ---------------------------------
+    double get_max_weight();                    // Maximum particle weight
+    Eigen::Matrix3d calculate_covariance();     // Particle covariance matrix
+    double calculate_particle_spread();         // Average particle distance from mean
+
     // --------------------------------- INITIALIZATION ---------------------------------
     void initParameters();  // Parameter validation with semantic checks
 
@@ -181,6 +186,7 @@ class MCL : public rclcpp::Node
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr quality_marker_pub_;  // Max weight visualization
 
     // Services and TF
     rclcpp::Client<nav_msgs::srv::GetMap>::SharedPtr map_client_;
@@ -227,6 +233,11 @@ class MCL : public rclcpp::Node
     rclcpp::Time latest_mcl_timestamp_;
     Eigen::Vector3d latest_map_to_odom_;  // map->odom transform (x, y, theta)
     std::mutex mcl_result_lock_;
+
+    // Localization quality metrics (computed with state_lock_, read with mcl_result_lock_)
+    double latest_max_weight_;
+    Eigen::Matrix3d latest_covariance_;
+    double latest_particle_spread_;
 
     // Pose publishing (triggered by odom callback)
     void publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg);

@@ -17,6 +17,8 @@
 #include "mcl_pkg/resampling_model/multinomial_resampling.hpp"
 #include "mcl_pkg/resampling_model/low_variance_resampling.hpp"
 
+#include <visualization_msgs/msg/marker.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -91,6 +93,7 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/pf/viz/inferred_pose", 10);
     odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/pf/pose/odom", 10);
     map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(10).transient_local());
+    quality_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/pf/viz/quality", 10);
 
     // ROS2 Subscribers
     std::string scan_topic = this->get_parameter("scan_topic").as_string();
@@ -444,11 +447,19 @@ void MCL::execute_mcl_worker()
         auto mcl_end = std::chrono::high_resolution_clock::now();
         mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
 
-        // 6. Expected pose calculation
+        // 6. Expected pose calculation AND quality metrics (with state_lock_)
         Eigen::Vector3d current_pose_laser;
+        double max_weight;
+        Eigen::Matrix3d covariance;
+        double particle_spread;
         {
             std::lock_guard<std::mutex> lock(state_lock_);
             current_pose_laser = expected_pose();
+
+            // Calculate quality metrics while holding state_lock_
+            max_weight = get_max_weight();
+            covariance = calculate_covariance();
+            particle_spread = calculate_particle_spread();
         }
 
         // 7. Convert laser frame to base_link
@@ -484,11 +495,16 @@ void MCL::execute_mcl_worker()
         RCLCPP_DEBUG(this->get_logger(),
             "[MCL Worker] Computed map->odom using same odom->base as motion (consistent)");
 
-        // 9. Store latest map->odom for publishing
+        // 9. Store latest map->odom and quality metrics for publishing
         {
             std::lock_guard<std::mutex> lock(mcl_result_lock_);
             latest_mcl_timestamp_ = lidar_timestamp;
             latest_map_to_odom_ = map_to_odom_result;
+
+            // Store quality metrics (computed safely with state_lock_ above)
+            latest_max_weight_ = max_weight;
+            latest_covariance_ = covariance;
+            latest_particle_spread_ = particle_spread;
 
             RCLCPP_DEBUG(this->get_logger(),
                 "[MCL Worker] Stored map->odom [%.3f, %.3f, %.3f] for publishing",
@@ -549,6 +565,15 @@ void MCL::execute_mcl_worker()
                std::to_string(current_pose_base[2]) + "]";
 
         RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
+
+        // Localization quality metrics (already computed above with state_lock_)
+        double pos_uncertainty = std::sqrt(covariance(0,0) + covariance(1,1));
+        double angle_uncertainty = std::sqrt(covariance(2,2)) * 180.0 / M_PI;
+
+        RCLCPP_INFO(this->get_logger(),
+            "Quality | Max Weight: %.4f | Pos Unc: %.3fm | Angle Unc: %.1f° | Spread: %.3fm",
+            max_weight, pos_uncertainty, angle_uncertainty, particle_spread
+        );
 
         // Also print detailed timing stats collected over the last interval
         timing_stats_.print_stats([this](const std::string &s) {
@@ -796,6 +821,54 @@ Eigen::Vector3d MCL::expected_pose()
     return pose;
 }
 
+/**
+ * @brief Get maximum particle weight (localization confidence)
+ */
+double MCL::get_max_weight()
+{
+    return *std::max_element(weights_.begin(), weights_.end());
+}
+
+/**
+ * @brief Calculate particle covariance matrix (uncertainty)
+ */
+Eigen::Matrix3d MCL::calculate_covariance()
+{
+    Eigen::Vector3d mean = expected_pose();
+    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        Eigen::Vector3d diff;
+        diff[0] = particles_(i, 0) - mean[0];
+        diff[1] = particles_(i, 1) - mean[1];
+        diff[2] = utils::geometry::normalize_angle(particles_(i, 2) - mean[2]);
+
+        // Weighted covariance
+        cov += weights_[i] * (diff * diff.transpose());
+    }
+
+    return cov;
+}
+
+/**
+ * @brief Calculate average particle spread (dispersion measure)
+ */
+double MCL::calculate_particle_spread()
+{
+    Eigen::Vector3d mean = expected_pose();
+    double sum_dist = 0.0;
+
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        double dx = particles_(i, 0) - mean[0];
+        double dy = particles_(i, 1) - mean[1];
+        sum_dist += std::sqrt(dx*dx + dy*dy);
+    }
+
+    return sum_dist / MAX_PARTICLES;
+}
+
 // ================================================================================================
 // POSE EXTRAPOLATION UTILITIES
 // ================================================================================================
@@ -892,7 +965,7 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
     // Compute map->base = map->odom × odom->base
     tf2::Transform map_to_base_tf = map_to_odom_tf * odom_to_base_tf;
 
-    // Publish map->base as odometry topic (optional, only if subscribers exist)
+    // Publish map->base as odometry topic with covariance (optional, only if subscribers exist)
     if (PUBLISH_ODOM && odom_pub_ && odom_pub_->get_subscription_count() > 0) {
         nav_msgs::msg::Odometry odom_out_msg;
         odom_out_msg.header.stamp = timestamp;
@@ -905,6 +978,25 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
 
         odom_out_msg.pose.pose.orientation = tf2::toMsg(map_to_base_tf.getRotation());
 
+        // Add covariance from particle filter for RViz visualization
+        // RViz will display this as ellipse (x,y) and arc (yaw)
+        // Read pre-computed covariance (thread-safe copy)
+        Eigen::Matrix3d cov;
+        {
+            std::lock_guard<std::mutex> lock(mcl_result_lock_);
+            cov = latest_covariance_;  // Atomic copy of 9 doubles
+        }
+
+        // Fill 6x6 covariance matrix (x, y, z, roll, pitch, yaw)
+        // ROS uses row-major order: index = row * 6 + col
+        std::fill(odom_out_msg.pose.covariance.begin(), odom_out_msg.pose.covariance.end(), 0.0);
+
+        odom_out_msg.pose.covariance[0] = cov(0, 0);   // cov[0][0] = x-x
+        odom_out_msg.pose.covariance[1] = cov(0, 1);   // cov[0][1] = x-y
+        odom_out_msg.pose.covariance[6] = cov(1, 0);   // cov[1][0] = y-x
+        odom_out_msg.pose.covariance[7] = cov(1, 1);   // cov[1][1] = y-y
+        odom_out_msg.pose.covariance[35] = cov(2, 2);  // cov[5][5] = yaw-yaw
+
         odom_pub_->publish(odom_out_msg);
     }
 
@@ -915,6 +1007,63 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
         tf2::getYaw(map_to_base_tf.getRotation())
     );
     visualization::publish_localization(this, map_to_base_vec, timestamp);
+
+    // Publish max weight visualization (color-coded quality indicator)
+    if (quality_marker_pub_ && quality_marker_pub_->get_subscription_count() > 0) {
+        // Read max weight from pre-computed values
+        double max_weight;
+        {
+            std::lock_guard<std::mutex> lock(mcl_result_lock_);
+            max_weight = latest_max_weight_;
+        }
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.stamp = timestamp;
+        marker.header.frame_id = MAP_FRAME;
+        marker.ns = "localization_quality";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::SPHERE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+
+        // Position above the robot
+        marker.pose.position.x = map_to_base_vec[0];
+        marker.pose.position.y = map_to_base_vec[1];
+        marker.pose.position.z = 0.5;  // 50cm above
+        marker.pose.orientation.w = 1.0;
+
+        // Size
+        marker.scale.x = 0.15;
+        marker.scale.y = 0.15;
+        marker.scale.z = 0.15;
+
+        // Color based on max weight (green = good, yellow = ok, red = bad)
+        if (max_weight > 0.1) {
+            // EXCELLENT: Green
+            marker.color.r = 0.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+        } else if (max_weight > 0.05) {
+            // GOOD: Yellow
+            marker.color.r = 1.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+        } else if (max_weight > 0.02) {
+            // FAIR: Orange
+            marker.color.r = 1.0;
+            marker.color.g = 0.5;
+            marker.color.b = 0.0;
+        } else {
+            // POOR: Red
+            marker.color.r = 1.0;
+            marker.color.g = 0.0;
+            marker.color.b = 0.0;
+        }
+        marker.color.a = 0.8;  // Slightly transparent
+
+        marker.lifetime = rclcpp::Duration::from_seconds(0.2);  // 200ms lifetime
+
+        quality_marker_pub_->publish(marker);
+    }
 }
 
 } // namespace mcl_pkg
