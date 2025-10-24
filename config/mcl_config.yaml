@@ -6,7 +6,7 @@
 mcl:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 4000                # Maximum number of particles
+    max_particles: 3000                # Maximum number of particles
     min_particles: 500                 # Minimum number of particles (for adaptive resampling)
     max_viz_particles: 60              # Visualization downsampling
     max_range: 8.5                    # Laser max range (m)
@@ -20,7 +20,7 @@ mcl:
     publish_map_odom_tf: true          # Publish map->odom transform (default for real robot)
 
     # === MOTION MODEL SELECTION ===
-    motion_model_type: "simple"        # "simple" or "odometry" (RTR)
+    motion_model_type: "odometry"        # "simple" or "odometry" (RTR)
 
     # === SIMPLE MOTION MODEL (fixed Gaussian noise) ===
     motion_dispersion_x: 0.017          # Forward motion noise (m)
@@ -44,7 +44,7 @@ mcl:
 
     # === RESAMPLING ===
     use_adaptive_resampling: true      # Enable adaptive resampling (true/false)
-    ess_threshold: 0.5                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
+    ess_threshold: 0.7                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
                                        # 0.3 = aggressive (less resampling, more diversity)
                                        # 0.5 = balanced (recommended for F1Tenth)
                                        # 0.7 = conservative (more resampling, more accuracy)
