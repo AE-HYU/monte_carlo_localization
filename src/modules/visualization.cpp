@@ -100,6 +100,8 @@ void publish_localization(MCL* node, const Eigen::Vector3d &base_link_pose, cons
         q.setRPY(0, 0, base_link_pose[2]);
         odom_msg.pose.pose.orientation = tf2::toMsg(q);
 
+        odom_msg.twist.twist.linear.x = node->current_velocity_;
+
         node->odom_pub_->publish(odom_msg);
     }
 
