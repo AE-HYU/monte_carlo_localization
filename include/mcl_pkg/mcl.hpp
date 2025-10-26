@@ -38,6 +38,15 @@
 namespace mcl_pkg
 {
 
+// Quality metrics computed before resampling (when weights are meaningful)
+struct MCLQualityMetrics
+{
+    Eigen::Vector3d mean_pose;       // Weighted mean pose
+    Eigen::Matrix3d covariance;      // Weighted covariance
+    double max_weight;               // Maximum particle weight
+    double particle_spread;          // Average distance from mean (uses proposal_distribution_)
+};
+
 class MCL : public rclcpp::Node
 {
   public:
@@ -49,7 +58,7 @@ class MCL : public rclcpp::Node
     // ================================================================================================
 
     // --------------------------------- CORE MCL ALGORITHM ---------------------------------
-    void run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation);
+    MCLQualityMetrics run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation);
     void motion_model(Eigen::MatrixXd &proposal_dist, const Eigen::Vector3d &action);
     void sensor_model(const Eigen::MatrixXd &proposal_dist, const std::vector<float> &obs,
                       std::vector<double> &weights);
@@ -222,8 +231,19 @@ class MCL : public rclcpp::Node
     std::normal_distribution<double> normal_dist_;
 
     // --------------------------------- VELOCITY TRACKING ---------------------------------
-    double current_velocity_;          // Current linear velocity (m/s)
-    double current_angular_vel_;       // Current angular velocity (rad/s)
+    double current_velocity_;          // Current linear velocity from odometry (m/s)
+    double current_angular_vel_;       // Current angular velocity from odometry (rad/s)
+
+    // MCL-based velocity estimation (actual ground velocity considering slip)
+    double estimated_vx_;              // Estimated linear velocity in robot frame (m/s)
+    double estimated_vy_;              // Estimated lateral velocity in robot frame (m/s)
+    double estimated_vyaw_;            // Estimated angular velocity (rad/s)
+    Eigen::Vector3d last_estimated_pose_;  // Last pose for velocity estimation
+    rclcpp::Time last_velocity_update_time_;  // Last time velocity was updated
+    bool velocity_initialized_;        // Whether velocity estimation is initialized
+
+    // Low-pass filter parameters for velocity smoothing
+    double velocity_filter_alpha_;     // Filter coefficient (0-1, higher = less filtering)
 
     // --------------------------------- POSE PUBLISHING ---------------------------------
     // Latest odometry data storage (for MCL worker and visualization)

@@ -48,6 +48,14 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     current_velocity_ = 0.0;
     current_angular_vel_ = 0.0;
 
+    // Initialize MCL-based velocity estimation
+    estimated_vx_ = 0.0;
+    estimated_vy_ = 0.0;
+    estimated_vyaw_ = 0.0;
+    last_estimated_pose_ = Eigen::Vector3d::Zero();
+    velocity_initialized_ = false;
+    velocity_filter_alpha_ = 0.3;  // Low-pass filter: 0.3 = aggressive filtering, 0.7 = less filtering
+
     // Initialize distance field (likelihood field model)
     distance_field_initialized_ = false;
     distance_field_width_ = 0;
@@ -438,33 +446,65 @@ void MCL::execute_mcl_worker()
         auto motion_end = std::chrono::high_resolution_clock::now();
         double motion_calc_time_ms = std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
-        // 5. Execute MCL (heavy computation)
+        // 5. Execute MCL (heavy computation) and get quality metrics
         auto mcl_start = std::chrono::high_resolution_clock::now();
+        MCLQualityMetrics metrics;
         {
             std::lock_guard<std::mutex> lock(state_lock_);
-            run_mcl(action, observation);
+            metrics = run_mcl(action, observation);
         }
         auto mcl_end = std::chrono::high_resolution_clock::now();
         mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
 
-        // 6. Expected pose calculation AND quality metrics (with state_lock_)
-        Eigen::Vector3d current_pose_laser;
-        double max_weight;
-        Eigen::Matrix3d covariance;
-        double particle_spread;
-        {
-            std::lock_guard<std::mutex> lock(state_lock_);
-            current_pose_laser = expected_pose();
-
-            // Calculate quality metrics while holding state_lock_
-            max_weight = get_max_weight();
-            covariance = calculate_covariance();
-            particle_spread = calculate_particle_spread();
-        }
+        // 6. Extract quality metrics (computed before resampling, so they're meaningful)
+        Eigen::Vector3d current_pose_laser = metrics.mean_pose;
+        double max_weight = metrics.max_weight;
+        Eigen::Matrix3d covariance = metrics.covariance;
+        double particle_spread = metrics.particle_spread;
 
         // 7. Convert laser frame to base_link
         Eigen::Vector3d current_pose_base = utils::transforms::apply_laser_to_base_offset(
             current_pose_laser, laser_offset_x_, laser_offset_y_);
+
+        // 7.5. Calculate MCL-based velocity estimation (actual ground velocity with slip considered)
+        if (velocity_initialized_) {
+            // Calculate time difference
+            double dt = (lidar_timestamp - last_velocity_update_time_).seconds();
+
+            if (dt > 0.001 && dt < 0.5) {  // Sanity check: 1ms to 500ms
+                // Calculate pose change in map frame
+                double dx_map = current_pose_base[0] - last_estimated_pose_[0];
+                double dy_map = current_pose_base[1] - last_estimated_pose_[1];
+                double dtheta = utils::geometry::normalize_angle(current_pose_base[2] - last_estimated_pose_[2]);
+
+                // Transform velocity from map frame to robot frame
+                // Robot frame velocity = R^T * map_frame_velocity
+                double cos_theta = std::cos(last_estimated_pose_[2]);
+                double sin_theta = std::sin(last_estimated_pose_[2]);
+
+                double vx_raw = (dx_map * cos_theta + dy_map * sin_theta) / dt;
+                double vy_raw = (-dx_map * sin_theta + dy_map * cos_theta) / dt;
+                double vyaw_raw = dtheta / dt;
+
+                // Apply low-pass filter to smooth velocity (reduces MCL noise)
+                // filtered = alpha * new + (1 - alpha) * old
+                estimated_vx_ = velocity_filter_alpha_ * vx_raw + (1.0 - velocity_filter_alpha_) * estimated_vx_;
+                estimated_vy_ = velocity_filter_alpha_ * vy_raw + (1.0 - velocity_filter_alpha_) * estimated_vy_;
+                estimated_vyaw_ = velocity_filter_alpha_ * vyaw_raw + (1.0 - velocity_filter_alpha_) * estimated_vyaw_;
+
+                RCLCPP_DEBUG(this->get_logger(),
+                    "[Velocity Est] vx=%.3f m/s (odom: %.3f), vy=%.3f m/s, vyaw=%.3f rad/s (dt=%.3fs)",
+                    estimated_vx_, current_velocity_, estimated_vy_, estimated_vyaw_, dt);
+            }
+        } else {
+            // First iteration - initialize
+            velocity_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(), "MCL-based velocity estimation initialized");
+        }
+
+        // Update last pose and time for next iteration
+        last_estimated_pose_ = current_pose_base;
+        last_velocity_update_time_ = lidar_timestamp;
 
         // 8. Compute map->odom using the SAME odom->base from step 3 (for consistency)
         // Reuse the odom_to_base_vec that was used for motion calculation
@@ -727,8 +767,10 @@ void MCL::resample()
 
 /**
  * @brief Executes complete MCL cycle: predict, update, normalize, resample
+ * @return MCLQualityMetrics containing mean pose, covariance, max_weight, and particle_spread
+ *         These metrics are computed BEFORE resampling when weights are still meaningful
  */
-void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
+MCLQualityMetrics MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -752,6 +794,45 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
             w /= sum_weights;
         }
     }
+
+    // 3.5. Calculate quality metrics BEFORE resampling (when weights are meaningful)
+    // After resampling, weights become uniform (1/MAX_PARTICLES), losing sensor model information
+
+    // Calculate weighted mean pose
+    Eigen::Vector3d mean_pose = Eigen::Vector3d::Zero();
+    double sum_sin = 0.0, sum_cos = 0.0;
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        mean_pose[0] += weights_[i] * proposal_distribution_(i, 0);
+        mean_pose[1] += weights_[i] * proposal_distribution_(i, 1);
+        sum_sin += weights_[i] * std::sin(proposal_distribution_(i, 2));
+        sum_cos += weights_[i] * std::cos(proposal_distribution_(i, 2));
+    }
+    mean_pose[2] = std::atan2(sum_sin, sum_cos);
+
+    // Calculate weighted covariance
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        Eigen::Vector3d diff;
+        diff[0] = proposal_distribution_(i, 0) - mean_pose[0];
+        diff[1] = proposal_distribution_(i, 1) - mean_pose[1];
+        diff[2] = utils::geometry::normalize_angle(proposal_distribution_(i, 2) - mean_pose[2]);
+        covariance += weights_[i] * (diff * diff.transpose());
+    }
+
+    // Get max weight (localization confidence)
+    double max_weight = *std::max_element(weights_.begin(), weights_.end());
+
+    // Calculate particle spread (average distance from mean)
+    double particle_spread = 0.0;
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        double dx = proposal_distribution_(i, 0) - mean_pose[0];
+        double dy = proposal_distribution_(i, 1) - mean_pose[1];
+        particle_spread += std::sqrt(dx*dx + dy*dy);
+    }
+    particle_spread /= MAX_PARTICLES;
 
     // 4. Adaptive Resampling (with ESS check if enabled)
     auto resample_start = std::chrono::high_resolution_clock::now();
@@ -789,11 +870,19 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
 
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
-    
+
     auto mcl_end = std::chrono::high_resolution_clock::now();
     timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
     timing_stats_.measurement_count++;
     // Collect timing stats here; printing is done periodically from timer_update()
+
+    // Return quality metrics computed before resampling
+    return MCLQualityMetrics{
+        .mean_pose = mean_pose,
+        .covariance = covariance,
+        .max_weight = max_weight,
+        .particle_spread = particle_spread
+    };
 }
 
 /**
@@ -978,6 +1067,25 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
 
         odom_out_msg.pose.pose.orientation = tf2::toMsg(map_to_base_tf.getRotation());
 
+        // Add MCL-estimated velocity (actual ground velocity considering slip)
+        // These velocities are in the robot's base_link frame
+        if (velocity_initialized_) {
+            odom_out_msg.twist.twist.linear.x = estimated_vx_;   // Forward velocity (m/s)
+            odom_out_msg.twist.twist.linear.y = estimated_vy_;   // Lateral velocity (m/s) - slip detection
+            odom_out_msg.twist.twist.linear.z = 0.0;
+            odom_out_msg.twist.twist.angular.x = 0.0;
+            odom_out_msg.twist.twist.angular.y = 0.0;
+            odom_out_msg.twist.twist.angular.z = estimated_vyaw_;  // Yaw rate (rad/s)
+        } else {
+            // Fallback to odometry velocity if MCL velocity not initialized yet
+            odom_out_msg.twist.twist.linear.x = current_velocity_;
+            odom_out_msg.twist.twist.linear.y = 0.0;
+            odom_out_msg.twist.twist.linear.z = 0.0;
+            odom_out_msg.twist.twist.angular.x = 0.0;
+            odom_out_msg.twist.twist.angular.y = 0.0;
+            odom_out_msg.twist.twist.angular.z = current_angular_vel_;
+        }
+
         // Add covariance from particle filter for RViz visualization
         // RViz will display this as ellipse (x,y) and arc (yaw)
         // Read pre-computed covariance (thread-safe copy)
@@ -1028,13 +1136,13 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
         // Position above the robot
         marker.pose.position.x = map_to_base_vec[0];
         marker.pose.position.y = map_to_base_vec[1];
-        marker.pose.position.z = 0.5;  // 50cm above
+        marker.pose.position.z = 0.6;  // 60cm above (more visible)
         marker.pose.orientation.w = 1.0;
 
-        // Size
-        marker.scale.x = 0.15;
-        marker.scale.y = 0.15;
-        marker.scale.z = 0.15;
+        // Size (increased for better visibility)
+        marker.scale.x = 0.30;  // 30cm diameter
+        marker.scale.y = 0.30;
+        marker.scale.z = 0.30;
 
         // Color based on max weight (green = good, yellow = ok, red = bad)
         if (max_weight > 0.1) {
