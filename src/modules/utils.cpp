@@ -130,6 +130,7 @@ void TimingStats::reset()
     motion_model_time = 0.0;
     resampling_time = 0.0;
     query_prep_time = 0.0;
+    quality_metrics_time = 0.0;
     measurement_count = 0;
 
     // Reset ESS statistics

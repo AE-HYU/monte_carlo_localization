@@ -70,9 +70,7 @@ class MCL : public rclcpp::Node
     void resample();         // Execute resampling (multinomial)
 
     // --------------------------------- LOCALIZATION QUALITY ---------------------------------
-    double get_max_weight();                    // Maximum particle weight
-    Eigen::Matrix3d calculate_covariance();     // Particle covariance matrix
-    double calculate_particle_spread();         // Average particle distance from mean
+    // Note: Quality metrics are now computed in run_mcl() and returned via MCLQualityMetrics
 
     // --------------------------------- INITIALIZATION ---------------------------------
     void initParameters();  // Parameter validation with semantic checks

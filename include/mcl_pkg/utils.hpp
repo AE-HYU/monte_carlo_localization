@@ -64,6 +64,7 @@ namespace performance
     double motion_model_time = 0.0;
     double resampling_time = 0.0;
     double query_prep_time = 0.0;
+    double quality_metrics_time = 0.0;  // Time for covariance/max_weight/spread calculation
     int measurement_count = 0;
 
     // Current update times (latest single measurement)

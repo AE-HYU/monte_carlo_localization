@@ -536,13 +536,23 @@ void MCL::execute_mcl_worker()
             "[MCL Worker] Computed map->odom using same odom->base as motion (consistent)");
 
         // 9. Store latest map->odom and quality metrics for publishing
+        // Compute human-readable ray-match percentage here and store it into latest_max_weight_
+        // to avoid adding an extra member and to keep a single lock for storing metrics.
+        int num_rays = 1080 / ANGLE_STEP;  // Downsampled ray count
+        double effective_rays = num_rays / (1.0 / INV_SQUASH_FACTOR);  // Account for squash factor
+        double ray_match_percentage = 0.0;
+        if (max_weight > 0.0) {
+            double avg_ray_prob = std::pow(max_weight, 1.0 / effective_rays);
+            ray_match_percentage = avg_ray_prob * 100.0;
+        }
+
         {
             std::lock_guard<std::mutex> lock(mcl_result_lock_);
             latest_mcl_timestamp_ = lidar_timestamp;
             latest_map_to_odom_ = map_to_odom_result;
 
-            // Store quality metrics (computed safely with state_lock_ above)
-            latest_max_weight_ = max_weight;
+            // Store percentage into latest_max_weight_ (reusing this field as percentage)
+            latest_max_weight_ = ray_match_percentage;
             latest_covariance_ = covariance;
             latest_particle_spread_ = particle_spread;
 
@@ -566,10 +576,14 @@ void MCL::execute_mcl_worker()
             double total_time = std::chrono::duration<double, std::milli>(worker_end - worker_start).count();
 
             // Build detailed performance message
+            double avg_quality_time = timing_stats_.measurement_count > 0
+                ? timing_stats_.quality_metrics_time / timing_stats_.measurement_count : 0.0;
+
             std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
                              "Total: " + std::to_string(total_time) + "ms, " +
                              "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
-                             "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
+                             "MCL: " + std::to_string(mcl_processing_time_) + "ms " +
+                             "(Quality: " + std::to_string(avg_quality_time) + "ms), " +
                              "Particles: " + std::to_string(particle_time_ms) + "ms";
 
         // Add sensor model specific breakdown (current update)
@@ -611,8 +625,8 @@ void MCL::execute_mcl_worker()
         double angle_uncertainty = std::sqrt(covariance(2,2)) * 180.0 / M_PI;
 
         RCLCPP_INFO(this->get_logger(),
-            "Quality | Max Weight: %.4f | Pos Unc: %.3fm | Angle Unc: %.1f° | Spread: %.3fm",
-            max_weight, pos_uncertainty, angle_uncertainty, particle_spread
+            "Quality | Ray Match: %.1f%% (raw: %.4f) | Pos Unc: %.3fm | Angle Unc: %.1f° | Spread: %.3fm",
+            ray_match_percentage, max_weight, pos_uncertainty, angle_uncertainty, particle_spread
         );
 
         // Also print detailed timing stats collected over the last interval
@@ -795,44 +809,22 @@ MCLQualityMetrics MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<
         }
     }
 
-    // 3.5. Calculate quality metrics BEFORE resampling (when weights are meaningful)
-    // After resampling, weights become uniform (1/MAX_PARTICLES), losing sensor model information
+    // 3.5. Calculate max_weight BEFORE resampling (when weights are meaningful)
+    // Max weight measures sensor model confidence - must be calculated before resampling
+    // because after resampling, all weights become uniform (1/MAX_PARTICLES)
+    auto quality_start = std::chrono::high_resolution_clock::now();
 
-    // Calculate weighted mean pose
-    Eigen::Vector3d mean_pose = Eigen::Vector3d::Zero();
-    double sum_sin = 0.0, sum_cos = 0.0;
+    double max_weight = weights_[0];
     for (int i = 0; i < MAX_PARTICLES; ++i)
     {
-        mean_pose[0] += weights_[i] * proposal_distribution_(i, 0);
-        mean_pose[1] += weights_[i] * proposal_distribution_(i, 1);
-        sum_sin += weights_[i] * std::sin(proposal_distribution_(i, 2));
-        sum_cos += weights_[i] * std::cos(proposal_distribution_(i, 2));
-    }
-    mean_pose[2] = std::atan2(sum_sin, sum_cos);
-
-    // Calculate weighted covariance
-    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        Eigen::Vector3d diff;
-        diff[0] = proposal_distribution_(i, 0) - mean_pose[0];
-        diff[1] = proposal_distribution_(i, 1) - mean_pose[1];
-        diff[2] = utils::geometry::normalize_angle(proposal_distribution_(i, 2) - mean_pose[2]);
-        covariance += weights_[i] * (diff * diff.transpose());
+        if (weights_[i] > max_weight) {
+            max_weight = weights_[i];
+        }
     }
 
-    // Get max weight (localization confidence)
-    double max_weight = *std::max_element(weights_.begin(), weights_.end());
-
-    // Calculate particle spread (average distance from mean)
-    double particle_spread = 0.0;
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        double dx = proposal_distribution_(i, 0) - mean_pose[0];
-        double dy = proposal_distribution_(i, 1) - mean_pose[1];
-        particle_spread += std::sqrt(dx*dx + dy*dy);
-    }
-    particle_spread /= MAX_PARTICLES;
+    auto quality_end = std::chrono::high_resolution_clock::now();
+    double quality_time_ms = std::chrono::duration<double, std::milli>(quality_end - quality_start).count();
+    timing_stats_.quality_metrics_time += quality_time_ms;
 
     // 4. Adaptive Resampling (with ESS check if enabled)
     auto resample_start = std::chrono::high_resolution_clock::now();
@@ -871,12 +863,54 @@ MCLQualityMetrics MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
 
+    // 5. Calculate covariance and mean_pose AFTER resampling
+    // After resampling, particles_ represents the true belief distribution
+    // Weights are now uniform (1/MAX_PARTICLES), so weighted mean = unweighted mean
+    auto quality_start2 = std::chrono::high_resolution_clock::now();
+
+    // Pass 1: Calculate mean pose from final particles
+    Eigen::Vector3d mean_pose = Eigen::Vector3d::Zero();
+    double sum_sin = 0.0, sum_cos = 0.0;
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        mean_pose[0] += particles_(i, 0);
+        mean_pose[1] += particles_(i, 1);
+        sum_sin += std::sin(particles_(i, 2));
+        sum_cos += std::cos(particles_(i, 2));
+    }
+    mean_pose[0] /= MAX_PARTICLES;
+    mean_pose[1] /= MAX_PARTICLES;
+    mean_pose[2] = std::atan2(sum_sin, sum_cos);
+
+    // Pass 2: Calculate covariance and particle spread from final particles
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    double particle_spread = 0.0;
+
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        Eigen::Vector3d diff;
+        diff[0] = particles_(i, 0) - mean_pose[0];
+        diff[1] = particles_(i, 1) - mean_pose[1];
+        diff[2] = utils::geometry::normalize_angle(particles_(i, 2) - mean_pose[2]);
+
+        // Unweighted covariance (weights are uniform after resampling)
+        covariance += (diff * diff.transpose()) / MAX_PARTICLES;
+
+        // Particle spread (unweighted average distance)
+        particle_spread += std::sqrt(diff[0]*diff[0] + diff[1]*diff[1]);
+    }
+    particle_spread /= MAX_PARTICLES;
+
+    auto quality_end2 = std::chrono::high_resolution_clock::now();
+    double quality_time_ms2 = std::chrono::duration<double, std::milli>(quality_end2 - quality_start2).count();
+    timing_stats_.quality_metrics_time += quality_time_ms2;
+
     auto mcl_end = std::chrono::high_resolution_clock::now();
     timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
     timing_stats_.measurement_count++;
     // Collect timing stats here; printing is done periodically from timer_update()
 
-    // Return quality metrics computed before resampling
+    // Return quality metrics (max_weight from before resampling, covariance from after)
     return MCLQualityMetrics{
         .mean_pose = mean_pose,
         .covariance = covariance,
@@ -910,53 +944,9 @@ Eigen::Vector3d MCL::expected_pose()
     return pose;
 }
 
-/**
- * @brief Get maximum particle weight (localization confidence)
- */
-double MCL::get_max_weight()
-{
-    return *std::max_element(weights_.begin(), weights_.end());
-}
-
-/**
- * @brief Calculate particle covariance matrix (uncertainty)
- */
-Eigen::Matrix3d MCL::calculate_covariance()
-{
-    Eigen::Vector3d mean = expected_pose();
-    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        Eigen::Vector3d diff;
-        diff[0] = particles_(i, 0) - mean[0];
-        diff[1] = particles_(i, 1) - mean[1];
-        diff[2] = utils::geometry::normalize_angle(particles_(i, 2) - mean[2]);
-
-        // Weighted covariance
-        cov += weights_[i] * (diff * diff.transpose());
-    }
-
-    return cov;
-}
-
-/**
- * @brief Calculate average particle spread (dispersion measure)
- */
-double MCL::calculate_particle_spread()
-{
-    Eigen::Vector3d mean = expected_pose();
-    double sum_dist = 0.0;
-
-    for (int i = 0; i < MAX_PARTICLES; ++i)
-    {
-        double dx = particles_(i, 0) - mean[0];
-        double dy = particles_(i, 1) - mean[1];
-        sum_dist += std::sqrt(dx*dx + dy*dy);
-    }
-
-    return sum_dist / MAX_PARTICLES;
-}
+// Note: Old quality metric functions (get_max_weight, calculate_covariance, calculate_particle_spread)
+// have been removed. These metrics are now computed directly in run_mcl() and returned via
+// MCLQualityMetrics struct for better performance (single-pass calculation).
 
 // ================================================================================================
 // POSE EXTRAPOLATION UTILITIES
@@ -1095,13 +1085,17 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
             cov = latest_covariance_;  // Atomic copy of 9 doubles
         }
 
+        // Use actual covariance values without scaling
+        // Covariance represents true localization uncertainty and should be shown accurately
+        // to gauge the real magnitude of position/orientation uncertainty
+
         // Fill 6x6 covariance matrix (x, y, z, roll, pitch, yaw)
         // ROS uses row-major order: index = row * 6 + col
         std::fill(odom_out_msg.pose.covariance.begin(), odom_out_msg.pose.covariance.end(), 0.0);
 
         odom_out_msg.pose.covariance[0] = cov(0, 0);   // cov[0][0] = x-x
         odom_out_msg.pose.covariance[1] = cov(0, 1);   // cov[0][1] = x-y
-        odom_out_msg.pose.covariance[6] = cov(1, 0);   // cov[1][0] = y-x
+        odom_out_msg.pose.covariance[6] = cov(0, 1);   // cov[1][0] = y-x (symmetric)
         odom_out_msg.pose.covariance[7] = cov(1, 1);   // cov[1][1] = y-y
         odom_out_msg.pose.covariance[35] = cov(2, 2);  // cov[5][5] = yaw-yaw
 
@@ -1118,11 +1112,11 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
 
     // Publish max weight visualization (color-coded quality indicator)
     if (quality_marker_pub_ && quality_marker_pub_->get_subscription_count() > 0) {
-        // Read max weight from pre-computed values
-        double max_weight;
+        // Read ray-match percentage (stored into latest_max_weight_ by the worker)
+        double ray_match_pct = 0.0;
         {
             std::lock_guard<std::mutex> lock(mcl_result_lock_);
-            max_weight = latest_max_weight_;
+            ray_match_pct = latest_max_weight_;  // percentage in [0..100]
         }
 
         visualization_msgs::msg::Marker marker;
@@ -1144,24 +1138,29 @@ void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
         marker.scale.y = 0.30;
         marker.scale.z = 0.30;
 
-        // Color based on max weight (green = good, yellow = ok, red = bad)
-        if (max_weight > 0.1) {
+        // Color based on ray match percentage (higher = better)
+        if (ray_match_pct >= 85.0) { // EXCELLENT >=85%
             // EXCELLENT: Green
             marker.color.r = 0.0;
             marker.color.g = 1.0;
             marker.color.b = 0.0;
-        } else if (max_weight > 0.05) {
-            // GOOD: Yellow
+        } else if (ray_match_pct >= 80.0) { // GOOD >=80%
+            // GOOD: Yellow-Green
+            marker.color.r = 0.5;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+        } else if (ray_match_pct >= 70.0) { // FAIR >=70%
+            // FAIR: Yellow
             marker.color.r = 1.0;
             marker.color.g = 1.0;
             marker.color.b = 0.0;
-        } else if (max_weight > 0.02) {
-            // FAIR: Orange
+        } else if (ray_match_pct >= 60.0) { // POOR >=60%
+            // POOR: Orange
             marker.color.r = 1.0;
             marker.color.g = 0.5;
             marker.color.b = 0.0;
         } else {
-            // POOR: Red
+            // CRITICAL: Red
             marker.color.r = 1.0;
             marker.color.g = 0.0;
             marker.color.b = 0.0;
