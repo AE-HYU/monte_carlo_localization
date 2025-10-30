@@ -44,7 +44,7 @@ mcl:
 
     # === RESAMPLING ===
     use_adaptive_resampling: true      # Enable adaptive resampling (true/false)
-    ess_threshold: 0.7                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
+    ess_threshold: 0.5                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
                                        # 0.3 = aggressive (less resampling, more diversity)
                                        # 0.5 = balanced (recommended for F1Tenth)
                                        # 0.7 = conservative (more resampling, more accuracy)
@@ -60,15 +60,15 @@ mcl:
     # Multi-component sensor model weights (used by BOTH beam and likelihood_field)
     # Must sum to 1.0 (auto-normalized if not)
     z_hit: 0.85                        # Weight for correct measurements (Gaussian)
-    z_short: 0.01                      # Weight for short readings (dynamic obstacles, motion blur)
-    z_max: 0.07                        # Weight for max range readings
-    z_rand: 0.07                       # Weight for random noise (reflections, interference)
+    z_short: 0.06                      # Weight for short readings (dynamic obstacles, motion blur)
+    z_max: 0.06                        # Weight for max range readings
+    z_rand: 0.03                       # Weight for random noise (reflections, interference)
 
     # Beam model specific parameters (only used when sensor_model_type: "beam")
     sigma_hit: 0.25                     # Measurement noise std dev for beam model
 
     # Likelihood field model specific parameters (only used when sensor_model_type: "likelihood_field")
-    likelihood_sigma: 0.05              # Distance field Gaussian sigma (meters)
+    likelihood_sigma: 0.1              # Distance field Gaussian sigma (meters)
 
     # === RAY CASTING ===
     angle_step: 18                     # Laser downsampling factor
