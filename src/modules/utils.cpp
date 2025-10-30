@@ -137,6 +137,11 @@ void TimingStats::reset()
     ess_sum = 0.0;
     ess_count = 0;
     resample_count = 0;
+
+    // Reset TF lookup statistics
+    tf_exact_time_count = 0;
+    tf_fallback_count = 0;
+    tf_total_count = 0;
 }
 
 // Print performance statistics using provided logger function
@@ -159,6 +164,15 @@ void TimingStats::print_stats(const std::function<void(const std::string&)>& log
     logger("Query prep:       " + std::to_string(avg_query) + " ms/iter (" + std::to_string(100.0*avg_query/avg_total) + "%)");
     logger("Motion model:     " + std::to_string(avg_motion) + " ms/iter (" + std::to_string(100.0*avg_motion/avg_total) + "%)");
     logger("Resampling:       " + std::to_string(avg_resample) + " ms/iter (" + std::to_string(100.0*avg_resample/avg_total) + "%)");
+
+    // TF lookup statistics
+    if (tf_total_count > 0) {
+        double exact_time_rate = 100.0 * tf_exact_time_count / tf_total_count;
+        double fallback_rate = 100.0 * tf_fallback_count / tf_total_count;
+        logger("TF Lookup:        Exact=" + std::to_string(tf_exact_time_count) + " (" + std::to_string(exact_time_rate) + "%), " +
+               "Fallback=" + std::to_string(tf_fallback_count) + " (" + std::to_string(fallback_rate) + "%)");
+    }
+
     logger("=====================================");
 }
 

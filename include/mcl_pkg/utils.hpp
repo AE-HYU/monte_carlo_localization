@@ -77,6 +77,11 @@ namespace performance
     int ess_count = 0;             // Number of ESS measurements
     int resample_count = 0;        // Number of times resampled
 
+    // TF lookup statistics
+    int tf_exact_time_count = 0;   // Number of successful exact time TF lookups
+    int tf_fallback_count = 0;     // Number of fallback to TimePointZero
+    int tf_total_count = 0;        // Total TF lookup attempts
+
     void reset();
     void print_stats(const std::function<void(const std::string&)>& logger) const;
   };

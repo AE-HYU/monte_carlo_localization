@@ -375,10 +375,11 @@ void MCL::execute_mcl_worker()
         rclcpp::Time lidar_timestamp = task.timestamp;
         std::vector<float> observation = task.observation;  // Copy, not reference
 
-        // 3. Get odom->base at lidar timestamp (with exact time or extrapolation)
+        // 3. Get odom->base at lidar timestamp (exact time or latest available)
         auto motion_start = std::chrono::high_resolution_clock::now();
 
         Eigen::Vector3d odom_to_base_vec;
+        timing_stats_.tf_total_count++;
 
         try {
             // Try exact time first
@@ -391,48 +392,28 @@ void MCL::execute_mcl_worker()
                 utils::geometry::quaternion_to_yaw(odom_to_base_tf.transform.rotation)
             );
 
+            timing_stats_.tf_exact_time_count++;
             RCLCPP_DEBUG(this->get_logger(),
                 "[MCL Worker] Got exact time odom->base for lidar timestamp");
         } catch (tf2::TransformException &) {
-            // Exact time failed - extrapolate with velocity
-            RCLCPP_DEBUG(this->get_logger(),
-                "[MCL Worker] Exact time TF failed, using extrapolation");
-
+            // Exact time failed - use latest available transform
             try {
-                auto latest_odom_to_base_msg = tf_buffer_->lookupTransform(
+                auto odom_to_base_tf = tf_buffer_->lookupTransform(
                     ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
 
-                rclcpp::Time latest_tf_time(latest_odom_to_base_msg.header.stamp);
-                double time_diff = (lidar_timestamp.nanoseconds() - latest_tf_time.nanoseconds()) / 1e9;
+                odom_to_base_vec = Eigen::Vector3d(
+                    odom_to_base_tf.transform.translation.x,
+                    odom_to_base_tf.transform.translation.y,
+                    utils::geometry::quaternion_to_yaw(odom_to_base_tf.transform.rotation)
+                );
 
-                if (std::abs(time_diff) < 0.050) {
-                    // Get velocity for extrapolation
-                    double linear_vel, angular_vel;
-                    {
-                        std::lock_guard<std::mutex> lock(odom_lock_);
-                        linear_vel = current_velocity_;
-                        angular_vel = current_angular_vel_;
-                    }
+                rclcpp::Time tf_time(odom_to_base_tf.header.stamp);
+                double time_diff = (lidar_timestamp.nanoseconds() - tf_time.nanoseconds()) / 1e9;
 
-                    // Extract latest odom->base as vector
-                    Eigen::Vector3d latest_odom_to_base_vec(
-                        latest_odom_to_base_msg.transform.translation.x,
-                        latest_odom_to_base_msg.transform.translation.y,
-                        utils::geometry::quaternion_to_yaw(latest_odom_to_base_msg.transform.rotation)
-                    );
+                timing_stats_.tf_fallback_count++;
+                RCLCPP_DEBUG(this->get_logger(),
+                    "[MCL Worker] Using latest odom->base (time_diff=%.4fs)", time_diff);
 
-                    // Extrapolate to lidar timestamp
-                    odom_to_base_vec = extrapolatePose(latest_odom_to_base_vec, linear_vel, angular_vel, time_diff);
-
-                    RCLCPP_DEBUG(this->get_logger(),
-                        "[MCL Worker] Extrapolated odom->base (time_diff=%.4fs)", time_diff);
-                } else {
-                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                        "[MCL Worker] Time diff too large (%.4fs > 0.050s) - skipping MCL update",
-                        time_diff);
-                    mcl_running_ = false;
-                    return;
-                }
             } catch (tf2::TransformException &ex) {
                 RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                     "[MCL Worker] Could not get odom->base: %s - skipping MCL update", ex.what());
