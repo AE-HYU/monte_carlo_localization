@@ -2,10 +2,17 @@
 // LIKELIHOOD FIELD SENSOR MODEL - Implementation
 // ================================================================================================
 // Distance field based sensor model - no ray casting needed
-// Standard 3-component model (Probabilistic Robotics Ch.6.4):
+// Standard algorithm from Probabilistic Robotics Ch.6.4 with extended unknown space handling:
+//
+// Base 3-component model:
 //   - z_hit: Gaussian around expected measurement
 //   - z_rand: Uniform random noise
 //   - z_max: Max range measurements (skipped, no information)
+//
+// Extended algorithm (3-category map classification):
+//   - Occupied: obstacle cells (distance = 0)
+//   - Free: known free space (distance > 0)
+//   - Unknown: unexplored space (p(z|unknown) = 1/z_max, uniform)
 // ================================================================================================
 
 #include "mcl_pkg/sensor_model/likelihood_field_sensor_model.hpp"
@@ -90,15 +97,26 @@ static inline double evaluate_particle_likelihood(
         int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
         int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
 
-        // Out of bounds: skip (treat as no information)
+        // Out of bounds: treat as unknown space
+        // Extended algorithm: p(z|unknown) = 1/z_max (uniform probability)
         if (grid_x < 0 || grid_x >= node->distance_field_width_ ||
             grid_y < 0 || grid_y >= node->distance_field_height_) {
+            double prob_unknown = prob_uniform;  // 1/z_max
+            log_weight += std::log(std::max(prob_unknown, 1e-10));
             continue;
         }
 
         // === Algorithm Line 7: dist = min distance to nearest obstacle ===
         int idx = grid_y * node->distance_field_width_ + grid_x;
         float dist = node->distance_field_[idx];
+
+        // Extended algorithm: check if endpoint falls in unknown space
+        if (dist < 0.0f) {
+            // Unknown cell: p(z|unknown) = 1/z_max (uniform probability)
+            double prob_unknown = prob_uniform;
+            log_weight += std::log(std::max(prob_unknown, 1e-10));
+            continue;
+        }
 
         // === z_hit component: Gaussian likelihood ===
         int table_idx = std::min(static_cast<int>(dist / node->likelihood_table_resolution_),
@@ -150,35 +168,47 @@ void precompute_distance_field(MCL* node)
     node->distance_field_height_ = height;
     node->distance_field_resolution_ = resolution;
 
-    // Initialize with binary: 0 for obstacles, large value for free space
+    // Initialize with 3-category classification (extended algorithm):
+    // 0.0f: occupied (obstacle), INF: free space, -1.0f: unknown
     const float INF = 9999.0f;
+    const float UNKNOWN_MARKER = -1.0f;
     int obstacle_count = 0;
+    int unknown_count = 0;
 
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
         {
             int idx = y * width + x;
-            // Occupied cells (>50) or unknown cells (-1/255) are obstacles
-            if (local_map->data[idx] > 50 || local_map->data[idx] < 0)
-            {
+            int8_t cell_value = local_map->data[idx];
+
+            // Three categories: occupied, free, unknown
+            if (cell_value > 50) {
+                // Occupied cell (obstacle)
                 node->distance_field_[idx] = 0.0f;
                 obstacle_count++;
             }
-            else
-            {
+            else if (cell_value < 0) {
+                // Unknown cell (-1 or 255)
+                node->distance_field_[idx] = UNKNOWN_MARKER;
+                unknown_count++;
+            }
+            else {
+                // Free space (0-50)
                 node->distance_field_[idx] = INF;
             }
         }
     }
 
     // Forward pass: scan from top-left to bottom-right
+    // Skip unknown cells (marked as -1.0f)
     for (int y = 0; y < height; ++y)
     {
         for (int x = 0; x < width; ++x)
         {
             int idx = y * width + x;
 
+            // Only process free space cells (skip obstacles and unknown)
             if (node->distance_field_[idx] > 0.0f)
             {
                 // Check left neighbor
@@ -221,12 +251,14 @@ void precompute_distance_field(MCL* node)
     }
 
     // Backward pass: scan from bottom-right to top-left
+    // Skip unknown cells (marked as -1.0f)
     for (int y = height - 1; y >= 0; --y)
     {
         for (int x = width - 1; x >= 0; --x)
         {
             int idx = y * width + x;
 
+            // Only process free space cells (skip obstacles and unknown)
             if (node->distance_field_[idx] > 0.0f)
             {
                 // Check right neighbor
@@ -268,10 +300,13 @@ void precompute_distance_field(MCL* node)
         }
     }
 
-    // Convert pixel distances to meters
+    // Convert pixel distances to meters (but preserve unknown markers)
     for (size_t i = 0; i < node->distance_field_.size(); ++i)
     {
-        node->distance_field_[i] *= resolution;
+        if (node->distance_field_[i] >= 0.0f) {
+            node->distance_field_[i] *= resolution;
+        }
+        // Unknown cells remain as -1.0f
     }
 
     node->distance_field_initialized_ = true;
@@ -279,8 +314,8 @@ void precompute_distance_field(MCL* node)
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     RCLCPP_INFO(node->get_logger(),
-                "Distance field computed (%ld ms) - %d obstacles, %dx%d cells",
-                duration.count(), obstacle_count, width, height);
+                "Distance field computed (%ld ms) - %d obstacles, %d unknown, %dx%d cells",
+                duration.count(), obstacle_count, unknown_count, width, height);
 }
 
 /**
