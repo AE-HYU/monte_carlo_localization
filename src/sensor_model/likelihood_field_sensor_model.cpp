@@ -2,7 +2,10 @@
 // LIKELIHOOD FIELD SENSOR MODEL - Implementation
 // ================================================================================================
 // Distance field based sensor model - no ray casting needed
-// Multi-component model: z_hit (Gaussian) + z_short (Exponential) + z_max + z_rand
+// Standard 3-component model (Probabilistic Robotics Ch.6.4):
+//   - z_hit: Gaussian around expected measurement
+//   - z_rand: Uniform random noise
+//   - z_max: Max range measurements (skipped, no information)
 // ================================================================================================
 
 #include "mcl_pkg/sensor_model/likelihood_field_sensor_model.hpp"
@@ -16,6 +19,8 @@ namespace sensor_model {
 
 /**
  * @brief Helper function: Evaluate likelihood for a single particle
+ * @note Implements Algorithm likelihood_field_range_finder_model from Probabilistic Robotics
+ *       Chapter 6.4, using 3-component model: z_hit + z_rand + z_max
  */
 static inline double evaluate_particle_likelihood(
     MCL* node,
@@ -37,9 +42,6 @@ static inline double evaluate_particle_likelihood(
     // Precompute particle rotation once per particle
     const double cos_theta = std::cos(ptheta);
     const double sin_theta = std::sin(ptheta);
-
-    // Z_short lambda parameter (configurable)
-    const double lambda_short = 1.0;
 
     // Pre-allocate arrays for vectorized operations (minimize allocations in hot loop)
     static thread_local std::vector<double> local_x_batch;
@@ -68,19 +70,18 @@ static inline double evaluate_particle_likelihood(
     for (int j = 0; j < num_rays; ++j) {
         const float obs_range = obs[j];
 
-        // === z_max component: max range measurements ===
+        // === Algorithm Line 4: if z_t^k ≠ z_max ===
+        // Max range measurements are skipped (no information)
         if (obs_range >= node->MAX_RANGE_METERS) {
-            double prob = node->Z_MAX * prob_uniform + node->Z_RAND * prob_uniform;
-            log_weight += std::log(std::max(prob, 1e-10));
             continue;
         }
 
-        // === Invalid measurements: z_rand only ===
+        // === Invalid measurements: skip ===
         if (obs_range <= 0.0f) {
-            log_weight += std::log(std::max(node->Z_RAND * prob_uniform, 1e-10));
             continue;
         }
 
+        // === Algorithm Line 5-6: Calculate endpoint coordinates ===
         // Use pre-computed endpoint from vectorized calculation
         const double endpoint_x = endpoint_x_batch[j];
         const double endpoint_y = endpoint_y_batch[j];
@@ -89,14 +90,13 @@ static inline double evaluate_particle_likelihood(
         int grid_x = static_cast<int>((endpoint_x - origin_x) / resolution);
         int grid_y = static_cast<int>((endpoint_y - origin_y) / resolution);
 
-        // Out of bounds: z_rand only
+        // Out of bounds: skip (treat as no information)
         if (grid_x < 0 || grid_x >= node->distance_field_width_ ||
             grid_y < 0 || grid_y >= node->distance_field_height_) {
-            log_weight += std::log(std::max(node->Z_RAND * prob_uniform, 1e-10));
             continue;
         }
 
-        // Look up distance to nearest obstacle
+        // === Algorithm Line 7: dist = min distance to nearest obstacle ===
         int idx = grid_y * node->distance_field_width_ + grid_x;
         float dist = node->distance_field_[idx];
 
@@ -105,23 +105,9 @@ static inline double evaluate_particle_likelihood(
                                  node->likelihood_table_size_ - 1);
         double prob_hit = node->likelihood_lookup_table_[table_idx];
 
-        // === z_short component: Improved exponential model (Probabilistic Robotics) ===
-        // Models unexpected obstacles (e.g., dynamic obstacles, people)
-        double prob_short = 0.0;
-        if (obs_range < dist) {
-            // Exponential distribution: P(z|z_exp) = λe^(-λz) / (1 - e^(-λz_exp))
-            double normalizer = 1.0 - std::exp(-lambda_short * dist);
-            if (normalizer > 1e-6) {
-                prob_short = (lambda_short * std::exp(-lambda_short * obs_range)) / normalizer;
-            }
-        }
-
-        // === Multi-component probability ===
-        double prob_total =
-            node->Z_HIT * prob_hit +
-            node->Z_SHORT * prob_short +
-            node->Z_MAX * prob_uniform +
-            node->Z_RAND * prob_uniform;
+        // === Algorithm Line 8: q = q · (z_hit · prob(dist, σ_hit) + z_random/z_max) ===
+        // Two-component model: z_hit (Gaussian) + z_rand (uniform)
+        double prob_total = node->Z_HIT * prob_hit + node->Z_RAND * prob_uniform;
 
         // Clamp probability for numerical stability
         prob_total = std::clamp(prob_total, 1e-10, 1.0);
