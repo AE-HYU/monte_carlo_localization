@@ -30,7 +30,7 @@ mcl:
     # === ODOMETRY MOTION MODEL (RTR with motion-proportional noise) ===
     # Based on Probabilistic Robotics Ch 5.4 (Thrun, Burgard, Fox)
     # Tuned for F1TENTH high-speed racing scenarios
-    alpha1: 0.2                        # rotation → rotation noise
+    alpha1: 0.16 #0.2                        # rotation → rotation noise
     alpha2: 0.02                       # translation → rotation noise
     alpha3: 1.0                        # translation → translation noise
     alpha4: 0.08                        # rotation → translation noise
