@@ -17,7 +17,9 @@ namespace mcl_pkg
 namespace visualization
 {
 
-// Internal helper function for TF publishing
+// DEPRECATED: TF publishing is now handled by high_frequency_publish() at 200Hz
+// This function is kept for reference but should not be used
+/*
 static void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
     if (!node->PUBLISH_MAP_ODOM_TF) {
@@ -46,17 +48,63 @@ static void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const r
         geometry_msgs::msg::TransformStamped odom_to_base_msg;
         tf2::Transform odom_to_base;
 
+        // Get odom->base_link with explicit velocity-based extrapolation
+        constexpr double MAX_EXTRAPOLATION_TIME = 0.010;  // 10ms tolerance
+
         try {
+            // Try exact time first (may use TF2's interpolation internally)
             odom_to_base_msg = node->tf_buffer_->lookupTransform(
-                node->ODOM_FRAME, node->BASE_FRAME, tf_stamp);  // 없으면 아예 발행을 안하는것도 ㄱㅊ...?
+                node->ODOM_FRAME, node->BASE_FRAME,
+                tf_stamp,
+                rclcpp::Duration(0, 0)  // Don't wait
+            );
             tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
         } catch (tf2::TransformException &ex) {
-            RCLCPP_WARN_THROTTLE(node->get_logger(), *node->get_clock(), 5000,
-                "TF lookup failed: %s", ex.what());
-            odom_to_base_msg = node->tf_buffer_->lookupTransform(
-                node->ODOM_FRAME, node->BASE_FRAME, tf2::TimePointZero);
-            tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
-            // return;  // Skip publishing if TF not found at requested time
+            // Exact time failed - get latest and manually extrapolate using velocity
+            try {
+                odom_to_base_msg = node->tf_buffer_->lookupTransform(
+                    node->ODOM_FRAME, node->BASE_FRAME,
+                    tf2::TimePointZero
+                );
+
+                rclcpp::Time latest_time(odom_to_base_msg.header.stamp);
+                double time_diff = (tf_stamp - latest_time).seconds();
+
+                if (std::abs(time_diff) > MAX_EXTRAPOLATION_TIME) {
+                    RCLCPP_WARN_THROTTLE(node->get_logger(), *node->get_clock(), 5000,
+                        "Time difference %.1fms exceeds 10ms threshold for odom->base extrapolation",
+                        time_diff * 1000.0);
+                    return;  // Skip if extrapolation too large
+                }
+
+                // Perform velocity-based extrapolation: predict motion over time_diff
+                tf2::fromMsg(odom_to_base_msg.transform, odom_to_base);
+
+                // Get current velocity from odometry
+                std::lock_guard<std::mutex> lock(node->odom_lock_);
+                double v = node->current_velocity_;
+                double omega = node->current_angular_vel_;
+
+                // Extrapolate pose: new_pose = old_pose + motion(v, omega, dt)
+                // For small dt, approximate as: dx = v*dt*cos(theta), dy = v*dt*sin(theta), dtheta = omega*dt
+                double current_yaw = tf2::getYaw(odom_to_base.getRotation());
+                double dx = v * time_diff * std::cos(current_yaw);
+                double dy = v * time_diff * std::sin(current_yaw);
+                double dtheta = omega * time_diff;
+
+                // Apply extrapolation
+                tf2::Vector3 new_origin = odom_to_base.getOrigin() + tf2::Vector3(dx, dy, 0.0);
+                tf2::Quaternion new_rotation;
+                new_rotation.setRPY(0, 0, current_yaw + dtheta);
+
+                odom_to_base.setOrigin(new_origin);
+                odom_to_base.setRotation(new_rotation);
+
+            } catch (tf2::TransformException &ex2) {
+                RCLCPP_ERROR_THROTTLE(node->get_logger(), *node->get_clock(), 5000,
+                    "No odom->base_link transform available: %s", ex2.what());
+                return;
+            }
         }
 
         // Step 3: Compute map->odom
@@ -76,34 +124,35 @@ static void publish_tf(MCL* node, const Eigen::Vector3d &base_link_pose, const r
             "Unexpected error in TF publishing: %s", ex.what());
     }
 }
+*/
 
+// DEPRECATED: This function is now only used for compatibility
+// TF and odometry publishing is handled by high_frequency_publish() at 200Hz
 void publish_localization(MCL* node, const Eigen::Vector3d &base_link_pose, const rclcpp::Time &stamp)
 {
     rclcpp::Time pub_stamp = (stamp.nanoseconds() != 0) ? stamp : node->get_clock()->now();
 
-    // 1. Publish TF (map->odom)
-    publish_tf(node, base_link_pose, pub_stamp);
+    // NOTE: TF publishing (map->odom) is now handled by high_frequency_publish() at 200Hz
+    // publish_tf(node, base_link_pose, pub_stamp);  // DISABLED
 
-    // 2. Publish Odometry message
-    if (node->PUBLISH_ODOM && node->odom_pub_ && node->odom_pub_->get_subscription_count() > 0)
-    {
-        nav_msgs::msg::Odometry odom_msg;
-        odom_msg.header.stamp = pub_stamp;
-        odom_msg.header.frame_id = node->MAP_FRAME;
-        odom_msg.child_frame_id = node->BASE_FRAME;
+    // 2. Publish Odometry message (also handled by 200Hz timer, but kept for compatibility)
+    // if (node->PUBLISH_ODOM && node->odom_pub_ && node->odom_pub_->get_subscription_count() > 0)
+    // {
+    //     nav_msgs::msg::Odometry odom_msg;
+    //     odom_msg.header.stamp = pub_stamp;
+    //     odom_msg.header.frame_id = node->MAP_FRAME;
+    //     odom_msg.child_frame_id = node->BASE_FRAME;
 
-        odom_msg.pose.pose.position.x = base_link_pose[0];
-        odom_msg.pose.pose.position.y = base_link_pose[1];
-        odom_msg.pose.pose.position.z = 0.0;
+    //     odom_msg.pose.pose.position.x = base_link_pose[0];
+    //     odom_msg.pose.pose.position.y = base_link_pose[1];
+    //     odom_msg.pose.pose.position.z = 0.0;
 
-        tf2::Quaternion q;
-        q.setRPY(0, 0, base_link_pose[2]);
-        odom_msg.pose.pose.orientation = tf2::toMsg(q);
+    //     tf2::Quaternion q;
+    //     q.setRPY(0, 0, base_link_pose[2]);
+    //     odom_msg.pose.pose.orientation = tf2::toMsg(q);
 
-        odom_msg.twist.twist.linear.x = node->current_velocity_;
-
-        node->odom_pub_->publish(odom_msg);
-    }
+    //     node->odom_pub_->publish(odom_msg);
+    // }
 
     // 3. Publish Pose visualization (RViz arrow)
     if (node->DO_VIZ && node->pose_pub_ && node->pose_pub_->get_subscription_count() > 0)

@@ -44,7 +44,7 @@ mcl:
 
     # === RESAMPLING ===
     use_adaptive_resampling: true      # Enable adaptive resampling (true/false)
-    ess_threshold: 0.5                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
+    ess_threshold: 0.7                 # ESS threshold (0.0-1.0): resample if ESS < threshold × max_particles
                                        # 0.3 = aggressive (less resampling, more diversity)
                                        # 0.5 = balanced (recommended for F1Tenth)
                                        # 0.7 = conservative (more resampling, more accuracy)

@@ -64,6 +64,7 @@ namespace performance
     double motion_model_time = 0.0;
     double resampling_time = 0.0;
     double query_prep_time = 0.0;
+    double quality_metrics_time = 0.0;  // Time for covariance/max_weight/spread calculation
     int measurement_count = 0;
 
     // Current update times (latest single measurement)
@@ -75,6 +76,11 @@ namespace performance
     double ess_sum = 0.0;          // Cumulative ESS for averaging
     int ess_count = 0;             // Number of ESS measurements
     int resample_count = 0;        // Number of times resampled
+
+    // TF lookup statistics
+    int tf_exact_time_count = 0;   // Number of successful exact time TF lookups
+    int tf_fallback_count = 0;     // Number of fallback to TimePointZero
+    int tf_total_count = 0;        // Total TF lookup attempts
 
     void reset();
     void print_stats(const std::function<void(const std::string&)>& logger) const;

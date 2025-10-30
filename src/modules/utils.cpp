@@ -43,9 +43,11 @@ geometry_msgs::msg::Quaternion yaw_to_quaternion(double yaw)
 // Normalize angle to [-π, π] range
 double normalize_angle(double angle)
 {
-    while (angle > M_PI) angle -= 2.0 * M_PI;
-    while (angle < -M_PI) angle += 2.0 * M_PI;
-    return angle;
+    // Fast normalization using fmod instead of while loop
+    // This is O(1) instead of O(n) for large angles
+    angle = std::fmod(angle + M_PI, 2.0 * M_PI);
+    if (angle < 0) angle += 2.0 * M_PI;
+    return angle - M_PI;
 }
 
 // Generate 2D rotation matrix R(θ)
@@ -128,12 +130,18 @@ void TimingStats::reset()
     motion_model_time = 0.0;
     resampling_time = 0.0;
     query_prep_time = 0.0;
+    quality_metrics_time = 0.0;
     measurement_count = 0;
 
     // Reset ESS statistics
     ess_sum = 0.0;
     ess_count = 0;
     resample_count = 0;
+
+    // Reset TF lookup statistics
+    tf_exact_time_count = 0;
+    tf_fallback_count = 0;
+    tf_total_count = 0;
 }
 
 // Print performance statistics using provided logger function
@@ -156,6 +164,15 @@ void TimingStats::print_stats(const std::function<void(const std::string&)>& log
     logger("Query prep:       " + std::to_string(avg_query) + " ms/iter (" + std::to_string(100.0*avg_query/avg_total) + "%)");
     logger("Motion model:     " + std::to_string(avg_motion) + " ms/iter (" + std::to_string(100.0*avg_motion/avg_total) + "%)");
     logger("Resampling:       " + std::to_string(avg_resample) + " ms/iter (" + std::to_string(100.0*avg_resample/avg_total) + "%)");
+
+    // TF lookup statistics
+    if (tf_total_count > 0) {
+        double exact_time_rate = 100.0 * tf_exact_time_count / tf_total_count;
+        double fallback_rate = 100.0 * tf_fallback_count / tf_total_count;
+        logger("TF Lookup:        Exact=" + std::to_string(tf_exact_time_count) + " (" + std::to_string(exact_time_rate) + "%), " +
+               "Fallback=" + std::to_string(tf_fallback_count) + " (" + std::to_string(fallback_rate) + "%)");
+    }
+
     logger("=====================================");
 }
 

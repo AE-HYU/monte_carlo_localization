@@ -17,9 +17,12 @@
 #include "mcl_pkg/resampling_model/multinomial_resampling.hpp"
 #include "mcl_pkg/resampling_model/low_variance_resampling.hpp"
 
+#include <visualization_msgs/msg/marker.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <thread>
 #include <omp.h>
 
 namespace mcl_pkg
@@ -45,6 +48,14 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     current_velocity_ = 0.0;
     current_angular_vel_ = 0.0;
 
+    // Initialize MCL-based velocity estimation
+    estimated_vx_ = 0.0;
+    estimated_vy_ = 0.0;
+    estimated_vyaw_ = 0.0;
+    last_estimated_pose_ = Eigen::Vector3d::Zero();
+    velocity_initialized_ = false;
+    velocity_filter_alpha_ = 0.3;  // Low-pass filter: 0.3 = aggressive filtering, 0.7 = less filtering
+
     // Initialize distance field (likelihood field model)
     distance_field_initialized_ = false;
     distance_field_width_ = 0;
@@ -69,10 +80,11 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     if (USE_PARALLEL_RAYCASTING) {
         int hw = static_cast<int>(std::thread::hardware_concurrency());
         if (NUM_THREADS == 0) {
-            // Reserve 2 threads for executor workers and 1 for system
-            NUM_THREADS = std::max(1, hw - 3);
+            // Reserve 1 thread for executor and 1 for system
+            // MCL worker is detached, so doesn't conflict with executor
+            NUM_THREADS = std::max(2, hw - 2);
         } else if (NUM_THREADS > 0) {
-            NUM_THREADS = std::min(NUM_THREADS, hw - 3);
+            NUM_THREADS = std::min(NUM_THREADS, hw - 1);
         }
         omp_set_num_threads(NUM_THREADS);
     }
@@ -89,6 +101,7 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/pf/viz/inferred_pose", 10);
     odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/pf/pose/odom", 10);
     map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(10).transient_local());
+    quality_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/pf/viz/quality", 10);
 
     // ROS2 Subscribers
     std::string scan_topic = this->get_parameter("scan_topic").as_string();
@@ -156,12 +169,7 @@ MCL::MCL(const rclcpp::NodeOptions &options)
             laser_offset_x_, laser_offset_y_);
     }
 
-    // Timers
-    update_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(static_cast<int>(1000.0 / TIMER_FREQUENCY)),
-        std::bind(&MCL::timer_update, this),
-        compute_group_);
-
+    // Timers (timer_update removed - now lidar-driven)
     map_loader_timer_ = this->create_wall_timer(
         std::chrono::seconds(1),
         [this]() { map_manager::try_load_map(this); });
@@ -177,12 +185,14 @@ MCL::MCL(const rclcpp::NodeOptions &options)
             return parameter_manager::dynamicParametersCallback(this, parameters);
         });
 
-    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - %.1fHz, %s threading (%d threads)",
-        TIMER_FREQUENCY, USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - LiDAR-driven (async), %s threading (%d threads)",
+        USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
     RCLCPP_INFO(this->get_logger(), "Motion model: %s | Sensor model: %s | Resampling: %s%s",
         MOTION_MODEL_TYPE.c_str(), SENSOR_MODEL_TYPE.c_str(), RESAMPLING_TYPE.c_str(),
         USE_ADAPTIVE_RESAMPLING ? " (adaptive)" : "");
+    RCLCPP_INFO(this->get_logger(), "MCL worker: Max consecutive runs = %d (prevents infinite loop)",
+        MAX_CONSECUTIVE_MCL_RUNS);
     RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
     RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
 }
@@ -191,8 +201,10 @@ MCL::~MCL()
 {
     RCLCPP_INFO(this->get_logger(), "Shutting down particle filter");
 
+    // Stop MCL worker if running
+    mcl_running_ = false;
+
     // Cancel all timers explicitly for clean shutdown
-    if (update_timer_) update_timer_->cancel();
     if (map_loader_timer_) map_loader_timer_->cancel();
     if (map_timer_) map_timer_->cancel();
 
@@ -205,59 +217,93 @@ MCL::~MCL()
 
 void MCL::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
-    std::lock_guard<std::mutex> lock(lidar_lock_);
+    // Downsampling and pending data update (single lock for atomicity)
+    {
+        std::lock_guard<std::mutex> lock(lidar_lock_);
 
-    if (!lidar_initialized_) {
-        int num_ranges = msg->ranges.size();
-        int downsampled_size = num_ranges / ANGLE_STEP;
-        downsampled_angles_.resize(downsampled_size);
-        downsampled_ranges_.resize(downsampled_size);
+        if (!lidar_initialized_) {
+            int num_ranges = msg->ranges.size();
+            int downsampled_size = num_ranges / ANGLE_STEP;
+            downsampled_angles_.resize(downsampled_size);
+            downsampled_ranges_.resize(downsampled_size);
 
-        for (int i = 0; i < downsampled_size; ++i) {
-            downsampled_angles_[i] = msg->angle_min + (i * ANGLE_STEP) * msg->angle_increment;
-        }
-
-        // Precompute cos/sin for likelihood field model
-        if (SENSOR_MODEL_TYPE == "likelihood_field") {
-            cos_table_.resize(downsampled_size);
-            sin_table_.resize(downsampled_size);
             for (int i = 0; i < downsampled_size; ++i) {
-                cos_table_[i] = std::cos(downsampled_angles_[i]);
-                sin_table_[i] = std::sin(downsampled_angles_[i]);
+                downsampled_angles_[i] = msg->angle_min + (i * ANGLE_STEP) * msg->angle_increment;
             }
-            RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles, cos/sin tables precomputed",
-                        downsampled_angles_.size());
-        } else {
-            RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
+
+            // Precompute cos/sin for likelihood field model
+            if (SENSOR_MODEL_TYPE == "likelihood_field") {
+                cos_table_.resize(downsampled_size);
+                sin_table_.resize(downsampled_size);
+                for (int i = 0; i < downsampled_size; ++i) {
+                    cos_table_[i] = std::cos(downsampled_angles_[i]);
+                    sin_table_[i] = std::sin(downsampled_angles_[i]);
+                }
+                RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles, cos/sin tables precomputed",
+                            downsampled_angles_.size());
+            } else {
+                RCLCPP_INFO(this->get_logger(), "LiDAR initialized - %zu angles", downsampled_angles_.size());
+            }
+
+            lidar_initialized_ = true;
         }
 
-        lidar_initialized_ = true;
+        // Downsample ranges
+        int downsampled_size = downsampled_angles_.size();
+        for (int i = 0; i < downsampled_size; ++i) {
+            int idx = i * ANGLE_STEP;
+            downsampled_ranges_[i] = (idx < static_cast<int>(msg->ranges.size()))
+                                         ? msg->ranges[idx]
+                                         : msg->range_max;
+        }
+
+        last_lidar_time_ = msg->header.stamp;
+
+        // Update pending MCL task (atomically with downsampling)
+        pending_mcl_data_ = MCLTaskData{
+            .observation = downsampled_ranges_,
+            .timestamp = msg->header.stamp
+        };
     }
 
-    // Downsample ranges
-    int downsampled_size = downsampled_angles_.size();
-    for (int i = 0; i < downsampled_size; ++i) {
-        int idx = i * ANGLE_STEP;
-        downsampled_ranges_[i] = (idx < static_cast<int>(msg->ranges.size()))
-                                     ? msg->ranges[idx]
-                                     : msg->range_max;
+    // Check if MCL worker is already running
+    bool was_running = mcl_running_.exchange(true);
+    if (was_running) {
+        // MCL already running, pending data updated above
+        RCLCPP_DEBUG(this->get_logger(),
+            "[LiDAR] MCL busy, updated pending data");
+        return;
     }
 
-    last_lidar_time_ = msg->header.stamp;
-    has_new_lidar_data_ = true;
+    // Start MCL worker thread
+    RCLCPP_DEBUG(this->get_logger(),
+        "[LiDAR] Triggering MCL worker");
+
+    std::thread([this]() {
+        execute_mcl_worker();
+    }).detach();
 }
 
 void MCL::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    std::lock_guard<std::mutex> lock(odom_lock_);
+    // Store latest odom data for MCL worker and visualization (needs lock)
+    {
+        std::lock_guard<std::mutex> lock(odom_lock_);
+        current_velocity_ = msg->twist.twist.linear.x;
+        current_angular_vel_ = msg->twist.twist.angular.z * M_PI / 180.0;  // Convert deg/s to rad/s
+        latest_odom_timestamp_ = msg->header.stamp;
+        latest_odom_pose_[0] = msg->pose.pose.position.x;
+        latest_odom_pose_[1] = msg->pose.pose.position.y;
+        latest_odom_pose_[2] = utils::geometry::quaternion_to_yaw(msg->pose.pose.orientation);
 
-    current_velocity_ = msg->twist.twist.linear.x;
-    current_angular_vel_ = msg->twist.twist.angular.z;
-
-    if (!odom_initialized_) {
-        odom_initialized_ = true;
-        RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        if (!odom_initialized_) {
+            odom_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(), "Odometry initialized");
+        }
     }
+
+    // Publish pose immediately with odom data (no extrapolation needed)
+    publish_pose(msg);
 }
 
 void MCL::clicked_pose(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
@@ -297,106 +343,229 @@ void MCL::clicked_point(const geometry_msgs::msg::PointStamped::SharedPtr msg)
 }
 
 // ================================================================================================
-// MAIN UPDATE LOOP
+// MAIN MCL WORKER (Lidar-driven, async)
 // ================================================================================================
 
-void MCL::timer_update()
+void MCL::execute_mcl_worker()
 {
-    auto timer_start = std::chrono::high_resolution_clock::now();
+    int consecutive_runs = 0;
 
-    if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_)
-    {
-        static int wait_count = 0;
-        if (++wait_count % 50 == 0) {
-            RCLCPP_WARN(this->get_logger(),
-                "Still waiting for initialization (%d attempts) - LiDAR: %s, Odom: %s, Map: %s",
-                wait_count,
+    while (consecutive_runs < MAX_CONSECUTIVE_MCL_RUNS) {
+        auto worker_start = std::chrono::high_resolution_clock::now();
+
+        // 1. Check initialization
+        if (!lidar_initialized_ || !odom_initialized_ || !map_initialized_) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "[MCL Worker] Not ready - LiDAR: %s, Odom: %s, Map: %s",
                 lidar_initialized_ ? "OK" : "NO",
                 odom_initialized_ ? "OK" : "NO",
                 map_initialized_ ? "OK" : "NO");
+            mcl_running_ = false;
+            return;
         }
-        return;
-    }
 
-    // Check for new LiDAR data and copy if available
-    bool has_new_data = false;
-    std::vector<float> observation;
-    Eigen::Vector3d action;
-    rclcpp::Time lidar_timestamp;
-    static rclcpp::Time latest_sensor_time = rclcpp::Time(0);
-
-    {
-        std::lock_guard<std::mutex> lock(lidar_lock_);
-        has_new_data = has_new_lidar_data_;
-        if (has_new_data) {
-            has_new_lidar_data_ = false;
-            observation = downsampled_ranges_;
-            lidar_timestamp = last_lidar_time_;
-            latest_sensor_time = lidar_timestamp;  // Update latest timestamp
+        // 2. Get pending MCL task (guaranteed to exist when worker is triggered)
+        MCLTaskData task;
+        {
+            std::lock_guard<std::mutex> lock(lidar_lock_);
+            task = *pending_mcl_data_;
+            pending_mcl_data_.reset();  // Clear after taking
         }
-    }
 
-    // Early return if no new LiDAR data (save CPU, prevent stale TF republishing)
-    if (!has_new_data) {
-        // rclcpp::Time now = this->get_clock()->now();
-        // RCLCPP_WARN(this->get_logger(), "No new LiDAR data %f - skipping MCL update", now.seconds());
-        return;
-    }
+        rclcpp::Time lidar_timestamp = task.timestamp;
+        std::vector<float> observation = task.observation;  // Copy, not reference
 
-    // Calculate odometry motion
-    auto motion_start = std::chrono::high_resolution_clock::now();
-    action = calculate_lidar_frame_motion(lidar_timestamp);
-    auto motion_end = std::chrono::high_resolution_clock::now();
-    double motion_calc_time_ms = std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
+        // 3. Get odom->base at lidar timestamp (exact time or latest available)
+        auto motion_start = std::chrono::high_resolution_clock::now();
 
-    // Execute MCL with state lock
-    if (!state_lock_.try_lock()) {
-        RCLCPP_WARN(this->get_logger(), "MCL update skipped - previous update still running");
-        return;  // Skip this update entirely if previous one is still running
-    }
+        Eigen::Vector3d odom_to_base_vec;
+        timing_stats_.tf_total_count++;
 
-    auto mcl_start = std::chrono::high_resolution_clock::now();
-    run_mcl(action, observation);
-    auto mcl_end = std::chrono::high_resolution_clock::now();
-    mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+        try {
+            // Try exact time first
+            auto odom_to_base_tf = tf_buffer_->lookupTransform(
+                ODOM_FRAME, BASE_FRAME, lidar_timestamp, rclcpp::Duration(0, 0));
 
-    // Expected pose calculation (state_lock already held)
-    Eigen::Vector3d current_pose_laser = expected_pose();
+            odom_to_base_vec = Eigen::Vector3d(
+                odom_to_base_tf.transform.translation.x,
+                odom_to_base_tf.transform.translation.y,
+                utils::geometry::quaternion_to_yaw(odom_to_base_tf.transform.rotation)
+            );
 
-    state_lock_.unlock();
+            timing_stats_.tf_exact_time_count++;
+            RCLCPP_DEBUG(this->get_logger(),
+                "[MCL Worker] Got exact time odom->base for lidar timestamp");
+        } catch (tf2::TransformException &) {
+            // Exact time failed - use latest available transform
+            try {
+                auto odom_to_base_tf = tf_buffer_->lookupTransform(
+                    ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
 
-    // Convert laser frame to base_link
-    Eigen::Vector3d current_pose_base = utils::transforms::apply_laser_to_base_offset(
-        current_pose_laser, laser_offset_x_, laser_offset_y_);
+                odom_to_base_vec = Eigen::Vector3d(
+                    odom_to_base_tf.transform.translation.x,
+                    odom_to_base_tf.transform.translation.y,
+                    utils::geometry::quaternion_to_yaw(odom_to_base_tf.transform.rotation)
+                );
 
-    // Publish localization output synchronized with LiDAR data
-    auto pub_start = std::chrono::high_resolution_clock::now();
-    visualization::publish_localization(this, current_pose_base, lidar_timestamp);
-    auto pub_end = std::chrono::high_resolution_clock::now();
-    double pub_time_ms = std::chrono::duration<double, std::milli>(pub_end - pub_start).count();
+                rclcpp::Time tf_time(odom_to_base_tf.header.stamp);
+                double time_diff = (lidar_timestamp.nanoseconds() - tf_time.nanoseconds()) / 1e9;
 
-    // Publish particles
-    auto particle_start = std::chrono::high_resolution_clock::now();
-    visualization::publish_particles_viz(this, current_pose_base, lidar_timestamp);
-    auto particle_end = std::chrono::high_resolution_clock::now();
-    double particle_time_ms = std::chrono::duration<double, std::milli>(particle_end - particle_start).count();
- 
+                timing_stats_.tf_fallback_count++;
+                RCLCPP_DEBUG(this->get_logger(),
+                    "[MCL Worker] Using latest odom->base (time_diff=%.4fs)", time_diff);
 
-    // Performance logging (periodic)
-    static int mcl_update_count = 0;
-    mcl_update_count++;
+            } catch (tf2::TransformException &ex) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "[MCL Worker] Could not get odom->base: %s - skipping MCL update", ex.what());
+                mcl_running_ = false;
+                return;
+            }
+        }
 
-    if (mcl_update_count % 100 == 0) {
-        auto timer_end = std::chrono::high_resolution_clock::now();
-        double total_time = std::chrono::duration<double, std::milli>(timer_end - timer_start).count();
+        // 4. Calculate motion using the odom->base we just obtained
+        Eigen::Vector3d action = calculate_lidar_frame_motion(lidar_timestamp, odom_to_base_vec);
+        auto motion_end = std::chrono::high_resolution_clock::now();
+        double motion_calc_time_ms = std::chrono::duration<double, std::milli>(motion_end - motion_start).count();
 
-        // Build detailed performance message (all values from current update)
-        std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
-                         "Total: " + std::to_string(total_time) + "ms, " +
-                         "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
-                         "MCL: " + std::to_string(mcl_processing_time_) + "ms, " +
-                         "Pub: " + std::to_string(pub_time_ms) + "ms, " +
-                         "Particles: " + std::to_string(particle_time_ms) + "ms";
+        // 5. Execute MCL (heavy computation) and get quality metrics
+        auto mcl_start = std::chrono::high_resolution_clock::now();
+        MCLQualityMetrics metrics;
+        {
+            std::lock_guard<std::mutex> lock(state_lock_);
+            metrics = run_mcl(action, observation);
+        }
+        auto mcl_end = std::chrono::high_resolution_clock::now();
+        mcl_processing_time_ = std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
+
+        // 6. Extract quality metrics (computed before resampling, so they're meaningful)
+        Eigen::Vector3d current_pose_laser = metrics.mean_pose;
+        double max_weight = metrics.max_weight;
+        Eigen::Matrix3d covariance = metrics.covariance;
+        double particle_spread = metrics.particle_spread;
+
+        // 7. Convert laser frame to base_link
+        Eigen::Vector3d current_pose_base = utils::transforms::apply_laser_to_base_offset(
+            current_pose_laser, laser_offset_x_, laser_offset_y_);
+
+        // 7.5. Calculate MCL-based velocity estimation (actual ground velocity with slip considered)
+        if (velocity_initialized_) {
+            // Calculate time difference
+            double dt = (lidar_timestamp - last_velocity_update_time_).seconds();
+
+            if (dt > 0.001 && dt < 0.5) {  // Sanity check: 1ms to 500ms
+                // Calculate pose change in map frame
+                double dx_map = current_pose_base[0] - last_estimated_pose_[0];
+                double dy_map = current_pose_base[1] - last_estimated_pose_[1];
+                double dtheta = utils::geometry::normalize_angle(current_pose_base[2] - last_estimated_pose_[2]);
+
+                // Transform velocity from map frame to robot frame
+                // Robot frame velocity = R^T * map_frame_velocity
+                double cos_theta = std::cos(last_estimated_pose_[2]);
+                double sin_theta = std::sin(last_estimated_pose_[2]);
+
+                double vx_raw = (dx_map * cos_theta + dy_map * sin_theta) / dt;
+                double vy_raw = (-dx_map * sin_theta + dy_map * cos_theta) / dt;
+                double vyaw_raw = dtheta / dt;
+
+                // Apply low-pass filter to smooth velocity (reduces MCL noise)
+                // filtered = alpha * new + (1 - alpha) * old
+                estimated_vx_ = velocity_filter_alpha_ * vx_raw + (1.0 - velocity_filter_alpha_) * estimated_vx_;
+                estimated_vy_ = velocity_filter_alpha_ * vy_raw + (1.0 - velocity_filter_alpha_) * estimated_vy_;
+                estimated_vyaw_ = velocity_filter_alpha_ * vyaw_raw + (1.0 - velocity_filter_alpha_) * estimated_vyaw_;
+
+                RCLCPP_DEBUG(this->get_logger(),
+                    "[Velocity Est] vx=%.3f m/s (odom: %.3f), vy=%.3f m/s, vyaw=%.3f rad/s (dt=%.3fs)",
+                    estimated_vx_, current_velocity_, estimated_vy_, estimated_vyaw_, dt);
+            }
+        } else {
+            // First iteration - initialize
+            velocity_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(), "MCL-based velocity estimation initialized");
+        }
+
+        // Update last pose and time for next iteration
+        last_estimated_pose_ = current_pose_base;
+        last_velocity_update_time_ = lidar_timestamp;
+
+        // 8. Compute map->odom using the SAME odom->base from step 3 (for consistency)
+        // Reuse the odom_to_base_vec that was used for motion calculation
+
+        // Create transforms
+        tf2::Transform map_to_base_tf;
+        map_to_base_tf.setOrigin(tf2::Vector3(current_pose_base[0], current_pose_base[1], 0.0));
+        tf2::Quaternion map_to_base_quat;
+        map_to_base_quat.setRPY(0, 0, current_pose_base[2]);
+        map_to_base_tf.setRotation(map_to_base_quat);
+
+        tf2::Transform odom_to_base_tf;
+        odom_to_base_tf.setOrigin(tf2::Vector3(
+            odom_to_base_vec[0], odom_to_base_vec[1], 0.0));
+        tf2::Quaternion odom_to_base_quat;
+        odom_to_base_quat.setRPY(0, 0, odom_to_base_vec[2]);
+        odom_to_base_tf.setRotation(odom_to_base_quat);
+
+        // Compute map->odom = map->base × (odom->base)^(-1)
+        tf2::Transform map_to_odom_tf = map_to_base_tf * odom_to_base_tf.inverse();
+
+        Eigen::Vector3d map_to_odom_result(
+            map_to_odom_tf.getOrigin().x(),
+            map_to_odom_tf.getOrigin().y(),
+            tf2::getYaw(map_to_odom_tf.getRotation())
+        );
+
+        RCLCPP_DEBUG(this->get_logger(),
+            "[MCL Worker] Computed map->odom using same odom->base as motion (consistent)");
+
+        // 9. Store latest map->odom and quality metrics for publishing
+        // Compute human-readable ray-match percentage here and store it into latest_max_weight_
+        // to avoid adding an extra member and to keep a single lock for storing metrics.
+        int num_rays = 1080 / ANGLE_STEP;  // Downsampled ray count
+        double effective_rays = num_rays / (1.0 / INV_SQUASH_FACTOR);  // Account for squash factor
+        double ray_match_percentage = 0.0;
+        if (max_weight > 0.0) {
+            double avg_ray_prob = std::pow(max_weight, 1.0 / effective_rays);
+            ray_match_percentage = avg_ray_prob * 100.0;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mcl_result_lock_);
+            latest_mcl_timestamp_ = lidar_timestamp;
+            latest_map_to_odom_ = map_to_odom_result;
+
+            // Store percentage into latest_max_weight_ (reusing this field as percentage)
+            latest_max_weight_ = ray_match_percentage;
+            latest_covariance_ = covariance;
+            latest_particle_spread_ = particle_spread;
+
+            RCLCPP_DEBUG(this->get_logger(),
+                "[MCL Worker] Stored map->odom [%.3f, %.3f, %.3f] for publishing",
+                map_to_odom_result[0], map_to_odom_result[1], map_to_odom_result[2]);
+        }
+
+        // 10. Publish particles (visualization)
+        auto particle_start = std::chrono::high_resolution_clock::now();
+        visualization::publish_particles_viz(this, current_pose_base, lidar_timestamp);
+        auto particle_end = std::chrono::high_resolution_clock::now();
+        double particle_time_ms = std::chrono::duration<double, std::milli>(particle_end - particle_start).count();
+
+        // 11. Performance logging (periodic)
+        static int mcl_update_count = 0;
+        mcl_update_count++;
+
+        if (mcl_update_count % 100 == 0) {
+            auto worker_end = std::chrono::high_resolution_clock::now();
+            double total_time = std::chrono::duration<double, std::milli>(worker_end - worker_start).count();
+
+            // Build detailed performance message
+            double avg_quality_time = timing_stats_.measurement_count > 0
+                ? timing_stats_.quality_metrics_time / timing_stats_.measurement_count : 0.0;
+
+            std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
+                             "Total: " + std::to_string(total_time) + "ms, " +
+                             "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
+                             "MCL: " + std::to_string(mcl_processing_time_) + "ms " +
+                             "(Quality: " + std::to_string(avg_quality_time) + "ms), " +
+                             "Particles: " + std::to_string(particle_time_ms) + "ms";
 
         // Add sensor model specific breakdown (current update)
         if (SENSOR_MODEL_TYPE == "beam") {
@@ -432,65 +601,82 @@ void MCL::timer_update()
 
         RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
 
+        // Localization quality metrics (already computed above with state_lock_)
+        double pos_uncertainty = std::sqrt(covariance(0,0) + covariance(1,1));
+        double angle_uncertainty = std::sqrt(covariance(2,2)) * 180.0 / M_PI;
+
+        RCLCPP_INFO(this->get_logger(),
+            "Quality | Ray Match: %.1f%% (raw: %.4f) | Pos Unc: %.3fm | Angle Unc: %.1f° | Spread: %.3fm",
+            ray_match_percentage, max_weight, pos_uncertainty, angle_uncertainty, particle_spread
+        );
+
         // Also print detailed timing stats collected over the last interval
         timing_stats_.print_stats([this](const std::string &s) {
             RCLCPP_INFO(this->get_logger(), "%s", s.c_str());
         });
 
-        // Reset timing stats for next 100 iterations
-        timing_stats_.reset();
+            // Reset timing stats for next 100 iterations
+            timing_stats_.reset();
+        }
+
+        // 12. Increment run counter
+        consecutive_runs++;
+
+        // 13. Check if new pending data arrived during MCL processing
+        {
+            std::lock_guard<std::mutex> lock(lidar_lock_);
+            if (!pending_mcl_data_) {
+                // No new data, worker done
+                mcl_running_ = false;
+                RCLCPP_DEBUG(this->get_logger(),
+                    "[MCL Worker] Completed (consecutive_runs=%d)", consecutive_runs);
+                return;
+            }
+            // New data available, continue while loop
+            RCLCPP_DEBUG(this->get_logger(),
+                "[MCL Worker] Continuing with new pending data (run %d/%d)",
+                consecutive_runs + 1, MAX_CONSECUTIVE_MCL_RUNS);
+        }
     }
+
+    // Exited while loop - reached maximum consecutive runs
+    mcl_running_ = false;
+    RCLCPP_WARN(this->get_logger(),
+        "[MCL Worker] Reached max consecutive runs (%d) - forcing break. "
+        "MCL is too slow for current LiDAR rate!",
+        MAX_CONSECUTIVE_MCL_RUNS);
 }
 
-Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp)
+Eigen::Vector3d MCL::calculate_lidar_frame_motion(const rclcpp::Time& current_lidar_stamp,
+                                                   const Eigen::Vector3d& current_odom_to_base)
 {
-    (void)current_lidar_stamp;  // Unused - we now use TimePointZero for latest TF
-
     static Eigen::Vector3d last_pose = Eigen::Vector3d::Zero();
     static bool first_call = true;
 
     if (first_call) {
         first_call = false;
-        try {
-            // Get initial pose using latest TF
-            auto transform = tf_buffer_->lookupTransform(
-                ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
-
-            last_pose = Eigen::Vector3d(
-                transform.transform.translation.x,
-                transform.transform.translation.y,
-                utils::geometry::quaternion_to_yaw(transform.transform.rotation)
-            );
-        } catch (tf2::TransformException &ex) {
-            RCLCPP_WARN(this->get_logger(), "Could not get initial TF: %s", ex.what());
-        }
+        // Initialize with provided odom->base
+        last_pose = current_odom_to_base;
+        RCLCPP_DEBUG(this->get_logger(),
+            "[Motion] Initialized with odom->base [%.3f, %.3f, %.3f]",
+            current_odom_to_base[0], current_odom_to_base[1], current_odom_to_base[2]);
         return Eigen::Vector3d::Zero();
     }
 
-    try {
-        // Use latest available TF instead of waiting for specific timestamp
-        // This eliminates 10-20ms blocking delays in simulation
-        auto current_transform = tf_buffer_->lookupTransform(
-            ODOM_FRAME, BASE_FRAME, tf2::TimePointZero);
+    // Use the provided odom->base (already computed with exact time or extrapolation)
+    Eigen::Vector3d current_pose = current_odom_to_base;
 
-        Eigen::Vector3d current_pose(
-            current_transform.transform.translation.x,
-            current_transform.transform.translation.y,
-            utils::geometry::quaternion_to_yaw(current_transform.transform.rotation)
-        );
+    // Calculate motion from last stored pose to current
+    Eigen::Vector3d motion = utils::transforms::calculate_lidar_frame_motion(current_pose, last_pose);
 
-        // Calculate motion from last stored pose to current
-        Eigen::Vector3d motion = utils::transforms::calculate_lidar_frame_motion(current_pose, last_pose);
+    // Store current pose for next iteration
+    last_pose = current_pose;
 
-        // Store current pose for next iteration
-        last_pose = current_pose;
-        return motion;
+    RCLCPP_DEBUG(this->get_logger(),
+        "[Motion] Computed motion [%.3f, %.3f, %.3f] from odom delta",
+        motion[0], motion[1], motion[2]);
 
-    } catch (tf2::TransformException &ex) {
-        RCLCPP_WARN(this->get_logger(),
-            "Could not get transform for lidar frame motion calculation: %s", ex.what());
-        return Eigen::Vector3d::Zero();
-    }
+    return motion;
 }
 
 /**
@@ -576,8 +762,10 @@ void MCL::resample()
 
 /**
  * @brief Executes complete MCL cycle: predict, update, normalize, resample
+ * @return MCLQualityMetrics containing mean pose, covariance, max_weight, and particle_spread
+ *         These metrics are computed BEFORE resampling when weights are still meaningful
  */
-void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
+MCLQualityMetrics MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &observation)
 {
     auto mcl_start = std::chrono::high_resolution_clock::now();
     
@@ -601,6 +789,23 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
             w /= sum_weights;
         }
     }
+
+    // 3.5. Calculate max_weight BEFORE resampling (when weights are meaningful)
+    // Max weight measures sensor model confidence - must be calculated before resampling
+    // because after resampling, all weights become uniform (1/MAX_PARTICLES)
+    auto quality_start = std::chrono::high_resolution_clock::now();
+
+    double max_weight = weights_[0];
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        if (weights_[i] > max_weight) {
+            max_weight = weights_[i];
+        }
+    }
+
+    auto quality_end = std::chrono::high_resolution_clock::now();
+    double quality_time_ms = std::chrono::duration<double, std::milli>(quality_end - quality_start).count();
+    timing_stats_.quality_metrics_time += quality_time_ms;
 
     // 4. Adaptive Resampling (with ESS check if enabled)
     auto resample_start = std::chrono::high_resolution_clock::now();
@@ -638,11 +843,61 @@ void MCL::run_mcl(const Eigen::Vector3d &action, const std::vector<float> &obser
 
     auto resample_end = std::chrono::high_resolution_clock::now();
     timing_stats_.resampling_time += std::chrono::duration<double, std::milli>(resample_end - resample_start).count();
-    
+
+    // 5. Calculate covariance and mean_pose AFTER resampling
+    // After resampling, particles_ represents the true belief distribution
+    // Weights are now uniform (1/MAX_PARTICLES), so weighted mean = unweighted mean
+    auto quality_start2 = std::chrono::high_resolution_clock::now();
+
+    // Pass 1: Calculate mean pose from final particles
+    Eigen::Vector3d mean_pose = Eigen::Vector3d::Zero();
+    double sum_sin = 0.0, sum_cos = 0.0;
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        mean_pose[0] += particles_(i, 0);
+        mean_pose[1] += particles_(i, 1);
+        sum_sin += std::sin(particles_(i, 2));
+        sum_cos += std::cos(particles_(i, 2));
+    }
+    mean_pose[0] /= MAX_PARTICLES;
+    mean_pose[1] /= MAX_PARTICLES;
+    mean_pose[2] = std::atan2(sum_sin, sum_cos);
+
+    // Pass 2: Calculate covariance and particle spread from final particles
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    double particle_spread = 0.0;
+
+    for (int i = 0; i < MAX_PARTICLES; ++i)
+    {
+        Eigen::Vector3d diff;
+        diff[0] = particles_(i, 0) - mean_pose[0];
+        diff[1] = particles_(i, 1) - mean_pose[1];
+        diff[2] = utils::geometry::normalize_angle(particles_(i, 2) - mean_pose[2]);
+
+        // Unweighted covariance (weights are uniform after resampling)
+        covariance += (diff * diff.transpose()) / MAX_PARTICLES;
+
+        // Particle spread (unweighted average distance)
+        particle_spread += std::sqrt(diff[0]*diff[0] + diff[1]*diff[1]);
+    }
+    particle_spread /= MAX_PARTICLES;
+
+    auto quality_end2 = std::chrono::high_resolution_clock::now();
+    double quality_time_ms2 = std::chrono::duration<double, std::milli>(quality_end2 - quality_start2).count();
+    timing_stats_.quality_metrics_time += quality_time_ms2;
+
     auto mcl_end = std::chrono::high_resolution_clock::now();
     timing_stats_.total_mcl_time += std::chrono::duration<double, std::milli>(mcl_end - mcl_start).count();
     timing_stats_.measurement_count++;
     // Collect timing stats here; printing is done periodically from timer_update()
+
+    // Return quality metrics (max_weight from before resampling, covariance from after)
+    return MCLQualityMetrics{
+        .mean_pose = mean_pose,
+        .covariance = covariance,
+        .max_weight = max_weight,
+        .particle_spread = particle_spread
+    };
 }
 
 /**
@@ -670,6 +925,33 @@ Eigen::Vector3d MCL::expected_pose()
     return pose;
 }
 
+// Note: Old quality metric functions (get_max_weight, calculate_covariance, calculate_particle_spread)
+// have been removed. These metrics are now computed directly in run_mcl() and returned via
+// MCLQualityMetrics struct for better performance (single-pass calculation).
+
+// ================================================================================================
+// POSE EXTRAPOLATION UTILITIES
+// ================================================================================================
+
+Eigen::Vector3d MCL::extrapolatePose(const Eigen::Vector3d& base_pose,
+                                     double linear_vel, double angular_vel,
+                                     double time_diff)
+{
+    // Calculate position change using current heading
+    double dx = linear_vel * time_diff * std::cos(base_pose[2]);
+    double dy = linear_vel * time_diff * std::sin(base_pose[2]);
+    double dtheta = angular_vel * time_diff;
+
+    // Apply changes to base pose
+    Eigen::Vector3d extrapolated_pose;
+    extrapolated_pose[0] = base_pose[0] + dx;
+    extrapolated_pose[1] = base_pose[1] + dy;
+    // Normalize angle to [-π, π] to prevent accumulation
+    extrapolated_pose[2] = utils::geometry::normalize_angle(base_pose[2] + dtheta);
+
+    return extrapolated_pose;
+}
+
 // ================================================================================================
 // MAP PUBLISHING
 // ================================================================================================
@@ -682,6 +964,193 @@ void MCL::publish_map_periodically()
     std::lock_guard<std::mutex> lock(map_lock_);
     if (map_msg_) {
         map_pub_->publish(*map_msg_);
+    }
+}
+
+// ================================================================================================
+// POSE PUBLISHING (triggered by odom callback)
+// ================================================================================================
+void MCL::publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg)
+{
+    // Get latest map->odom transform (from MCL computation)
+    Eigen::Vector3d map_to_odom_vec;
+    {
+        std::lock_guard<std::mutex> lock(mcl_result_lock_);
+        map_to_odom_vec = latest_map_to_odom_;
+    }
+
+    // Extract odom->base from incoming message (no extrapolation needed)
+    Eigen::Vector3d odom_to_base_vec(
+        odom_msg->pose.pose.position.x,
+        odom_msg->pose.pose.position.y,
+        utils::geometry::quaternion_to_yaw(odom_msg->pose.pose.orientation)
+    );
+
+    rclcpp::Time timestamp = odom_msg->header.stamp;
+
+    // Publish map->odom TF
+    if (PUBLISH_MAP_ODOM_TF) {
+        geometry_msgs::msg::TransformStamped map_to_odom_msg;
+        map_to_odom_msg.header.stamp = timestamp;
+        map_to_odom_msg.header.frame_id = MAP_FRAME;
+        map_to_odom_msg.child_frame_id = ODOM_FRAME;
+
+        map_to_odom_msg.transform.translation.x = map_to_odom_vec[0];
+        map_to_odom_msg.transform.translation.y = map_to_odom_vec[1];
+        map_to_odom_msg.transform.translation.z = 0.0;
+
+        tf2::Quaternion map_to_odom_quat;
+        map_to_odom_quat.setRPY(0, 0, map_to_odom_vec[2]);
+        map_to_odom_msg.transform.rotation = tf2::toMsg(map_to_odom_quat);
+
+        pub_tf_->sendTransform(map_to_odom_msg);
+    }
+
+    // Compute map->base transform (needed for odometry message and visualization)
+    // Create map->odom transform (needed for TF multiplication)
+    tf2::Transform map_to_odom_tf;
+    map_to_odom_tf.setOrigin(tf2::Vector3(map_to_odom_vec[0], map_to_odom_vec[1], 0.0));
+    tf2::Quaternion map_to_odom_quat;
+    map_to_odom_quat.setRPY(0, 0, map_to_odom_vec[2]);
+    map_to_odom_tf.setRotation(map_to_odom_quat);
+
+    // Create odom->base transform (needed for TF multiplication)
+    tf2::Transform odom_to_base_tf;
+    odom_to_base_tf.setOrigin(tf2::Vector3(
+        odom_to_base_vec[0], odom_to_base_vec[1], 0.0));
+    tf2::Quaternion odom_to_base_quat;
+    odom_to_base_quat.setRPY(0, 0, odom_to_base_vec[2]);
+    odom_to_base_tf.setRotation(odom_to_base_quat);
+
+    // Compute map->base = map->odom × odom->base
+    tf2::Transform map_to_base_tf = map_to_odom_tf * odom_to_base_tf;
+
+    // Publish map->base as odometry topic with covariance (optional, only if subscribers exist)
+    if (PUBLISH_ODOM && odom_pub_ && odom_pub_->get_subscription_count() > 0) {
+        nav_msgs::msg::Odometry odom_out_msg;
+        odom_out_msg.header.stamp = timestamp;
+        odom_out_msg.header.frame_id = MAP_FRAME;
+        odom_out_msg.child_frame_id = BASE_FRAME;
+
+        odom_out_msg.pose.pose.position.x = map_to_base_tf.getOrigin().x();
+        odom_out_msg.pose.pose.position.y = map_to_base_tf.getOrigin().y();
+        odom_out_msg.pose.pose.position.z = 0.0;
+
+        odom_out_msg.pose.pose.orientation = tf2::toMsg(map_to_base_tf.getRotation());
+
+        // Add MCL-estimated velocity (actual ground velocity considering slip)
+        // These velocities are in the robot's base_link frame
+        if (velocity_initialized_) {
+            odom_out_msg.twist.twist.linear.x = estimated_vx_;   // Forward velocity (m/s)
+            odom_out_msg.twist.twist.linear.y = estimated_vy_;   // Lateral velocity (m/s) - slip detection
+            odom_out_msg.twist.twist.linear.z = 0.0;
+            odom_out_msg.twist.twist.angular.x = 0.0;
+            odom_out_msg.twist.twist.angular.y = 0.0;
+            odom_out_msg.twist.twist.angular.z = estimated_vyaw_;  // Yaw rate (rad/s)
+        } else {
+            // Fallback to odometry velocity if MCL velocity not initialized yet
+            odom_out_msg.twist.twist.linear.x = current_velocity_;
+            odom_out_msg.twist.twist.linear.y = 0.0;
+            odom_out_msg.twist.twist.linear.z = 0.0;
+            odom_out_msg.twist.twist.angular.x = 0.0;
+            odom_out_msg.twist.twist.angular.y = 0.0;
+            odom_out_msg.twist.twist.angular.z = current_angular_vel_;
+        }
+
+        // Add covariance from particle filter for RViz visualization
+        // RViz will display this as ellipse (x,y) and arc (yaw)
+        // Read pre-computed covariance (thread-safe copy)
+        Eigen::Matrix3d cov;
+        {
+            std::lock_guard<std::mutex> lock(mcl_result_lock_);
+            cov = latest_covariance_;  // Atomic copy of 9 doubles
+        }
+
+        // Use actual covariance values without scaling
+        // Covariance represents true localization uncertainty and should be shown accurately
+        // to gauge the real magnitude of position/orientation uncertainty
+
+        // Fill 6x6 covariance matrix (x, y, z, roll, pitch, yaw)
+        // ROS uses row-major order: index = row * 6 + col
+        std::fill(odom_out_msg.pose.covariance.begin(), odom_out_msg.pose.covariance.end(), 0.0);
+
+        odom_out_msg.pose.covariance[0] = cov(0, 0);   // cov[0][0] = x-x
+        odom_out_msg.pose.covariance[1] = cov(0, 1);   // cov[0][1] = x-y
+        odom_out_msg.pose.covariance[6] = cov(0, 1);   // cov[1][0] = y-x (symmetric)
+        odom_out_msg.pose.covariance[7] = cov(1, 1);   // cov[1][1] = y-y
+        odom_out_msg.pose.covariance[35] = cov(2, 2);  // cov[5][5] = yaw-yaw
+
+        odom_pub_->publish(odom_out_msg);
+    }
+
+    // Publish pose visualization for RViz (PoseStamped message)
+    Eigen::Vector3d map_to_base_vec(
+        map_to_base_tf.getOrigin().x(),
+        map_to_base_tf.getOrigin().y(),
+        tf2::getYaw(map_to_base_tf.getRotation())
+    );
+    visualization::publish_localization(this, map_to_base_vec, timestamp);
+
+    // Publish max weight visualization (color-coded quality indicator)
+    if (quality_marker_pub_ && quality_marker_pub_->get_subscription_count() > 0) {
+        // Read ray-match percentage (stored into latest_max_weight_ by the worker)
+        double ray_match_pct = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(mcl_result_lock_);
+            ray_match_pct = latest_max_weight_;  // percentage in [0..100]
+        }
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.stamp = timestamp;
+        marker.header.frame_id = MAP_FRAME;
+        marker.ns = "localization_quality";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::SPHERE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+
+        // Position above the robot
+        marker.pose.position.x = map_to_base_vec[0];
+        marker.pose.position.y = map_to_base_vec[1];
+        marker.pose.position.z = 0.6;  // 60cm above (more visible)
+        marker.pose.orientation.w = 1.0;
+
+        // Size (increased for better visibility)
+        marker.scale.x = 0.30;  // 30cm diameter
+        marker.scale.y = 0.30;
+        marker.scale.z = 0.30;
+
+        // Color based on ray match percentage (higher = better)
+        if (ray_match_pct >= 85.0) { // EXCELLENT >=85%
+            // EXCELLENT: Green
+            marker.color.r = 0.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+        } else if (ray_match_pct >= 80.0) { // GOOD >=80%
+            // GOOD: Yellow-Green
+            marker.color.r = 0.5;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+        } else if (ray_match_pct >= 70.0) { // FAIR >=70%
+            // FAIR: Yellow
+            marker.color.r = 1.0;
+            marker.color.g = 1.0;
+            marker.color.b = 0.0;
+        } else if (ray_match_pct >= 60.0) { // POOR >=60%
+            // POOR: Orange
+            marker.color.r = 1.0;
+            marker.color.g = 0.5;
+            marker.color.b = 0.0;
+        } else {
+            // CRITICAL: Red
+            marker.color.r = 1.0;
+            marker.color.g = 0.0;
+            marker.color.b = 0.0;
+        }
+        marker.color.a = 0.8;  // Slightly transparent
+
+        marker.lifetime = rclcpp::Duration::from_seconds(0.2);  // 200ms lifetime
+
+        quality_marker_pub_->publish(marker);
     }
 }
 
