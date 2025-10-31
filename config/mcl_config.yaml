@@ -57,17 +57,20 @@ mcl:
     omp_schedule_type: "static"
     omp_chunk_size: 0
 
-    # Multi-component sensor model weights (used by BOTH beam and likelihood_field)
-    # Must sum to 1.0 (auto-normalized if not)
-    z_hit: 0.85                        # Weight for correct measurements (Gaussian)
-    z_short: 0.06                      # Weight for short readings (dynamic obstacles, motion blur)
-    z_max: 0.06                        # Weight for max range readings
-    z_rand: 0.03                       # Weight for random noise (reflections, interference)
+    # === BEAM MODEL PARAMETERS (4-component mixture model) ===
+    # Used when sensor_model_type: "beam"
+    # Components: z_hit + z_short + z_max + z_rand = 1.0
+    beam_z_hit: 0.85                   # Weight for correct measurements (Gaussian)
+    beam_z_short: 0.06                 # Weight for short readings (dynamic obstacles, motion blur)
+    beam_z_max: 0.06                   # Weight for max range readings
+    beam_z_rand: 0.03                  # Weight for random noise (reflections, interference)
+    beam_sigma_hit: 0.2                # Measurement noise std dev (meters)
 
-    # Beam model specific parameters (only used when sensor_model_type: "beam")
-    sigma_hit: 0.2                     # Measurement noise std dev for beam model
-
-    # Likelihood field model specific parameters (only used when sensor_model_type: "likelihood_field")
+    # === LIKELIHOOD FIELD MODEL PARAMETERS (2-component mixture model) ===
+    # Used when sensor_model_type: "likelihood_field"
+    # Components: z_hit + z_rand = 1.0 (z_short and z_max are NOT used)
+    likelihood_z_hit: 0.90             # Weight for correct measurements (Gaussian)
+    likelihood_z_rand: 0.10            # Weight for random noise (reflections, interference)
     likelihood_sigma: 0.1              # Distance field Gaussian sigma (meters)
 
     # === RAY CASTING ===

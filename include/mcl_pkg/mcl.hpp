@@ -108,8 +108,17 @@ class MCL : public rclcpp::Node
 
     // --------------------------------- SENSOR MODEL PARAMETERS ---------------------------------
     std::string SENSOR_MODEL_TYPE;  // "beam" or "likelihood_field"
+
+    // Beam model parameters (4-component: z_hit + z_short + z_max + z_rand)
+    double BEAM_Z_HIT, BEAM_Z_SHORT, BEAM_Z_MAX, BEAM_Z_RAND;
+    double BEAM_SIGMA_HIT;  // Measurement noise std dev for beam model (meters)
+
+    // Likelihood field model parameters (2-component: z_hit + z_rand)
+    double LIKELIHOOD_Z_HIT, LIKELIHOOD_Z_RAND;
+    double LIKELIHOOD_SIGMA;  // Distance field Gaussian sigma (meters)
+
+    // Legacy parameters (kept for backward compatibility, will be set based on active model)
     double Z_SHORT, Z_MAX, Z_RAND, Z_HIT, SIGMA_HIT;
-    double LIKELIHOOD_SIGMA;  // Sigma for likelihood field model (meters)
 
     // --------------------------------- MOTION MODEL PARAMETERS ---------------------------------
     std::string MOTION_MODEL_TYPE;  // "simple" or "odometry" (RTR)

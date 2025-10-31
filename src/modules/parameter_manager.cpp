@@ -27,15 +27,17 @@ void initParameters(MCL* node)
     // Sensor model parameters
     node->declare_parameter("sensor_model_type", "beam");  // "beam" or "likelihood_field"
 
-    // Beam model parameters (sum must equal 1.0 - auto-normalized if not)
-    node->declare_parameter("z_short", 0.01);
-    node->declare_parameter("z_max", 0.07);
-    node->declare_parameter("z_rand", 0.07);
-    node->declare_parameter("z_hit", 0.85);
-    node->declare_parameter("sigma_hit", 5.0);
+    // Beam model parameters (4-component: z_hit + z_short + z_max + z_rand = 1.0)
+    node->declare_parameter("beam_z_hit", 0.85);
+    node->declare_parameter("beam_z_short", 0.06);
+    node->declare_parameter("beam_z_max", 0.06);
+    node->declare_parameter("beam_z_rand", 0.03);
+    node->declare_parameter("beam_sigma_hit", 0.2);
 
-    // Likelihood field model parameters
-    node->declare_parameter("likelihood_sigma", 0.2);  // Sigma for likelihood field (meters)
+    // Likelihood field model parameters (2-component: z_hit + z_rand = 1.0)
+    node->declare_parameter("likelihood_z_hit", 0.90);
+    node->declare_parameter("likelihood_z_rand", 0.10);
+    node->declare_parameter("likelihood_sigma", 0.1);
 
     // Motion model parameters
     node->declare_parameter("motion_model_type", "simple");  // "simple" or "odometry" (RTR)
@@ -95,11 +97,17 @@ void initParameters(MCL* node)
 
     // Sensor model parameters
     node->SENSOR_MODEL_TYPE = node->get_parameter("sensor_model_type").as_string();
-    node->Z_SHORT = node->get_parameter("z_short").as_double();
-    node->Z_MAX = node->get_parameter("z_max").as_double();
-    node->Z_RAND = node->get_parameter("z_rand").as_double();
-    node->Z_HIT = node->get_parameter("z_hit").as_double();
-    node->SIGMA_HIT = node->get_parameter("sigma_hit").as_double();
+
+    // Load beam model parameters
+    node->BEAM_Z_HIT = node->get_parameter("beam_z_hit").as_double();
+    node->BEAM_Z_SHORT = node->get_parameter("beam_z_short").as_double();
+    node->BEAM_Z_MAX = node->get_parameter("beam_z_max").as_double();
+    node->BEAM_Z_RAND = node->get_parameter("beam_z_rand").as_double();
+    node->BEAM_SIGMA_HIT = node->get_parameter("beam_sigma_hit").as_double();
+
+    // Load likelihood field model parameters
+    node->LIKELIHOOD_Z_HIT = node->get_parameter("likelihood_z_hit").as_double();
+    node->LIKELIHOOD_Z_RAND = node->get_parameter("likelihood_z_rand").as_double();
     node->LIKELIHOOD_SIGMA = node->get_parameter("likelihood_sigma").as_double();
 
     // Motion model parameters
@@ -155,18 +163,72 @@ void initParameters(MCL* node)
         node->SENSOR_MODEL_TYPE = "beam";
     }
 
-    // Validate motion model type
-    if (node->MOTION_MODEL_TYPE != "simple" && node->MOTION_MODEL_TYPE != "odometry") {
+    // Validate and normalize beam model weights (4-component)
+    double beam_sum = node->BEAM_Z_HIT + node->BEAM_Z_SHORT + node->BEAM_Z_MAX + node->BEAM_Z_RAND;
+    if (std::abs(beam_sum - 1.0) > 0.01) {
         RCLCPP_WARN(node->get_logger(),
-            "Invalid motion_model_type '%s', using default 'simple'", node->MOTION_MODEL_TYPE.c_str());
-        node->MOTION_MODEL_TYPE = "simple";
+            "Beam model weights sum to %.3f (expected 1.0), normalizing...", beam_sum);
+        node->BEAM_Z_HIT /= beam_sum;
+        node->BEAM_Z_SHORT /= beam_sum;
+        node->BEAM_Z_MAX /= beam_sum;
+        node->BEAM_Z_RAND /= beam_sum;
+        RCLCPP_INFO(node->get_logger(),
+            "Normalized beam: z_hit=%.3f, z_short=%.3f, z_max=%.3f, z_rand=%.3f",
+            node->BEAM_Z_HIT, node->BEAM_Z_SHORT, node->BEAM_Z_MAX, node->BEAM_Z_RAND);
+    }
+
+    // Validate and normalize likelihood model weights (2-component)
+    double likelihood_sum = node->LIKELIHOOD_Z_HIT + node->LIKELIHOOD_Z_RAND;
+    if (std::abs(likelihood_sum - 1.0) > 0.01) {
+        RCLCPP_WARN(node->get_logger(),
+            "Likelihood model weights sum to %.3f (expected 1.0), normalizing...", likelihood_sum);
+        node->LIKELIHOOD_Z_HIT /= likelihood_sum;
+        node->LIKELIHOOD_Z_RAND /= likelihood_sum;
+        RCLCPP_INFO(node->get_logger(),
+            "Normalized likelihood: z_hit=%.3f, z_rand=%.3f",
+            node->LIKELIHOOD_Z_HIT, node->LIKELIHOOD_Z_RAND);
+    }
+
+    // Set legacy parameters based on active sensor model
+    if (node->SENSOR_MODEL_TYPE == "beam") {
+        node->Z_HIT = node->BEAM_Z_HIT;
+        node->Z_SHORT = node->BEAM_Z_SHORT;
+        node->Z_MAX = node->BEAM_Z_MAX;
+        node->Z_RAND = node->BEAM_Z_RAND;
+        node->SIGMA_HIT = node->BEAM_SIGMA_HIT;
+        RCLCPP_INFO(node->get_logger(),
+            "Using beam model parameters: z_hit=%.3f, z_short=%.3f, z_max=%.3f, z_rand=%.3f, sigma=%.3f",
+            node->Z_HIT, node->Z_SHORT, node->Z_MAX, node->Z_RAND, node->SIGMA_HIT);
+    } else {
+        node->Z_HIT = node->LIKELIHOOD_Z_HIT;
+        node->Z_RAND = node->LIKELIHOOD_Z_RAND;
+        node->Z_SHORT = 0.0;  // Not used in likelihood field model
+        node->Z_MAX = 0.0;    // Not used in likelihood field model
+        node->SIGMA_HIT = 0.0; // Not used in likelihood field model
+        RCLCPP_INFO(node->get_logger(),
+            "Using likelihood field model parameters: z_hit=%.3f, z_rand=%.3f, sigma=%.3f",
+            node->Z_HIT, node->Z_RAND, node->LIKELIHOOD_SIGMA);
+    }
+
+    // Validate beam sigma_hit
+    if (node->BEAM_SIGMA_HIT <= 0.0) {
+        RCLCPP_WARN(node->get_logger(),
+            "beam_sigma_hit must be positive, got %.3f. Using default 0.2", node->BEAM_SIGMA_HIT);
+        node->BEAM_SIGMA_HIT = 0.2;
     }
 
     // Validate likelihood field sigma
     if (node->LIKELIHOOD_SIGMA <= 0.0) {
         RCLCPP_WARN(node->get_logger(),
-            "likelihood_sigma must be positive, got %.3f. Using default 0.2", node->LIKELIHOOD_SIGMA);
-        node->LIKELIHOOD_SIGMA = 0.2;
+            "likelihood_sigma must be positive, got %.3f. Using default 0.1", node->LIKELIHOOD_SIGMA);
+        node->LIKELIHOOD_SIGMA = 0.1;
+    }
+
+    // Validate motion model type
+    if (node->MOTION_MODEL_TYPE != "simple" && node->MOTION_MODEL_TYPE != "odometry") {
+        RCLCPP_WARN(node->get_logger(),
+            "Invalid motion_model_type '%s', using default 'simple'", node->MOTION_MODEL_TYPE.c_str());
+        node->MOTION_MODEL_TYPE = "simple";
     }
 
     // Validate particle counts
@@ -210,26 +272,6 @@ void initParameters(MCL* node)
         node->RESAMPLING_TYPE = "low_variance";
     }
 
-    // Validate sensor model weights sum to 1.0
-    double sum = node->Z_HIT + node->Z_SHORT + node->Z_MAX + node->Z_RAND;
-    if (std::abs(sum - 1.0) > 0.01) {
-        RCLCPP_WARN(node->get_logger(),
-            "Sensor model weights sum to %.3f (expected 1.0), normalizing...", sum);
-        node->Z_HIT /= sum;
-        node->Z_SHORT /= sum;
-        node->Z_MAX /= sum;
-        node->Z_RAND /= sum;
-        RCLCPP_INFO(node->get_logger(),
-            "Normalized: z_hit=%.3f, z_short=%.3f, z_max=%.3f, z_rand=%.3f",
-            node->Z_HIT, node->Z_SHORT, node->Z_MAX, node->Z_RAND);
-    }
-
-    // Validate sigma_hit
-    if (node->SIGMA_HIT <= 0.0) {
-        RCLCPP_WARN(node->get_logger(),
-            "sigma_hit must be positive, got %.3f. Using default 8.0", node->SIGMA_HIT);
-        node->SIGMA_HIT = 8.0;
-    }
 
     // Validate simple motion model parameters
     if (node->MOTION_DISPERSION_X < 0.0) {
