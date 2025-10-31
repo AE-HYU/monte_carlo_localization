@@ -1,0 +1,9 @@
+free_thresh: 0.3
+image: 31_1st_carto.png
+negate: 0
+occupied_thresh: 0.65
+origin:
+- -7.843029022216797
+- -5.016792297363281
+- 0
+resolution: 0.05000000074505806
