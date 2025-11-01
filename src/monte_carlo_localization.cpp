@@ -552,7 +552,7 @@ void MCL::execute_mcl_worker()
         static int mcl_update_count = 0;
         mcl_update_count++;
 
-        if (mcl_update_count % 100 == 0) {
+        if (mcl_update_count % 20 == 0) {
             auto worker_end = std::chrono::high_resolution_clock::now();
             double total_time = std::chrono::duration<double, std::milli>(worker_end - worker_start).count();
 
@@ -611,9 +611,9 @@ void MCL::execute_mcl_worker()
         );
 
         // Also print detailed timing stats collected over the last interval
-        timing_stats_.print_stats([this](const std::string &s) {
-            RCLCPP_INFO(this->get_logger(), "%s", s.c_str());
-        });
+        // timing_stats_.print_stats([this](const std::string &s) {
+        //     RCLCPP_INFO(this->get_logger(), "%s", s.c_str());
+        // });
 
             // Reset timing stats for next 100 iterations
             timing_stats_.reset();
