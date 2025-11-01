@@ -6,7 +6,7 @@
 mcl:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 4000                # Maximum number of particles
+    max_particles: 3000                # Maximum number of particles
     min_particles: 500                 # Minimum number of particles (for adaptive resampling)
     max_viz_particles: 60              # Visualization downsampling
     max_range: 15.0                    # Laser max range (m)
@@ -53,17 +53,17 @@ mcl:
                                        # low_variance: Systematic sampling (low variance, recommended)
 
     # === SENSOR MODEL ===
-    sensor_model_type: "likelihood_field"                      # "beam" or "likelihood_field"
+    sensor_model_type: "beam"                      # "beam" or "likelihood_field"
     omp_schedule_type: "static"
     omp_chunk_size: 0
 
     # === BEAM MODEL PARAMETERS (4-component mixture model) ===
     # Used when sensor_model_type: "beam"
     # Components: z_hit + z_short + z_max + z_rand = 1.0
-    beam_z_hit: 0.85                   # Weight for correct measurements (Gaussian)
+    beam_z_hit: 0.81                   # Weight for correct measurements (Gaussian)
     beam_z_short: 0.06                 # Weight for short readings (dynamic obstacles, motion blur)
-    beam_z_max: 0.06                   # Weight for max range readings
-    beam_z_rand: 0.03                  # Weight for random noise (reflections, interference)
+    beam_z_max: 0.03                   # Weight for max range readings
+    beam_z_rand: 0.1                  # Weight for random noise (reflections, interference)
     beam_sigma_hit: 0.2                # Measurement noise std dev (meters)
 
     # === LIKELIHOOD FIELD MODEL PARAMETERS (2-component mixture model) ===
