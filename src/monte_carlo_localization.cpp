@@ -54,7 +54,7 @@ MCL::MCL(const rclcpp::NodeOptions &options)
     estimated_vyaw_ = 0.0;
     last_estimated_pose_ = Eigen::Vector3d::Zero();
     velocity_initialized_ = false;
-    velocity_filter_alpha_ = 0.3;  // Low-pass filter: 0.3 = aggressive filtering, 0.7 = less filtering
+    velocity_filter_alpha_ = 0.3;  // Will be overridden by parameter_manager (0 = max filtering, 1 = no filtering)
 
     // Initialize distance field (likelihood field model)
     distance_field_initialized_ = false;
