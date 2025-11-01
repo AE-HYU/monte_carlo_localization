@@ -58,6 +58,9 @@ void initParameters(MCL* node)
     // Robot geometry
     node->declare_parameter("wheelbase", 0.324);
 
+    // Velocity estimation filter
+    node->declare_parameter("velocity_filter_alpha", 0.3);  // Low-pass filter coefficient (0-1)
+
     // Resampling parameters
     node->declare_parameter("use_adaptive_resampling", true);   // Enable adaptive resampling
     node->declare_parameter("ess_threshold", 0.5);              // ESS threshold (0.0-1.0)
@@ -128,6 +131,9 @@ void initParameters(MCL* node)
 
     // Robot geometry
     node->WHEELBASE = node->get_parameter("wheelbase").as_double();
+
+    // Velocity estimation filter
+    node->velocity_filter_alpha_ = node->get_parameter("velocity_filter_alpha").as_double();
 
     // Resampling parameters
     node->USE_ADAPTIVE_RESAMPLING = node->get_parameter("use_adaptive_resampling").as_bool();
@@ -336,6 +342,14 @@ void initParameters(MCL* node)
         RCLCPP_WARN(node->get_logger(),
             "omp_chunk_size cannot be negative (%d), using default 0", node->OMP_CHUNK_SIZE);
         node->OMP_CHUNK_SIZE = 0;
+    }
+
+    // Validate velocity filter alpha
+    if (node->velocity_filter_alpha_ < 0.0 || node->velocity_filter_alpha_ > 1.0) {
+        RCLCPP_WARN(node->get_logger(),
+            "velocity_filter_alpha must be between 0.0 and 1.0, got %.3f. Using default 0.3",
+            node->velocity_filter_alpha_);
+        node->velocity_filter_alpha_ = 0.3;
     }
 
     RCLCPP_INFO(node->get_logger(),
