@@ -560,30 +560,30 @@ void MCL::execute_mcl_worker()
             double avg_quality_time = timing_stats_.measurement_count > 0
                 ? timing_stats_.quality_metrics_time / timing_stats_.measurement_count : 0.0;
 
-            std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - " +
-                             "Total: " + std::to_string(total_time) + "ms, " +
-                             "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " +
-                             "MCL: " + std::to_string(mcl_processing_time_) + "ms " +
-                             "(Quality: " + std::to_string(avg_quality_time) + "ms), " +
-                             "Particles: " + std::to_string(particle_time_ms) + "ms";
+            std::string msg = "MCL #" + std::to_string(mcl_update_count) + " [" + SENSOR_MODEL_TYPE + "] - ";
+                            // + "Total: " + std::to_string(total_time) + "ms, " 
+                            // + "TF_Motion: " + std::to_string(motion_calc_time_ms) + "ms, " 
+                            // + "MCL: " + std::to_string(mcl_processing_time_) + "ms " 
+                            // + "(Quality: " + std::to_string(avg_quality_time) + "ms), " 
+                            // + "Particles: " + std::to_string(particle_time_ms) + "ms";
 
         // Add sensor model specific breakdown (current update)
         if (SENSOR_MODEL_TYPE == "beam") {
-            msg += " | Current: (Query: " + std::to_string(timing_stats_.current_query_prep_time) + "ms, " +
-                   "Raycast: " + std::to_string(timing_stats_.current_ray_casting_time) + "ms, " +
-                   "Sensor: " + std::to_string(timing_stats_.current_sensor_model_time) + "ms)";
+            // msg += " | Current: (Query: " + std::to_string(timing_stats_.current_query_prep_time) + "ms, " +
+            //        "Raycast: " + std::to_string(timing_stats_.current_ray_casting_time) + "ms, " +
+            //        "Sensor: " + std::to_string(timing_stats_.current_sensor_model_time) + "ms)";
             // Also add average for comparison
             if (timing_stats_.measurement_count > 0) {
                 double avg_query = timing_stats_.query_prep_time / timing_stats_.measurement_count;
                 double avg_raycast = timing_stats_.ray_casting_time / timing_stats_.measurement_count;
                 double avg_sensor = timing_stats_.sensor_model_time / timing_stats_.measurement_count;
-                msg += " | Avg: (Query: " + std::to_string(avg_query) + "ms, " +
-                       "Raycast: " + std::to_string(avg_raycast) + "ms, " +
-                       "Sensor: " + std::to_string(avg_sensor) + "ms)";
+                // msg += " | Avg: (Query: " + std::to_string(avg_query) + "ms, " +
+                //        "Raycast: " + std::to_string(avg_raycast) + "ms, " +
+                //        "Sensor: " + std::to_string(avg_sensor) + "ms)";
             }
         } else if (timing_stats_.measurement_count > 0) {
             double avg_sensor = timing_stats_.sensor_model_time / timing_stats_.measurement_count;
-            msg += " (LikelihoodField(avg): " + std::to_string(avg_sensor) + "ms)";
+            // msg += " (LikelihoodField(avg): " + std::to_string(avg_sensor) + "ms)";
         }
 
         // Add ESS statistics if adaptive resampling is enabled
@@ -595,9 +595,9 @@ void MCL::execute_mcl_worker()
                    "Resample: " + std::to_string(static_cast<int>(resample_rate)) + "%";
         }
 
-        msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
-               std::to_string(current_pose_base[1]) + ", " +
-               std::to_string(current_pose_base[2]) + "]";
+        // msg += ", Pose: [" + std::to_string(current_pose_base[0]) + ", " +
+        //        std::to_string(current_pose_base[1]) + ", " +
+        //        std::to_string(current_pose_base[2]) + "]";
 
         RCLCPP_INFO(this->get_logger(), "%s", msg.c_str());
 
@@ -641,7 +641,7 @@ void MCL::execute_mcl_worker()
 
     // Exited while loop - reached maximum consecutive runs
     mcl_running_ = false;
-    RCLCPP_WARN(this->get_logger(),
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
         "[MCL Worker] Reached max consecutive runs (%d) - forcing break. "
         "MCL is too slow for current LiDAR rate!",
         MAX_CONSECUTIVE_MCL_RUNS);

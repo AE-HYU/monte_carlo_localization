@@ -31,12 +31,12 @@ void odometry_motion_update(MCL* node,
 
     // If motion is too small, apply minimal noise to prevent discontinuity
     if (delta_trans_local < node->SMALL_TRANS_THRESHOLD && std::abs(delta_rot_total) < node->SMALL_ROT_THRESHOLD) {
-        // Apply very small random noise to maintain particle diversity
+        // Apply small random noise to maintain particle diversity
         std::lock_guard<std::mutex> lock(node->rng_lock_);
         for (int i = 0; i < node->MAX_PARTICLES; ++i) {
-            double noise_x = node->normal_dist_(node->rng_) * 0.001;  // 1mm std
-            double noise_y = node->normal_dist_(node->rng_) * 0.001;
-            double noise_theta = node->normal_dist_(node->rng_) * 0.001;  // ~0.057 deg std
+            double noise_x = node->normal_dist_(node->rng_) * 0.01;  // 1cm std (increased from 1mm)
+            double noise_y = node->normal_dist_(node->rng_) * 0.01;  // 1cm std
+            double noise_theta = node->normal_dist_(node->rng_) * 0.01;  // ~0.57 deg std (increased)
 
             proposal_dist(i, 0) += noise_x;
             proposal_dist(i, 1) += noise_y;
