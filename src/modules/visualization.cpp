@@ -215,7 +215,7 @@ void publish_particles_viz(MCL* node, const Eigen::Vector3d &base_link_pose, con
     rclcpp::Time viz_stamp = (stamp.nanoseconds() != 0) ? stamp : node->get_clock()->now();
 
     std::lock_guard<std::mutex> lock(node->state_lock_);
-    publish_particles(node, node->particles_, viz_stamp);
+    publish_particles(node, node->proposal_distribution_, viz_stamp);
 }
 
 } // namespace visualization
