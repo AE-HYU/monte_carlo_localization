@@ -32,7 +32,7 @@ mcl:
     # Tuned for F1TENTH high-speed racing scenarios
     alpha1: 0.3 #0.1 #0.16                        # rotation → rotation noise
     alpha2: 0.025 #0.04 #0.02                       # translation → rotation noise
-    alpha3: 0.5 #0.1 #0.7                        # translation → translation noise
+    alpha3: 0.7 #0.1 #0.7                        # translation → translation noise
     alpha4: 0.2 #1.4 #0.08                        # rotation → translation noise
 
     # Small motion thresholds (below these, use minimal noise instead of RTR model)
