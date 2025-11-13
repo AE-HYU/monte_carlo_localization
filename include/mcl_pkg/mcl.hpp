@@ -217,21 +217,10 @@ class MCL : public rclcpp::Node
 
     // --------------------------------- THREADING ---------------------------------
     std::mutex state_lock_;
-    std::mutex lidar_lock_;      // Protects: downsampled_ranges_, pending_mcl_data_
+    std::mutex lidar_lock_;      // Protects: downsampled_ranges_
     std::mutex odom_lock_;
     std::mutex map_lock_;
     std::mutex rng_lock_;
-
-    // MCL worker thread control
-    std::atomic<bool> mcl_running_{false};
-
-    struct MCLTaskData {
-        std::vector<float> observation;
-        rclcpp::Time timestamp;
-    };
-    std::optional<MCLTaskData> pending_mcl_data_;  // Protected by lidar_lock_
-
-    static constexpr int MAX_CONSECUTIVE_MCL_RUNS = 3;  // Prevent infinite loop
 
     // --------------------------------- RANDOM NUMBER GENERATION ---------------------------------
     std::mt19937 rng_;
@@ -267,8 +256,8 @@ class MCL : public rclcpp::Node
     Eigen::Matrix3d latest_covariance_;
     double latest_particle_spread_;
 
-    // Pose publishing (triggered by odom callback)
-    void publish_pose(const nav_msgs::msg::Odometry::SharedPtr odom_msg);
+    // Pose publishing (triggered by laser callback)
+    void publish_pose(const rclcpp::Time& timestamp, const Eigen::Vector3d& pose_base);
 
     // --------------------------------- POSE EXTRAPOLATION UTILITIES ---------------------------------
     /**
@@ -291,7 +280,6 @@ class MCL : public rclcpp::Node
     utils::performance::TimingStats timing_stats_;
 
     // --------------------------------- UPDATE CONTROL ---------------------------------
-    void execute_mcl_worker();  // Async MCL worker (lidar-driven)
     void publish_map_periodically();
 
     // --------------------------------- CALLBACK GROUPS FOR THREADING ---------------------------------
