@@ -27,7 +27,7 @@ mcl:
     motion_dispersion_y: 0.012          # Lateral motion noise (m)
     motion_dispersion_theta: 0.065      # Rotation noise (rad)
 
-    # === ODOMETRY MOTION MODEL (RTR with motion-proportional noise) ===
+    # === ODOMETRY MOTION MODEL (RTR with motion--1   roportional noise) ===
     # Based on Probabilistic Robotics Ch 5.4 (Thrun, Burgard, Fox)
     # Tuned for F1TENTH high-speed racing scenarios
     alpha1: 0.3 #0.1 #0.16                        # rotation → rotation noise
