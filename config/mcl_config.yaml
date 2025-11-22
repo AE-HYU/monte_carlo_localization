@@ -6,7 +6,7 @@
 mcl:
   ros__parameters:
     # === CORE ALGORITHM PARAMETERS ===
-    max_particles: 1000                # Maximum number of particles
+    max_particles: 4000                # Maximum number of particles
     min_particles: 500                 # Minimum number of particles (for adaptive resampling)
     max_viz_particles: 60              # Visualization downsampling
     max_range: 10.0                    # Laser max range (m)
