@@ -222,14 +222,17 @@ class MCL : public rclcpp::Node
     std::mutex map_lock_;
     std::mutex rng_lock_;
 
-    // MCL worker thread control
-    std::atomic<bool> mcl_running_{false};
+    // MCL worker thread control (Thread Pool pattern)
+    std::unique_ptr<std::thread> mcl_worker_thread_;  // Persistent worker thread
+    std::condition_variable mcl_cv_;                   // Notify worker of new data
+    std::mutex mcl_mutex_;                             // Protects pending_mcl_data_ and shutdown flag
+    std::atomic<bool> mcl_should_exit_{false};        // Signal thread to exit
 
     struct MCLTaskData {
         std::vector<float> observation;
         rclcpp::Time timestamp;
     };
-    std::optional<MCLTaskData> pending_mcl_data_;  // Protected by lidar_lock_
+    std::optional<MCLTaskData> pending_mcl_data_;  // Protected by mcl_mutex_ (not lidar_lock_)
 
     static constexpr int MAX_CONSECUTIVE_MCL_RUNS = 3;  // Prevent infinite loop
 

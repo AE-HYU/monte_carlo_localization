@@ -185,13 +185,35 @@ MCL::MCL(const rclcpp::NodeOptions &options)
             return parameter_manager::dynamicParametersCallback(this, parameters);
         });
 
-    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - LiDAR-driven (async), %s threading (%d threads)",
+    // Start persistent MCL worker thread (Thread Pool pattern)
+    mcl_worker_thread_ = std::make_unique<std::thread>([this]() {
+        while (true) {
+            // Wait for new LiDAR data or shutdown signal
+            std::unique_lock<std::mutex> lock(mcl_mutex_);
+            mcl_cv_.wait(lock, [this] {
+                return pending_mcl_data_.has_value() || mcl_should_exit_.load();
+            });
+
+            // Check for shutdown
+            if (mcl_should_exit_.load()) {
+                RCLCPP_INFO(this->get_logger(), "[MCL Worker] Shutdown signal received, exiting...");
+                break;
+            }
+
+            lock.unlock();  // Unlock before heavy computation
+
+            // Execute MCL processing
+            execute_mcl_worker();
+        }
+    });
+
+    RCLCPP_INFO(this->get_logger(), "Particle filter initialized - LiDAR-driven (Thread Pool), %s threading (%d threads)",
         USE_PARALLEL_RAYCASTING ? "parallel" : "sequential",
         USE_PARALLEL_RAYCASTING ? NUM_THREADS : 1);
     RCLCPP_INFO(this->get_logger(), "Motion model: %s | Sensor model: %s | Resampling: %s%s",
         MOTION_MODEL_TYPE.c_str(), SENSOR_MODEL_TYPE.c_str(), RESAMPLING_TYPE.c_str(),
         USE_ADAPTIVE_RESAMPLING ? " (adaptive)" : "");
-    RCLCPP_INFO(this->get_logger(), "MCL worker: Max consecutive runs = %d (prevents infinite loop)",
+    RCLCPP_INFO(this->get_logger(), "MCL worker thread: Persistent worker with max %d consecutive runs",
         MAX_CONSECUTIVE_MCL_RUNS);
     RCLCPP_INFO(this->get_logger(), "Async map loading started - node ready, waiting for map server...");
     RCLCPP_INFO(this->get_logger(), "Dynamic parameter reconfiguration enabled");
@@ -201,8 +223,19 @@ MCL::~MCL()
 {
     RCLCPP_INFO(this->get_logger(), "Shutting down particle filter");
 
-    // Stop MCL worker if running
-    mcl_running_ = false;
+    // Signal worker thread to exit (Thread Pool pattern)
+    {
+        std::lock_guard<std::mutex> lock(mcl_mutex_);
+        mcl_should_exit_ = true;
+    }
+    mcl_cv_.notify_one();  // Wake up worker if it's waiting
+
+    // Wait for worker thread to finish
+    if (mcl_worker_thread_ && mcl_worker_thread_->joinable()) {
+        RCLCPP_INFO(this->get_logger(), "Waiting for MCL worker thread to finish...");
+        mcl_worker_thread_->join();
+        RCLCPP_INFO(this->get_logger(), "MCL worker thread terminated cleanly");
+    }
 
     // Cancel all timers explicitly for clean shutdown
     if (map_loader_timer_) map_loader_timer_->cancel();
@@ -217,7 +250,7 @@ MCL::~MCL()
 
 void MCL::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
 {
-    // Downsampling and pending data update (single lock for atomicity)
+    // Downsampling (protected by lidar_lock_)
     {
         std::lock_guard<std::mutex> lock(lidar_lock_);
 
@@ -258,30 +291,21 @@ void MCL::lidarCB(const sensor_msgs::msg::LaserScan::SharedPtr msg)
         }
 
         last_lidar_time_ = msg->header.stamp;
+    }
 
-        // Update pending MCL task (atomically with downsampling)
+    // Update pending MCL task and notify worker (Thread Pool pattern)
+    {
+        std::lock_guard<std::mutex> lock(mcl_mutex_);
         pending_mcl_data_ = MCLTaskData{
             .observation = downsampled_ranges_,
             .timestamp = msg->header.stamp
         };
     }
 
-    // Check if MCL worker is already running
-    bool was_running = mcl_running_.exchange(true);
-    if (was_running) {
-        // MCL already running, pending data updated above
-        RCLCPP_DEBUG(this->get_logger(),
-            "[LiDAR] MCL busy, updated pending data");
-        return;
-    }
+    // Notify worker thread that new data is available
+    mcl_cv_.notify_one();
 
-    // Start MCL worker thread
-    RCLCPP_DEBUG(this->get_logger(),
-        "[LiDAR] Triggering MCL worker");
-
-    std::thread([this]() {
-        execute_mcl_worker();
-    }).detach();
+    RCLCPP_DEBUG(this->get_logger(), "[LiDAR] New data queued, worker notified");
 }
 
 void MCL::odomCB(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -360,14 +384,17 @@ void MCL::execute_mcl_worker()
                 lidar_initialized_ ? "OK" : "NO",
                 odom_initialized_ ? "OK" : "NO",
                 map_initialized_ ? "OK" : "NO");
-            mcl_running_ = false;
             return;
         }
 
         // 2. Get pending MCL task (guaranteed to exist when worker is triggered)
         MCLTaskData task;
         {
-            std::lock_guard<std::mutex> lock(lidar_lock_);
+            std::lock_guard<std::mutex> lock(mcl_mutex_);
+            if (!pending_mcl_data_) {
+                // No data available, exit
+                return;
+            }
             task = *pending_mcl_data_;
             pending_mcl_data_.reset();  // Clear after taking
         }
@@ -417,7 +444,6 @@ void MCL::execute_mcl_worker()
             } catch (tf2::TransformException &ex) {
                 RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                     "[MCL Worker] Could not get odom->base: %s - skipping MCL update", ex.what());
-                mcl_running_ = false;
                 return;
             }
         }
@@ -624,10 +650,9 @@ void MCL::execute_mcl_worker()
 
         // 13. Check if new pending data arrived during MCL processing
         {
-            std::lock_guard<std::mutex> lock(lidar_lock_);
+            std::lock_guard<std::mutex> lock(mcl_mutex_);
             if (!pending_mcl_data_) {
                 // No new data, worker done
-                mcl_running_ = false;
                 RCLCPP_DEBUG(this->get_logger(),
                     "[MCL Worker] Completed (consecutive_runs=%d)", consecutive_runs);
                 return;
@@ -640,7 +665,6 @@ void MCL::execute_mcl_worker()
     }
 
     // Exited while loop - reached maximum consecutive runs
-    mcl_running_ = false;
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
         "[MCL Worker] Reached max consecutive runs (%d) - forcing break. "
         "MCL is too slow for current LiDAR rate!",
